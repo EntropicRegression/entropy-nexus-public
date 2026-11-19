@@ -44,7 +44,11 @@ const operate = (scope?: Rule['scope'], log = true): Rule => ({ level: 'operate'
 const ADMIN: Rule = { level: 'admin', log: true };
 const ADMIN_QUIET: Rule = { level: 'admin', log: false };
 
-/** 完整介面經 /api/rpc 呼叫的方法(名稱和主行程的方法表相同);第一個參數是節點或任務 id。 */
+/**
+ * 完整介面經 /api/rpc 呼叫的方法(名稱和主行程的方法表相同);第一個參數是節點或任務 id。
+ * 語音模式(voiceStatus、voiceSet、voiceTranscribe)刻意不在方法表裡,只註冊給桌面畫面的 IPC,
+ * 所以任何角色的遠端裝置都呼叫不到(/api/rpc 回「沒有這個功能」);要開放給遠端時再在這裡加規則。
+ */
 const RPC: Record<string, Rule> = {
   snapshot: read(),
   history: read('agent'),

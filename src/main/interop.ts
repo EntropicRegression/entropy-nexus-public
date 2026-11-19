@@ -411,7 +411,7 @@ export class Interop {
     try {
       await core.send(target.id, `${header}
 
-${prompt}`);
+${prompt}`, [], 'user', 'interop');
     } catch (err) {
       this.finish(p, 'failed', String((err as Error)?.message ?? err));
     }
@@ -506,7 +506,7 @@ ${prompt}`);
         const p: Pending = { id: randomUUID().slice(0, 8), callerId: m.callerId, targetId: part.id, targetName: part.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set() };
         this.pending.set(p.id, p);
         m.current = p;
-        try { await core.send(part.id, prompt); } catch (err) { this.finish(p, 'failed', String((err as Error)?.message ?? err)); }
+        try { await core.send(part.id, prompt, [], 'user', 'interop'); } catch (err) { this.finish(p, 'failed', String((err as Error)?.message ?? err)); }
         // 等這位講完;太久就中斷它,換下一位
         if (p.status === 'running') await new Promise<void>(resolve => {
           const done = () => { clearTimeout(timer); p.waiters.delete(done); resolve(); };

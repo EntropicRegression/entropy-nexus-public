@@ -172,6 +172,13 @@
     // 檔案總管在主控台那台電腦上,瀏覽器版不提供
     canReveal: async () => false,
     revealPath: async () => {},
+    // 語音模式只在主控台那台電腦的桌面畫面提供(伺服器端也不接受這組呼叫)
+    voiceStatus: async () => ({ enabled: false, command: '', defaultCommand: '', model: '', state: 'unsupported', detail: '瀏覽器版不提供語音模式', device: '', log: [] }),
+    voiceSet: async () => { throw new Error('瀏覽器版不提供語音模式'); },
+    voiceTranscribe: async () => { throw new Error('瀏覽器版不提供語音模式'); },
+    onVoice: () => () => {},
+    // 語音播報只在主控台那台電腦的桌面畫面
+    onSpeech: () => () => {},
     onUpdate: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
   });
   // 權限要等配對確認後才知道,所以到 boot 讀完才凍結

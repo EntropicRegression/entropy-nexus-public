@@ -4,6 +4,7 @@ import {
 } from '../../shared/types';
 import { HoverCard } from './Hover';
 import { ObservedRows, ObservePanel } from './Observe';
+import { VoicePanel } from './Voice';
 import { OldSessions } from './OldSessions';
 import { PersonaEditor } from './PersonaEditor';
 import { RemotePanel } from './Remote';
@@ -11,7 +12,7 @@ import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
 import { BoardScene } from './board';
-import { chime, isMuted, isSpeakOn, setMuted, setSpeakOn, speak, stopSpeaking } from './sound';
+import { chime, enqueueSpeech, initSpeech, isMuted, isSpeakOn, setMuted, setSpeakOn, stopSpeaking } from './sound';
 import { BACKEND_COLOR, STATE_COLOR, hex } from './theme';
 
 const MAX_EVENTS = 80;
@@ -37,6 +38,7 @@ export function App() {
   const [showKeys, setShowKeys] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
   const [showObserve, setShowObserve] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
   const [observed, setObserved] = useState<Record<string, ObservedSession>>({});
   const [hover, setHover] = useState<{ id: string; x: number; y: number; side: 'right' | 'left' } | null>(null);
   const [muted, setMutedState] = useState(isMuted());
@@ -44,10 +46,29 @@ export function App() {
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
   const [speakOn, setSpeakOnState] = useState(isSpeakOn());
   const [speaking, setSpeaking] = useState(false);
+  // 語音播報播之前要用最新的節點狀態確認:授權或提問還在等、故障還沒恢復
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+  // 已經處理掉的授權與提問。播報通知可能比節點狀態的更新先到,所以用「是否已處理」判斷,不看畫面上的狀態
+  const resolvedRef = useRef(new Set<string>());
+
+  // 語音播報(Phase 2a):主行程判斷什麼時候該念、算好摘要,這裡排隊播放
+  useEffect(() => {
+    initSpeech({
+      onChange: setSpeaking,
+      isPending: n => {
+        const a = agentsRef.current[n.agentId];
+        if (n.kind === 'approval' || n.kind === 'question') return !resolvedRef.current.has(n.requestId) && (!a || a.state !== 'sleeping');
+        // 故障:剛發生的照念;排了一陣子才輪到的,節點已經恢復就不念
+        if (n.kind === 'failed' && n.reason !== 'quota' && Date.now() - n.ts > 3000) return !!a && (a.state === 'error' || a.state === 'lost');
+        return true;
+      },
+    });
+    return window.nexus.onSpeech(n => enqueueSpeech(n));
+  }, []);
 
   useEffect(() => {
     let alive = true;
-    const lastReply = new Map<string, string>();
     void window.nexus.getSnapshot().then(s => {
       if (!alive) return;
       setAgents(Object.fromEntries(s.agents.map(a => [a.id, a])));
@@ -70,16 +91,13 @@ export function App() {
       if (u.event) {
         const e = u.event;
         setEvents(prev => [...prev, e].slice(-MAX_EVENTS));
+        if (e.type === 'approval_resolved' || e.type === 'question_resolved') {
+          resolvedRef.current.add(e.requestId);
+          if (resolvedRef.current.size > 500) resolvedRef.current = new Set([...resolvedRef.current].slice(-200));
+        }
         // 提示音只留給待授權與異常
         if (e.type === 'state' && e.state === 'awaiting') chime('ask');
         else if (e.type === 'state' && (e.state === 'error' || e.state === 'lost')) chime('fault');
-        // 朗讀:記下這個回合最後一則回覆,回合結束(回到待命)時念出來;子代理不念
-        if (e.type === 'message') { if (e.role === 'agent') lastReply.set(e.agentId, e.text); else lastReply.delete(e.agentId); }
-        else if (e.type === 'state' && e.state === 'idle' && !u.agent?.parentId) {
-          const text = lastReply.get(e.agentId);
-          lastReply.delete(e.agentId);
-          if (text && isSpeakOn()) speak(text, setSpeaking);
-        }
       }
       if (u.maxActive !== undefined) setMaxActive(u.maxActive);
       if (u.quotaStop !== undefined) setQuotaStop(u.quotaStop);
@@ -168,10 +186,11 @@ export function App() {
         </label>
         <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="讓手機透過 Tailscale 連進來操作">手機</button>
         <button className={`ghost mute need-full ${showObserve ? 'on' : ''}`} onClick={() => setShowObserve(v => !v)} title="觀察在主控台以外執行的 Claude Code(hooks)">外部觀察</button>
+        <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音模式(實驗性):按住說話,轉成文字填進輸入框">語音</button>
         <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
         <button className={`ghost mute ${avatarsOn ? 'on' : ''}`} onClick={() => { localStorage.setItem('nexus.avatars', avatarsOn ? '0' : '1'); setAvatarsOn(!avatarsOn); }} title="在節點的六角形裡顯示角色的 Q 版頭像(角色資料夾裡的 avatar.png);關閉時顯示原本的六角形">{avatarsOn ? '頭像 開' : '頭像 關'}</button>
         <button className={`ghost mute ${muted ? '' : 'on'}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }} title="待授權與異常時的提示音">{muted ? '提示音 關' : '提示音 開'}</button>
-        <button className={`ghost mute ${speakOn ? 'on' : ''}`} onClick={() => { setSpeakOn(!speakOn); setSpeakOnState(!speakOn); if (speakOn) setSpeaking(false); }} title="回合完成時朗讀 agent 的最後一則回覆(略過程式碼)">{speakOn ? '朗讀 開' : '朗讀 關'}</button>
+        <button className={`ghost mute ${speakOn ? 'on' : ''}`} onClick={() => { setSpeakOn(!speakOn); setSpeakOnState(!speakOn); if (speakOn) setSpeaking(false); }} title="念出語音播報:你從桌面交辦的回合完成時念一句重點,節點等你授權、有問題要問你或出錯時提醒你">{speakOn ? '朗讀 開' : '朗讀 關'}</button>
         {speaking && <button className="ghost mute" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀">停止朗讀</button>}
         {caps.some(c => c.simulated) && (
           <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
@@ -183,6 +202,7 @@ export function App() {
 
       {showRemote && <RemotePanel onClose={() => setShowRemote(false)} />}
       {showObserve && <ObservePanel onClose={() => setShowObserve(false)} />}
+      {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
       {showKeys && (
         <div className="keys">
           <b>快捷鍵</b>

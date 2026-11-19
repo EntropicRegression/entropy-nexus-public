@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { NexusApi, Update } from '../shared/types';
+import type { NexusApi, SpeechNotice, Update, VoiceStatus } from '../shared/types';
 
 // 畫面只能透過這組固定的函式與主行程溝通,拿不到 Node 或 ipcRenderer 本身
 const api: NexusApi = {
@@ -63,6 +63,19 @@ const api: NexusApi = {
   pickDirectory: () => ipcRenderer.invoke('nexus:pickDirectory'),
   canReveal: (agentId, text) => ipcRenderer.invoke('nexus:canReveal', agentId, text),
   revealPath: (agentId, text) => ipcRenderer.invoke('nexus:revealPath', agentId, text),
+  voiceStatus: () => ipcRenderer.invoke('nexus:voiceStatus'),
+  voiceSet: patch => ipcRenderer.invoke('nexus:voiceSet', patch),
+  voiceTranscribe: wav => ipcRenderer.invoke('nexus:voiceTranscribe', wav),
+  onVoice: cb => {
+    const listener = (_e: unknown, s: VoiceStatus) => cb(s);
+    ipcRenderer.on('nexus:voice', listener);
+    return () => { ipcRenderer.removeListener('nexus:voice', listener); };
+  },
+  onSpeech: cb => {
+    const listener = (_e: unknown, n: SpeechNotice) => cb(n);
+    ipcRenderer.on('nexus:speech', listener);
+    return () => { ipcRenderer.removeListener('nexus:speech', listener); };
+  },
   onUpdate: cb => {
     const listener = (_e: unknown, u: Update) => cb(u);
     ipcRenderer.on('nexus:update', listener);

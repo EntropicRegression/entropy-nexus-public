@@ -464,7 +464,7 @@ class CodexSession implements AdapterSession {
         if (this.interrupting || turn.status === 'interrupted') {
           this.interrupting = false;
           this.emit({ type: 'message', role: 'agent', text: '(已中斷)' });
-          this.emit({ type: 'state', state: 'idle', detail: '已中斷' });
+          this.emit({ type: 'state', state: 'idle', detail: '已中斷', outcome: 'interrupted' });
         } else if (turn.status === 'failed') {
           const reason = String(turn.error?.message ?? '回合失敗');
           this.emit({ type: 'error', message: reason.slice(0, 500) });

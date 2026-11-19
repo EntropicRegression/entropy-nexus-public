@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { BACKEND_LABEL, usageWindowsFor, type UsageWindow } from '../shared/types';
+import { BACKEND_LABEL, usageWindowsFor, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
+import { summarizeForSpeech } from '../shared/speech-summary';
 import type {
   AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
@@ -53,6 +54,10 @@ export class Core {
   private tasks = new Map<string, TaskInfo>();
   private current = new Map<string, string>();
   private interrupted = new Set<string>();
+  /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
+  private turnText = new Map<string, string[]>();
+  /** 語音播報的通知只推給桌面畫面(index.ts 設定)。 */
+  private speechOut: (n: SpeechNotice) => void = () => {};
   /** 任務的工作目錄;節點被移除後仍要能計算變更。 */
   private taskCwd = new Map<string, string>();
   /** 各家後台帳號的剩餘額度,最後一次取得的值會存進設定,重開後仍可顯示。 */
@@ -364,10 +369,13 @@ export class Core {
   }
 
   /** origin 是佇列項目時表示由佇列自動送出:送不出去就放回佇列開頭,不會丟掉。 */
-  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user'): Promise<void> {
+  /** source:指令是從哪裡送出的(語音播報用);佇列送出時沿用排入時記下的來源。 */
+  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop'): Promise<void> {
     const agent = this.agents.get(id);
     const session = this.sessions.get(id);
     const fromQueue = typeof origin === 'object' ? origin : null;
+    if (fromQueue) source = fromQueue.source ?? 'desktop';
+    else if (origin === 'autopilot') source = 'autopilot';
     if (!agent || !session) { if (fromQueue && agent) this.requeue(agent, fromQueue); return; }
     // 額度上限:這家後台的額度用到設定的百分比就不再送出新指令
     if (!BUSY.has(agent.state) && this.quotaStop > 0) {
@@ -377,7 +385,7 @@ export class Core {
         if (fromQueue) {
           // 佇列送出時被擋:這筆留在佇列開頭並暫停,等使用者調整後按佇列的「繼續」
           this.requeue(agent, fromQueue);
-          this.pauseQueue(agent, `額度已達上限 ${this.quotaStop}%`);
+          if (this.pauseQueue(agent, `額度已達上限 ${this.quotaStop}%`) && source === 'desktop') this.speak({ kind: 'failed', agentId: id, agentName: agent.name, ts: Date.now(), reason: 'quota', queuePaused: true });
           this.onAdapterEvent(id, { type: 'note', text: `${what},佇列已暫停,排隊的指令都還在。調高額度上限或等額度重置後,按佇列的「繼續」。` });
           return;
         }
@@ -392,14 +400,14 @@ export class Core {
     if (!BUSY.has(agent.state) && this.activeCount(id) >= this.maxActive) {
       if (fromQueue) { this.requeue(agent, fromQueue); return; }
       if (origin === 'autopilot') return;
-      this.pushQueue(agent, text, images);
+      this.pushQueue(agent, text, images, source);
       this.onAdapterEvent(id, { type: 'note', text: `已達同時執行上限(${this.maxActive} 個),指令已排隊,有名額時會自動送出。` });
       return;
     }
     if (!BUSY.has(agent.state)) {
       // 送出前先拍下工作目錄的快照,任務結束後才算得出這個任務改了什麼
       this.starting.add(id);
-      const task = this.startTask(agent, text);
+      const task = this.startTask(agent, text, source);
       try {
         await this.captureBase(agent, task);
       } finally {
@@ -407,6 +415,10 @@ export class Core {
       }
       // 等快照期間節點被終止、休眠或切到終端機:佇列來的這筆放回去
       if (this.sessions.get(id) !== session) { if (fromQueue && this.agents.has(id)) this.requeue(agent, fromQueue); return; }
+    } else if (source === 'desktop') {
+      // 節點在跑別人交辦的回合時,使用者從桌面插話:這個回合改算使用者發起的,完成時要念
+      const task = this.tasks.get(this.current.get(id) ?? '');
+      if (task && task.source !== 'desktop') task.source = 'desktop';
     }
     this.onAdapterEvent(id, { type: 'message', role: 'user', text });
     // 改名、換角色之後的第一則指令順便告訴 agent;紀錄裡仍只留使用者原本的文字
@@ -479,6 +491,14 @@ ${text}
   }
 
   /** 啟動節點的 CLI 時要掛上的工具服務;由 index.ts 在 init 之前設定。 */
+  setSpeech(out: (n: SpeechNotice) => void): void {
+    this.speechOut = out;
+  }
+
+  private speak(n: SpeechNotice): void {
+    try { this.speechOut(n); } catch { /* 播報失敗不影響節點 */ }
+  }
+
   setInterop(provider: (agentId: string) => StartOptions['interop']): void {
     this.interop = provider;
   }
@@ -519,11 +539,11 @@ ${text}
   }
 
   /** 把指令排到節點佇列的尾端。節點待命(或喚醒後待命)且有執行名額時依序自動送出。 */
-  enqueue(id: string, text: string, images: string[] = []): void {
+  enqueue(id: string, text: string, images: string[] = [], source: SpeechSource = 'desktop'): void {
     const agent = this.agents.get(id);
     if (!agent || agent.parentId) throw new Error('找不到這個節點');
     if (!text.trim()) throw new Error('沒有內容');
-    this.pushQueue(agent, text, images);
+    this.pushQueue(agent, text, images, source);
   }
 
   cancelQueued(id: string, queuedId: string): void {
@@ -722,6 +742,7 @@ ${text}
         break;
       case 'approval_request':
         agent.pendingApproval = { requestId: e.requestId, tool: e.tool, summary: e.summary, detail: e.detail ?? '', canAllowSession: e.canAllowSession ?? false };
+        this.speak({ kind: 'approval', agentId, agentName: agent.name, ts: Date.now(), requestId: e.requestId });
         break;
       case 'approval_resolved':
         if (agent.pendingApproval?.requestId === e.requestId) agent.pendingApproval = null;
@@ -733,6 +754,14 @@ ${text}
         break;
       case 'question':
         agent.pendingQuestion = { requestId: e.requestId, questions: e.questions };
+        this.speak({ kind: 'question', agentId, agentName: agent.name, ts: Date.now(), requestId: e.requestId });
+        break;
+      case 'message':
+        if (e.role === 'agent' && !agent.parentId && this.current.has(agentId)) {
+          const list = this.turnText.get(agentId) ?? [];
+          list.push(e.text);
+          this.turnText.set(agentId, list.slice(-2));
+        }
         break;
       case 'question_resolved':
         if (agent.pendingQuestion?.requestId === e.requestId) agent.pendingQuestion = null;
@@ -752,9 +781,9 @@ ${text}
     this.broadcast({ agent: { ...agent, queued: agent.queued.map(q => ({ ...q })) } });
   }
 
-  private pushQueue(agent: AgentInfo, text: string, images: string[]): void {
+  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource): void {
     if (agent.queued.length >= MAX_QUEUED) throw new Error(`佇列已滿(最多 ${MAX_QUEUED} 筆)`);
-    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now() });
+    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now(), source });
     this.saveQueue(agent);
     this.schedulePump();
   }
@@ -878,18 +907,18 @@ ${text}
   }
 
   /** 把變更檢視的評論整理成一則指令,送回產生這個任務的節點修改。 */
-  async sendReviewComments(taskId: string, comments: ReviewComment[]): Promise<void> {
+  async sendReviewComments(taskId: string, comments: ReviewComment[], source: SpeechSource = 'desktop'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error('找不到這個任務');
     const list = comments.filter(c => c && typeof c.text === 'string' && c.text.trim());
     if (!list.length) throw new Error('還沒有任何評論。');
     this.reviewTarget(task.agentId, '產生這個任務的節點', false);
     const set = await this.taskChanges(taskId);
-    await this.send(task.agentId, formatCommentsPrompt({ title: task.title, comments: list, files: set.files }));
+    await this.send(task.agentId, formatCommentsPrompt({ title: task.title, comments: list, files: set.files }), [], 'user', source);
   }
 
   /** 把任務的變更送交另一個節點審查。提示詞在這裡組合,diff 由 taskChanges() 取得完整內容。 */
-  async requestReview(taskId: string, reviewerId: string, note = ''): Promise<void> {
+  async requestReview(taskId: string, reviewerId: string, note = '', source: SpeechSource = 'desktop'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error('找不到這個任務');
     if (reviewerId === task.agentId) throw new Error('不能送給產生這個任務的節點自己審查。');
@@ -905,7 +934,7 @@ ${text}
       set,
       note,
     });
-    await this.send(reviewerId, prompt);
+    await this.send(reviewerId, prompt, [], 'user', source);
     const title = task.title.length > 40 ? `${task.title.slice(0, 40)}…` : task.title;
     this.onAdapterEvent(reviewerId, { type: 'note', text: `上面是 ${task.agentName} 的任務「${title}」的審查請求(${set.files.length} 個檔案),只需回覆審查意見。` });
     if (author) this.onAdapterEvent(task.agentId, { type: 'note', text: `已把任務「${title}」的變更送交 ${reviewer.name} 審查。` });
@@ -949,7 +978,7 @@ ${text}
     this.broadcast({ tasks: [...this.tasks.values()] });
   }
 
-  private startTask(agent: AgentInfo, text: string): TaskInfo {
+  private startTask(agent: AgentInfo, text: string, source: SpeechSource): TaskInfo {
     const task: TaskInfo = {
       id: randomUUID(),
       agentId: agent.id,
@@ -964,8 +993,10 @@ ${text}
       steps: [],
       subs: [],
       changes: null,
+      source,
     };
     this.interrupted.delete(agent.id);
+    this.turnText.delete(agent.id);
     this.taskCwd.set(task.id, agent.cwd);
     this.tasks.set(task.id, task);
     this.current.set(agent.id, task.id);
@@ -1019,9 +1050,10 @@ ${text}
     this.broadcast({ task: { ...task, steps: [...task.steps], subs: task.subs.map(s => ({ ...s })) } });
   }
 
-  private finishTask(agentId: string, status: TaskStatus, note = '', keepCurrent = false): void {
+  /** 回傳這次結束的任務;任務不存在或已經結束時是 null。 */
+  private finishTask(agentId: string, status: TaskStatus, note = '', keepCurrent = false): TaskInfo | null {
     const task = this.tasks.get(this.current.get(agentId) ?? '');
-    if (!task || task.endedAt !== null) return;
+    if (!task || task.endedAt !== null) return null;
     task.status = status;
     task.endedAt = Date.now();
     if (note) task.note = note;
@@ -1030,6 +1062,16 @@ ${text}
     this.interrupted.delete(agentId);
     this.pushTask(task);
     void this.captureEnd(task);
+    return task;
+  }
+
+  /** 回合結束時的語音播報:只播使用者從桌面發起的回合(舊任務沒有來源,當成桌面)。 */
+  private speakEnd(agent: AgentInfo, task: TaskInfo | null, failed?: 'error' | 'lost'): void {
+    if (!task || (task.source ?? 'desktop') !== 'desktop') return;
+    const base = { agentId: agent.id, agentName: agent.name, ts: Date.now() };
+    if (failed) this.speak({ ...base, kind: 'failed', reason: failed, queuePaused: !!agent.queuePaused, taskId: task.id });
+    else if (task.status === 'done') this.speak({ ...base, kind: 'done', taskId: task.id, summary: summarizeForSpeech(this.turnText.get(agent.id) ?? []) });
+    this.turnText.delete(agent.id);
   }
 
   /** 依節點的事件更新它目前的任務;任務的狀態只由事件決定。 */
@@ -1046,11 +1088,12 @@ ${text}
           task.status = status;
           this.pushTask(task);
         } else if (e.state === 'idle') {
-          this.finishTask(agent.id, this.interrupted.has(agent.id) ? 'interrupted' : 'done');
+          // 後台自己取消的回合(Codex、ACP)也會回到待命,由轉接器以 outcome 標明
+          this.speakEnd(agent, this.finishTask(agent.id, this.interrupted.has(agent.id) || e.outcome === 'interrupted' ? 'interrupted' : 'done'));
         } else if (e.state === 'error') {
-          this.finishTask(agent.id, 'failed', e.detail ?? '');
+          this.speakEnd(agent, this.finishTask(agent.id, 'failed', e.detail ?? ''), 'error');
         } else if (e.state === 'lost') {
-          this.finishTask(agent.id, 'failed', e.detail || '失聯', true);
+          this.speakEnd(agent, this.finishTask(agent.id, 'failed', e.detail || '失聯', true), 'lost');
         } else if (e.state === 'sleeping') {
           this.finishTask(agent.id, 'interrupted', '節點休眠');
         }

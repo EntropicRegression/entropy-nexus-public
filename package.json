@@ -62,6 +62,17 @@
       "shortcutName": "Entropy Nexus",
       "artifactName": "Entropy-Nexus-Setup-${version}.exe"
     },
+    "extraResources": [
+      {
+        "from": "tools/voice-server",
+        "to": "voice-server",
+        "filter": [
+          "*.py",
+          "*.txt",
+          "*.md"
+        ]
+      }
+    ],
     "asarUnpack": [
       "node_modules/@lydell/**"
     ]

@@ -96,7 +96,14 @@ export interface AgentInfo {
 }
 
 /** 排在節點佇列裡、還沒送出的一句指令。 */
-export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number }
+/**
+ * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
+ * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
+ */
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
+
+/** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
+export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
 export interface UsageWindow {
@@ -171,11 +178,14 @@ export interface TaskInfo {
   cost?: Spent;
   /** 檔案變更摘要;假資料節點或舊資料沒有這個欄位。 */
   changes?: TaskChanges | null;
+  /** 這個任務的指令是從哪裡送出的;舊資料沒有這個欄位。 */
+  source?: SpeechSource;
 }
 
 /** 轉接器送給核心服務的事件。 */
 export type AdapterEvent =
-  | { type: 'state'; state: AgentState; detail?: string }
+  /** outcome:回合是被中斷才回到待命的(包括後台自己取消),不是正常完成。 */
+  | { type: 'state'; state: AgentState; detail?: string; outcome?: 'interrupted' }
   | { type: 'message'; role: 'user' | 'agent'; text: string }
   | { type: 'tool'; phase: 'start' | 'end'; name: string; summary: string; detail?: string; failed?: boolean }
   /** 工具結果或 agent 產生的圖片。path 是本機檔案(工作目錄內或主控台的媒體資料夾),圖片內容不進事件紀錄。 */
@@ -417,8 +427,52 @@ export interface RemoteStatus {
   error: string;
 }
 
+/**
+ * 語音模式(實驗性,Phase 1:按住說話轉成文字)。語音服務是主控台啟動的本機 Python 程式(tools/voice-server)。
+ * off:沒有啟用;starting:行程啟動中;warming:模型載入中;ready:可以錄音;error:啟動或載入失敗;
+ * unsupported:這個畫面不能用(瀏覽器版的遠端介面)。
+ */
+export type VoiceState = 'off' | 'starting' | 'warming' | 'ready' | 'error' | 'unsupported';
+
+export interface VoiceStatus {
+  enabled: boolean;
+  /** 使用者填的啟動指令;空字串表示用 defaultCommand。 */
+  command: string;
+  /** 找得到 tools/voice-server/server.py 時的預設啟動指令;找不到是空字串。 */
+  defaultCommand: string;
+  /** faster-whisper 模型名稱;空字串表示用服務的預設值(large-v3-turbo)。 */
+  model: string;
+  state: VoiceState;
+  /** 錯誤原因或補充說明。 */
+  detail: string;
+  /** 實際使用的裝置與精度,例如 cuda/int8_float16。 */
+  device: string;
+  /** 語音服務最近的輸出,給設定面板除錯用。 */
+  log: string[];
+}
+
+export interface VoiceTranscript { text: string; audioMs: number; durationMs: number }
+
+/**
+ * 語音播報的通知(Phase 2a),主行程只推給桌面畫面。
+ * done:桌面發起的回合正常完成,summary 是規則摘要(null 表示找不到適合念的句子,畫面改念固定的完成通知);
+ * failed:桌面發起的回合出錯、失聯,或排隊的指令被額度上限擋下;approval、question:節點在等使用者(不分來源)。
+ */
+export type SpeechNotice =
+  | { kind: 'done'; agentId: string; agentName: string; ts: number; taskId: string; summary: string | null }
+  | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota'; queuePaused: boolean; taskId?: string }
+  | { kind: 'approval' | 'question'; agentId: string; agentName: string; ts: number; requestId: string };
+
 /** preload 暴露給畫面的介面。 */
 export interface NexusApi {
+  /** 語音模式:只有桌面畫面能用;瀏覽器版的遠端介面回傳 state 為 unsupported。 */
+  voiceStatus(): Promise<VoiceStatus>;
+  voiceSet(patch: { enabled?: boolean; command?: string; model?: string; restart?: boolean }): Promise<VoiceStatus>;
+  /** wav 是 16 kHz、16-bit、單聲道的 WAV 檔內容。 */
+  voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript>;
+  onVoice(cb: (s: VoiceStatus) => void): () => void;
+  /** 語音播報的通知;只有桌面畫面收得到。 */
+  onSpeech(cb: (n: SpeechNotice) => void): () => void;
   getSnapshot(): Promise<Snapshot>;
   /** 一個節點的完整事件紀錄,用來重建對話。 */
   getHistory(id: string): Promise<NexusEvent[]>;

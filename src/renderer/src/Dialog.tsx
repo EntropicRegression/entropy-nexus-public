@@ -6,6 +6,7 @@ import { Portrait } from './Portrait';
 import { TerminalView } from './Terminal';
 import { QuestionPanel } from './Question';
 import { ForkPanel } from './Fork';
+import { MicButton } from './Voice';
 
 type Item =
   | { kind: 'user'; seq: number; text: string }
@@ -382,6 +383,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
         )}
         <div className={`dlg-input ${tall ? 'tall' : ''}`}>
           <button className="ghost attach" disabled={offline} onClick={() => void window.nexus.pickFiles().then(addFiles)} title="附加檔案或圖片(也可以把檔案拖進來,或在輸入框貼上截圖)">附加</button>
+          <MicButton disabled={offline} onText={t => setText(cur => (cur.trim() ? `${cur.trimEnd()} ${t}` : t))} onNote={setNote} />
           <textarea
             rows={1}
             value={text}

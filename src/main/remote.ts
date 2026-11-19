@@ -527,7 +527,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       case '/api/send':
         if (typeof b.text !== 'string' || !b.text.trim()) { json(res, 400, { error: '沒有內容' }); return; }
         mark(id, false);
-        await core.send(id, b.text.trim().slice(0, 20000), uploaded(b.images));
+        await core.send(id, b.text.trim().slice(0, 20000), uploaded(b.images), 'user', 'remote');
         break;
       case '/api/approve':
         if (!['allow', 'allow_session', 'deny'].includes(b.decision)) { json(res, 400, { error: '決定不正確' }); return; }
@@ -540,7 +540,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       case '/api/enqueue':
         if (typeof b.text !== 'string' || !b.text.trim()) { json(res, 400, { error: '沒有內容' }); return; }
         mark(id, true);
-        core.enqueue(id, b.text.trim().slice(0, 20000), uploaded(b.images));
+        core.enqueue(id, b.text.trim().slice(0, 20000), uploaded(b.images), 'remote');
         break;
       case '/api/cancelqueued': core.cancelQueued(id, String(b.queuedId ?? '')); break;
       case '/api/editqueued':

@@ -498,7 +498,7 @@ class ClaudeSession implements AdapterSession {
         if (this.interrupting) {
           this.interrupting = false;
           this.emit({ type: 'message', role: 'agent', text: '(已中斷)' });
-          this.emit({ type: 'state', state: 'idle', detail: '已中斷' });
+          this.emit({ type: 'state', state: 'idle', detail: '已中斷', outcome: 'interrupted' });
         } else if (m.is_error) {
           const reason = typeof m.result === 'string' && m.result ? m.result : String(m.subtype ?? '未知錯誤');
           this.emit({ type: 'error', message: reason.slice(0, 500) });
