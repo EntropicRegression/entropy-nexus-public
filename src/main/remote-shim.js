@@ -158,7 +158,7 @@
     sendReviewComments: 'sendReviewComments', requestReview: 'requestReview', worktreeStatus: 'worktreeStatus', mergeWorktree: 'mergeWorktree', openPullRequest: 'openPr',
     setQuotaStop: 'quotaStop', remoteStatus: 'remoteStatus', remoteSet: 'remoteSet', remoteNewCode: 'remoteNewCode', remoteRevoke: 'remoteRevoke', remotePairAccess: 'remotePairAccess', remoteSetDevice: 'remoteSetDevice', remoteAudit: 'remoteAudit',
     observeStatus: 'observeStatus', observeInstall: 'observeInstall', observeUninstall: 'observeUninstall', observeNewToken: 'observeNewToken', observeTakeover: 'observeTakeover',
-    openOldSession: 'openOldSession', forkAgent: 'forkAgent',
+    openOldSession: 'openOldSession', forkAgent: 'forkAgent', setChief: 'setChief',
   };
   const api = Object.fromEntries(Object.entries(METHODS).map(([name, method]) => [name, (...args) => call(method, ...args)]));
   Object.assign(api, {
@@ -172,6 +172,19 @@
     // 檔案總管在主控台那台電腦上,瀏覽器版不提供
     canReveal: async () => false,
     revealPath: async () => {},
+    // 語音模式只在主控台那台電腦的桌面畫面提供(伺服器端也不接受這組呼叫)
+    voiceStatus: async () => ({ enabled: false, command: '', defaultCommand: '', model: '', state: 'unsupported', detail: '瀏覽器版不提供語音模式', device: '', log: [], ttsDir: '', ttsModel: '', tts: { state: 'off', detail: '' } }),
+    voiceSet: async () => { throw new Error('瀏覽器版不提供語音模式'); },
+    voiceTranscribe: async () => { throw new Error('瀏覽器版不提供語音模式'); },
+    voiceTts: async () => null,
+    voiceCharacters: async () => [],
+    voiceProfile: async () => null,
+    voiceProfileSave: async () => { throw new Error('瀏覽器版不提供語音模式'); },
+    voiceProfileImport: async () => null,
+    voiceProfileAudio: async () => null,
+    onVoice: () => () => {},
+    // 語音播報只在主控台那台電腦的桌面畫面
+    onSpeech: () => () => {},
     onUpdate: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
   });
   // 權限要等配對確認後才知道,所以到 boot 讀完才凍結

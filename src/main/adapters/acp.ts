@@ -513,7 +513,7 @@ export class AcpSession implements AdapterSession {
     if (this.interrupting || reason === 'cancelled') {
       this.interrupting = false;
       this.emit({ type: 'message', role: 'agent', text: '(已中斷)' });
-      this.emit({ type: 'state', state: 'idle', detail: '已中斷' });
+      this.emit({ type: 'state', state: 'idle', detail: '已中斷', outcome: 'interrupted' });
     } else if (reason === 'end_turn') {
       this.emit({ type: 'state', state: 'idle', detail: '' });
     } else {

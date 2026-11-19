@@ -5,10 +5,10 @@ export type Backend = 'claude' | 'codex' | 'antigravity';
 /** 統一的七種狀態;三家 CLI 的事件都由轉接器翻譯成這一組。 */
 export type AgentState = 'idle' | 'planning' | 'working' | 'awaiting' | 'error' | 'lost' | 'sleeping';
 
-/** 主面板的五個區塊。 */
-export type Zone = 'standby' | 'planning' | 'active' | 'auth' | 'fault';
+/** 主面板的區塊。chief(總管)不對應任何狀態:被指定為總管的節點固定放在這裡。 */
+export type Zone = 'standby' | 'planning' | 'active' | 'auth' | 'fault' | 'chief';
 
-export const STATE_ZONE: Record<AgentState, Zone> = {
+export const STATE_ZONE: Record<AgentState, Exclude<Zone, 'chief'>> = {
   idle: 'standby',
   sleeping: 'standby',
   planning: 'planning',
@@ -96,7 +96,14 @@ export interface AgentInfo {
 }
 
 /** 排在節點佇列裡、還沒送出的一句指令。 */
-export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number }
+/**
+ * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
+ * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
+ */
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
+
+/** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
+export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
 export interface UsageWindow {
@@ -171,11 +178,14 @@ export interface TaskInfo {
   cost?: Spent;
   /** 檔案變更摘要;假資料節點或舊資料沒有這個欄位。 */
   changes?: TaskChanges | null;
+  /** 這個任務的指令是從哪裡送出的;舊資料沒有這個欄位。 */
+  source?: SpeechSource;
 }
 
 /** 轉接器送給核心服務的事件。 */
 export type AdapterEvent =
-  | { type: 'state'; state: AgentState; detail?: string }
+  /** outcome:回合是被中斷才回到待命的(包括後台自己取消),不是正常完成。 */
+  | { type: 'state'; state: AgentState; detail?: string; outcome?: 'interrupted' }
   | { type: 'message'; role: 'user' | 'agent'; text: string }
   | { type: 'tool'; phase: 'start' | 'end'; name: string; summary: string; detail?: string; failed?: boolean }
   /** 工具結果或 agent 產生的圖片。path 是本機檔案(工作目錄內或主控台的媒體資料夾),圖片內容不進事件紀錄。 */
@@ -256,6 +266,8 @@ export interface Snapshot {
   observed?: ObservedSession[];
   /** 只有遠端裝置拿到的快照才有:這支裝置的權限。 */
   access?: RemoteAccess;
+  /** 總管節點(主控語音模式):使用者對它說的話由它分派給其他節點;null 表示沒有指定。 */
+  chiefId: string | null;
 }
 
 /**
@@ -315,11 +327,15 @@ export interface Update {
   observed?: ObservedSession;
   /** 外部觀察節點移除(session 結束、閒置太久或被接手)。 */
   observedRemovedId?: string;
+  /** 總管節點換了(null 表示解除)。 */
+  chiefId?: string | null;
 }
 
 export interface CreateAgentInput {
   /** 在獨立的 git worktree 與分支上工作。 */
   isolate?: boolean;
+  /** 建立後指定為總管節點。 */
+  chief?: boolean;
   name: string;
   character: string;
   model: string;
@@ -417,8 +433,78 @@ export interface RemoteStatus {
   error: string;
 }
 
+/**
+ * 語音模式(實驗性,Phase 1:按住說話轉成文字)。語音服務是主控台啟動的本機 Python 程式(tools/voice-server)。
+ * off:沒有啟用;starting:行程啟動中;warming:模型載入中;ready:可以錄音;error:啟動或載入失敗;
+ * unsupported:這個畫面不能用(瀏覽器版的遠端介面)。
+ */
+export type VoiceState = 'off' | 'starting' | 'warming' | 'ready' | 'error' | 'unsupported';
+
+export interface VoiceStatus {
+  enabled: boolean;
+  /** 使用者填的啟動指令;空字串表示用 defaultCommand。 */
+  command: string;
+  /** 找得到 tools/voice-server/server.py 時的預設啟動指令;找不到是空字串。 */
+  defaultCommand: string;
+  /** faster-whisper 模型名稱;空字串表示用服務的預設值(large-v3-turbo)。 */
+  model: string;
+  state: VoiceState;
+  /** 錯誤原因或補充說明。 */
+  detail: string;
+  /** 實際使用的裝置與精度,例如 cuda/int8_float16。 */
+  device: string;
+  /** 語音服務最近的輸出,給設定面板除錯用。 */
+  log: string[];
+  /** CosyVoice repo 資料夾;有填才啟用語音合成(Phase 3)。 */
+  ttsDir: string;
+  /** CosyVoice 2 模型資料夾;空字串表示 <ttsDir>/pretrained_models/CosyVoice2-0.5B。 */
+  ttsModel: string;
+  /** 語音合成的狀態:off 沒有設定、warming 載入中、ready 可以用、error 失敗(detail 是原因)。 */
+  tts: { state: 'off' | 'warming' | 'ready' | 'error'; detail: string };
+}
+
+export interface VoiceTranscript { text: string; audioMs: number; durationMs: number }
+
+/** 角色的聲音設定。ms 是參考錄音的長度。 */
+export interface VoiceProfile { hasVoice: boolean; ms: number; promptText: string; style: string }
+
+/**
+ * 語音播報的通知(Phase 2a),主行程只推給桌面畫面。
+ * done:桌面發起的回合正常完成,summary 是規則摘要(null 表示找不到適合念的句子,畫面改念固定的完成通知);
+ * failed:桌面發起的回合出錯、失聯,或排隊的指令被額度上限擋下;approval、question:節點在等使用者(不分來源)。
+ */
+export type SpeechNotice =
+  | { kind: 'done'; agentId: string; agentName: string; ts: number; taskId: string; summary: string | null }
+  | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota'; queuePaused: boolean; taskId?: string }
+  | { kind: 'approval' | 'question'; agentId: string; agentName: string; ts: number; requestId: string };
+
 /** preload 暴露給畫面的介面。 */
 export interface NexusApi {
+  /** 指定總管節點;null 表示解除。總管會收到額外的「總管守則」,負責把使用者交代的事分派給其他節點。 */
+  setChief(id: string | null): Promise<void>;
+  /** 語音模式:只有桌面畫面能用;瀏覽器版的遠端介面回傳 state 為 unsupported。 */
+  voiceStatus(): Promise<VoiceStatus>;
+  voiceSet(patch: { enabled?: boolean; command?: string; model?: string; ttsDir?: string; ttsModel?: string; restart?: boolean }): Promise<VoiceStatus>;
+  /**
+   * 用節點(或角色)的聲音合成一段話,回傳 WAV;語音合成沒有啟用、或這個角色沒有參考錄音(角色資料夾的 voice.wav)時回傳 null,
+   * 呼叫端改用系統語音。target 是節點 id,或 { character } 用來試聽。
+   */
+  voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null>;
+  /** 角色的聲音設定(角色資料夾的 voice.wav、voice.txt、style.txt);只有桌面畫面能用,瀏覽器版回傳 null。 */
+  voiceProfile(character: string): Promise<VoiceProfile | null>;
+  /** 儲存角色的聲音:wav 是新的參考錄音(16-bit WAV,2 到 30 秒;null 表示移除),promptText、style 空字串表示刪除。 */
+  voiceProfileSave(character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }): Promise<VoiceProfile>;
+  /** 從這台電腦選一個 WAV 檔當參考錄音(開檔案對話框);取消時回傳 null。 */
+  voiceProfileImport(character: string): Promise<VoiceProfile | null>;
+  /** 參考錄音的內容(播放原音用);沒有時回傳 null。 */
+  voiceProfileAudio(character: string): Promise<ArrayBuffer | null>;
+  /** 各角色有沒有參考錄音,給設定面板顯示。 */
+  voiceCharacters(): Promise<Array<{ character: string; hasVoice: boolean; style: string }>>;
+  /** wav 是 16 kHz、16-bit、單聲道的 WAV 檔內容。 */
+  voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript>;
+  onVoice(cb: (s: VoiceStatus) => void): () => void;
+  /** 語音播報的通知;只有桌面畫面收得到。 */
+  onSpeech(cb: (n: SpeechNotice) => void): () => void;
   getSnapshot(): Promise<Snapshot>;
   /** 一個節點的完整事件紀錄,用來重建對話。 */
   getHistory(id: string): Promise<NexusEvent[]>;

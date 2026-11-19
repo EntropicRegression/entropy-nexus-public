@@ -1,3 +1,6 @@
+import type { SpeechNotice } from '../../shared/types';
+import { speechUnits } from '../../shared/speech-summary';
+
 // 提示音:只在節點進入待授權或異常時響一聲,其他狀態保持安靜。
 let ctx: AudioContext | null = null;
 
@@ -52,26 +55,209 @@ export function speakable(text: string): string {
     .slice(0, 1500);
 }
 
-/** 念出一段回覆;前一段還沒念完會先停掉。onChange 回報是否正在朗讀,給停止鈕用。 */
-export function speak(text: string, onChange?: (speaking: boolean) => void): void {
+// ---------- 語音播報佇列(Phase 2a)
+// 主行程經 nexus:speech 送來通知,這裡排隊依序念出:授權與提問優先、不過期(播之前確認還在等);
+// 完成通知最多 5 則、超過 60 秒就丟掉、同一節點只留最新一則;故障同一節點 60 秒最多一次,
+// 最多同時排 2 則不同節點的故障,再多的只在第 2 則尾端補「另有其他節點異常」。
+// 每則都有逾時保護(系統語音偶爾不送結束事件),錄音時暫停,被錄音打斷的完成通知直接丟掉。
+
+const MAX_DONE = 5;
+const DONE_TTL = 60000;
+const FAIL_GAP = 60000;
+const MAX_FAILS = 2;
+
+interface Item { n: SpeechNotice; text: string; extra: boolean }
+
+let queue: Item[] = [];
+let playing: Item | null = null;
+let paused = false;
+let token = 0;
+let watchdog: number | null = null;
+const lastFail = new Map<string, number>();
+let pendingCheck: (n: SpeechNotice) => boolean = () => true;
+let onSpeaking: (speaking: boolean) => void = () => {};
+
+/** isPending:播之前確認這則還有意義(授權或提問還在等、故障還沒恢復)。onChange:是否正在念,給停止鈕用。 */
+export function initSpeech(opts: { isPending: (n: SpeechNotice) => boolean; onChange: (speaking: boolean) => void }): void {
+  pendingCheck = opts.isPending;
+  onSpeaking = opts.onChange;
+}
+
+function phrase(n: SpeechNotice): string {
+  switch (n.kind) {
+    case 'done': return n.summary ? `${n.agentName}:${n.summary}` : `${n.agentName} 完成了,詳情請看畫面。`;
+    case 'approval': return `${n.agentName} 在等你授權,請到畫面確認。`;
+    case 'question': return `${n.agentName} 有問題要問你,請到畫面回答。`;
+    case 'failed': {
+      const paused = n.queuePaused ? ',排隊的指令已暫停' : '';
+      if (n.reason === 'quota') return `${n.agentName} 的額度到達上限,排隊的指令已暫停。`;
+      return n.reason === 'lost' ? `${n.agentName} 失去連線${paused}。` : `${n.agentName} 出錯了${paused}。`;
+    }
+  }
+}
+
+const urgent = (n: SpeechNotice) => n.kind === 'approval' || n.kind === 'question';
+
+export function enqueueSpeech(n: SpeechNotice): void {
+  if (!isSpeakOn()) return;
+  const item: Item = { n, text: phrase(n), extra: false };
+  if (n.kind === 'approval' || n.kind === 'question') {
+    const same = (x: Item) => (x.n.kind === 'approval' || x.n.kind === 'question') && x.n.requestId === n.requestId;
+    if (playing && same(playing) || queue.some(same)) return;
+    // 插在其他等待中的授權與提問後面、一般通知前面
+    const at = queue.findIndex(x => !urgent(x.n));
+    if (at < 0) queue.push(item); else queue.splice(at, 0, item);
+  } else if (n.kind === 'done') {
+    queue = queue.filter(x => !(x.n.kind === 'done' && x.n.agentId === n.agentId));
+    queue.push(item);
+    const dones = queue.filter(x => x.n.kind === 'done');
+    if (dones.length > MAX_DONE) queue = queue.filter(x => x !== dones[0]);
+  } else {
+    const prev = lastFail.get(n.agentId) ?? 0;
+    const queuedSame = queue.findIndex(x => x.n.kind === 'failed' && x.n.agentId === n.agentId);
+    if (queuedSame >= 0) { queue[queuedSame] = { ...item, extra: queue[queuedSame].extra }; return; }
+    if (n.ts - prev < FAIL_GAP) return;
+    lastFail.set(n.agentId, n.ts);
+    const fails = queue.filter(x => x.n.kind === 'failed');
+    if (fails.length >= MAX_FAILS) {
+      const last = fails[fails.length - 1];
+      if (!last.extra) { last.extra = true; last.text = `${last.text.replace(/。$/, '')},另有其他節點異常。`; }
+      return;
+    }
+    queue.push(item);
+  }
+  pump();
+}
+
+function clearWatchdog(): void {
+  if (watchdog !== null) { clearTimeout(watchdog); watchdog = null; }
+}
+
+function pump(): void {
+  if (paused || playing) return;
+  const now = Date.now();
+  queue = queue.filter(x => x.n.kind !== 'done' || now - x.n.ts <= DONE_TTL);
+  while (queue.length) {
+    const next = queue.shift()!;
+    if (!pendingCheck(next.n)) continue;
+    play(next);
+    return;
+  }
+  onSpeaking(false);
+}
+
+/** 正在播放的合成語音(Phase 3:節點自己的聲音)。 */
+let audio: { el: HTMLAudioElement; url: string } | null = null;
+
+function stopAudio(): void {
+  if (!audio) return;
+  audio.el.onended = null;
+  audio.el.onerror = null;
+  audio.el.pause();
+  URL.revokeObjectURL(audio.url);
+  audio = null;
+}
+
+/** 先試節點自己的聲音(語音服務的語音合成),沒有啟用、這個角色沒有參考錄音、或失敗時改用系統語音。 */
+function play(item: Item): void {
+  playing = item;
+  const mine = ++token;
+  onSpeaking(true);
+  clearWatchdog();
+  // 合成本身也要有上限,太久就改用系統語音
+  const tooSlow = new Promise<null>(r => { watchdog = window.setTimeout(() => r(null), 15000); });
+  void Promise.race([window.nexus.voiceTts(item.n.agentId, item.text).catch(() => null), tooSlow]).then(buf => {
+    if (mine !== token) return;
+    clearWatchdog();
+    if (buf) playAudio(item, buf, mine); else playSystem(item, mine);
+  });
+}
+
+function finisher(mine: number): () => void {
+  return () => {
+    if (mine !== token) return;
+    clearWatchdog();
+    stopAudio();
+    playing = null;
+    pump();
+  };
+}
+
+function playAudio(item: Item, buf: ArrayBuffer, mine: number): void {
+  const finish = finisher(mine);
+  const url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  const el = new Audio(url);
+  audio = { el, url };
+  el.onended = finish;
+  el.onerror = () => { if (mine !== token) return; stopAudio(); playSystem(item, mine); };
+  el.onloadedmetadata = () => {
+    clearWatchdog();
+    if (Number.isFinite(el.duration)) watchdog = window.setTimeout(finish, el.duration * 1000 + 3000);
+  };
+  watchdog = window.setTimeout(finish, 30000);
+  // 自我檢查用:真的開始播放才記成 tts(被安全政策擋下或格式不支援時,會改用系統語音並記成 system)
+  const dbg = window as unknown as { __nexusSpokenLog?: string[]; __nexusSpokenVia?: string[] };
+  el.onplaying = () => { if (mine !== token) return; (dbg.__nexusSpokenLog ??= []).push(item.text); (dbg.__nexusSpokenVia ??= []).push('tts'); };
+  void el.play().catch(() => { if (mine !== token) return; stopAudio(); playSystem(item, mine); });
+}
+
+function playSystem(item: Item, mine: number): void {
+  const synth = window.speechSynthesis;
+  const finish = finisher(mine);
+  if (!synth) { finish(); return; }
+  const u = utterance(item.text);
+  u.onend = finish;
+  u.onerror = finish;
+  (window as unknown as { __nexusSpokenVia?: string[] }).__nexusSpokenVia ??= [];
+  (window as unknown as { __nexusSpokenVia: string[] }).__nexusSpokenVia.push('system');
+  // 系統語音偶爾不送結束事件:依長度估一個上限,時間到就停掉這則、換下一則
+  clearWatchdog();
+  watchdog = window.setTimeout(() => { if (mine === token) { synth.cancel(); finish(); } }, Math.min(25000, 3000 + speechUnits(item.text) * 320));
+  synth.speak(u);
+}
+
+/** 開始錄音:停掉正在念的;被打斷的完成通知直接丟掉,授權、提問與故障放回佇列開頭(錄完再確認一次)。 */
+export function pauseSpeech(): void {
+  paused = true;
+  if (!playing) return;
+  const cur = playing;
+  playing = null;
+  token++;
+  clearWatchdog();
+  stopAudio();
+  window.speechSynthesis?.cancel();
+  if (cur.n.kind !== 'done') queue.unshift(cur);
+  onSpeaking(false);
+}
+
+export function resumeSpeech(): void {
+  paused = false;
+  pump();
+}
+
+/** 停止朗讀:停掉正在念的,並清空還沒念的。 */
+export function stopSpeaking(): void {
+  queue = [];
+  playing = null;
+  token++;
+  clearWatchdog();
+  stopAudio();
+  window.speechSynthesis?.cancel();
+  onSpeaking(false);
+}
+
+/** 建立一段朗讀;有中文就挑台灣中文的語音,否則用英文。 */
+function utterance(text: string): SpeechSynthesisUtterance {
   const synth = window.speechSynthesis;
   const t = speakable(text);
-  if (!synth || !t) return;
-  synth.cancel();
   const u = new SpeechSynthesisUtterance(t);
-  // 有中文就挑台灣中文的語音,否則用英文
   const zh = /[一-鿿]/.test(t);
   const voices = synth.getVoices();
   u.voice = voices.find(v => (zh ? /^zh-TW/i : /^en/i).test(v.lang)) ?? voices.find(v => zh && /^zh/i.test(v.lang)) ?? null;
   u.lang = u.voice?.lang ?? (zh ? 'zh-TW' : 'en-US');
-  u.onstart = () => onChange?.(true);
-  u.onend = () => onChange?.(false);
-  u.onerror = () => onChange?.(false);
-  // 自我檢查用:記錄最後一次送去朗讀的文字與語音
-  (window as unknown as { __nexusSpoken?: { text: string; voice: string } }).__nexusSpoken = { text: t, voice: u.voice?.name ?? '' };
-  synth.speak(u);
-}
-
-export function stopSpeaking(): void {
-  window.speechSynthesis?.cancel();
+  // 自我檢查用:記錄送去朗讀的文字與語音
+  const dbg = window as unknown as { __nexusSpoken?: { text: string; voice: string }; __nexusSpokenLog?: string[] };
+  dbg.__nexusSpoken = { text: t, voice: u.voice?.name ?? '' };
+  (dbg.__nexusSpokenLog ??= []).push(t);
+  return u;
 }

@@ -4,6 +4,7 @@ import {
 } from '../../shared/types';
 import { HoverCard } from './Hover';
 import { ObservedRows, ObservePanel } from './Observe';
+import { VoicePanel } from './Voice';
 import { OldSessions } from './OldSessions';
 import { PersonaEditor } from './PersonaEditor';
 import { RemotePanel } from './Remote';
@@ -11,7 +12,7 @@ import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
 import { BoardScene } from './board';
-import { chime, isMuted, isSpeakOn, setMuted, setSpeakOn, speak, stopSpeaking } from './sound';
+import { chime, enqueueSpeech, initSpeech, isMuted, isSpeakOn, setMuted, setSpeakOn, stopSpeaking } from './sound';
 import { BACKEND_COLOR, STATE_COLOR, hex } from './theme';
 
 const MAX_EVENTS = 80;
@@ -28,6 +29,9 @@ export function App() {
   const [autopilot, setAutopilot] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  /** 新增節點面板是不是從總管區塊的「+」打開的(新增後指定為總管,也可以直接指定現有節點)。 */
+  const [addingChief, setAddingChief] = useState(false);
+  const [chiefId, setChiefId] = useState<string | null>(null);
   const [maxActive, setMaxActive] = useState(4);
   const [quotaStop, setQuotaStop] = useState(0);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -37,6 +41,7 @@ export function App() {
   const [showKeys, setShowKeys] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
   const [showObserve, setShowObserve] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
   const [observed, setObserved] = useState<Record<string, ObservedSession>>({});
   const [hover, setHover] = useState<{ id: string; x: number; y: number; side: 'right' | 'left' } | null>(null);
   const [muted, setMutedState] = useState(isMuted());
@@ -44,10 +49,29 @@ export function App() {
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
   const [speakOn, setSpeakOnState] = useState(isSpeakOn());
   const [speaking, setSpeaking] = useState(false);
+  // 語音播報播之前要用最新的節點狀態確認:授權或提問還在等、故障還沒恢復
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+  // 已經處理掉的授權與提問。播報通知可能比節點狀態的更新先到,所以用「是否已處理」判斷,不看畫面上的狀態
+  const resolvedRef = useRef(new Set<string>());
+
+  // 語音播報(Phase 2a):主行程判斷什麼時候該念、算好摘要,這裡排隊播放
+  useEffect(() => {
+    initSpeech({
+      onChange: setSpeaking,
+      isPending: n => {
+        const a = agentsRef.current[n.agentId];
+        if (n.kind === 'approval' || n.kind === 'question') return !resolvedRef.current.has(n.requestId) && (!a || a.state !== 'sleeping');
+        // 故障:剛發生的照念;排了一陣子才輪到的,節點已經恢復就不念
+        if (n.kind === 'failed' && n.reason !== 'quota' && Date.now() - n.ts > 3000) return !!a && (a.state === 'error' || a.state === 'lost');
+        return true;
+      },
+    });
+    return window.nexus.onSpeech(n => enqueueSpeech(n));
+  }, []);
 
   useEffect(() => {
     let alive = true;
-    const lastReply = new Map<string, string>();
     void window.nexus.getSnapshot().then(s => {
       if (!alive) return;
       setAgents(Object.fromEntries(s.agents.map(a => [a.id, a])));
@@ -56,6 +80,7 @@ export function App() {
       setAutopilot(s.autopilot);
       setMaxActive(s.maxActive);
       setQuotaStop(s.quotaStop);
+      setChiefId(s.chiefId ?? null);
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
@@ -70,16 +95,13 @@ export function App() {
       if (u.event) {
         const e = u.event;
         setEvents(prev => [...prev, e].slice(-MAX_EVENTS));
+        if (e.type === 'approval_resolved' || e.type === 'question_resolved') {
+          resolvedRef.current.add(e.requestId);
+          if (resolvedRef.current.size > 500) resolvedRef.current = new Set([...resolvedRef.current].slice(-200));
+        }
         // 提示音只留給待授權與異常
         if (e.type === 'state' && e.state === 'awaiting') chime('ask');
         else if (e.type === 'state' && (e.state === 'error' || e.state === 'lost')) chime('fault');
-        // 朗讀:記下這個回合最後一則回覆,回合結束(回到待命)時念出來;子代理不念
-        if (e.type === 'message') { if (e.role === 'agent') lastReply.set(e.agentId, e.text); else lastReply.delete(e.agentId); }
-        else if (e.type === 'state' && e.state === 'idle' && !u.agent?.parentId) {
-          const text = lastReply.get(e.agentId);
-          lastReply.delete(e.agentId);
-          if (text && isSpeakOn()) speak(text, setSpeaking);
-        }
       }
       if (u.maxActive !== undefined) setMaxActive(u.maxActive);
       if (u.quotaStop !== undefined) setQuotaStop(u.quotaStop);
@@ -87,6 +109,7 @@ export function App() {
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
+      if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
         const o = u.observed;
         // 外部節點進入待授權也響一聲;授權要到外部的終端機處理
@@ -168,10 +191,11 @@ export function App() {
         </label>
         <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="讓手機透過 Tailscale 連進來操作">手機</button>
         <button className={`ghost mute need-full ${showObserve ? 'on' : ''}`} onClick={() => setShowObserve(v => !v)} title="觀察在主控台以外執行的 Claude Code(hooks)">外部觀察</button>
+        <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音模式(實驗性):按住說話,轉成文字填進輸入框">語音</button>
         <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
         <button className={`ghost mute ${avatarsOn ? 'on' : ''}`} onClick={() => { localStorage.setItem('nexus.avatars', avatarsOn ? '0' : '1'); setAvatarsOn(!avatarsOn); }} title="在節點的六角形裡顯示角色的 Q 版頭像(角色資料夾裡的 avatar.png);關閉時顯示原本的六角形">{avatarsOn ? '頭像 開' : '頭像 關'}</button>
         <button className={`ghost mute ${muted ? '' : 'on'}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }} title="待授權與異常時的提示音">{muted ? '提示音 關' : '提示音 開'}</button>
-        <button className={`ghost mute ${speakOn ? 'on' : ''}`} onClick={() => { setSpeakOn(!speakOn); setSpeakOnState(!speakOn); if (speakOn) setSpeaking(false); }} title="回合完成時朗讀 agent 的最後一則回覆(略過程式碼)">{speakOn ? '朗讀 開' : '朗讀 關'}</button>
+        <button className={`ghost mute ${speakOn ? 'on' : ''}`} onClick={() => { setSpeakOn(!speakOn); setSpeakOnState(!speakOn); if (speakOn) setSpeaking(false); }} title="念出語音播報:你從桌面交辦的回合完成時念一句重點,節點等你授權、有問題要問你或出錯時提醒你">{speakOn ? '朗讀 開' : '朗讀 關'}</button>
         {speaking && <button className="ghost mute" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀">停止朗讀</button>}
         {caps.some(c => c.simulated) && (
           <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
@@ -183,6 +207,7 @@ export function App() {
 
       {showRemote && <RemotePanel onClose={() => setShowRemote(false)} />}
       {showObserve && <ObservePanel onClose={() => setShowObserve(false)} />}
+      {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
       {showKeys && (
         <div className="keys">
           <b>快捷鍵</b>
@@ -202,9 +227,9 @@ export function App() {
         </div>
       )}
       <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} onSelect={setSelectedId} onHover={h => setHover(h ? { ...h, side: 'right' } : null)} />
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={h => setHover(h ? { ...h, side: 'right' } : null)} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
         {hover && agents[hover.id] && hover.side === 'right' && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} side="right" />}
-        {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} />}
+        {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
         {showOld && <OldSessions onOpened={id => { setShowOld(false); setSelectedId(id); }} onClose={() => setShowOld(false)} />}
       </main>
@@ -228,7 +253,7 @@ export function App() {
           <ObservedRows list={Object.values(observed).sort((a, b) => a.startedAt - b.startedAt)} onOpened={setSelectedId} />
         </div>
         {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
-        {adding ? <AddNode caps={caps} agents={list} onDone={() => setAdding(false)} /> : (
+        {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>
             <button className="add old need-full" onClick={() => setShowOld(true)} title="接回終止過的節點,或三家 CLI 留在這台電腦上的舊對話">開啟舊 session</button>
@@ -270,33 +295,35 @@ function describe(e: NexusEvent): string {
 }
 
 /** PixiJS 主面板的 React 外殼。 */
-function Board({ agents, selectedId, avatars, onSelect, onHover }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void }) {
+function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
+  const addChiefRef = useRef(onAddChief);
+  addChiefRef.current = onAddChief;
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<BoardScene | null>(null);
-  const latest = useRef({ agents, selectedId, avatars });
-  latest.current = { agents, selectedId, avatars };
+  const latest = useRef({ agents, selectedId, avatars, chiefId });
+  latest.current = { agents, selectedId, avatars, chiefId };
 
   useEffect(() => {
     let dead = false;
-    const s = new BoardScene(onSelect, h => hoverRef.current(h));
+    const s = new BoardScene(onSelect, h => hoverRef.current(h), () => addChiefRef.current());
     void s.init(host.current!).then(() => {
       if (dead) { s.destroy(); return; }
       scene.current = s;
       s.setAvatars(latest.current.avatars);
-      s.sync(latest.current.agents, latest.current.selectedId);
+      s.sync(latest.current.agents, latest.current.selectedId, latest.current.chiefId);
     });
     return () => { dead = true; scene.current?.destroy(); scene.current = null; };
   }, [onSelect]);
 
-  useEffect(() => { scene.current?.sync(agents, selectedId); }, [agents, selectedId]);
+  useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
 
   return <div className="board" ref={host} />;
 }
 
-function AddNode({ caps, agents, onDone }: { caps: Capability[]; agents: AgentInfo[]; onDone: () => void }) {
+function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; agents: AgentInfo[]; chief?: boolean; onDone: () => void }) {
   const firstUsable = caps.find(c => c.available)?.backend ?? 'claude';
   const [name, setName] = useState('');
   const [character, setCharacter] = useState('');
@@ -323,15 +350,27 @@ function AddNode({ caps, agents, onDone }: { caps: Capability[]; agents: AgentIn
   const sameDir = cwd.trim() ? agents.filter(a => !a.parentId && norm(a.cwd) === norm(cwd)) : [];
   const create = async () => {
     try {
-      await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode });
+      await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode, ...(chief ? { chief: true } : {}) });
       onDone();
     } catch (e) {
       setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
     }
   };
+  const pickChief = async (id: string) => {
+    try { await window.nexus.setChief(id); onDone(); } catch (e) { setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+  };
+  const candidates = agents.filter(a => !a.parentId);
   return (
-    <div className="addform">
-      <div className="panel-title">新增節點</div>
+    <div className={`addform ${chief ? 'chief' : ''}`}>
+      <div className="panel-title">{chief ? '指定總管節點' : '新增節點'}</div>
+      {chief && <>
+        <p className="note">總管負責接收你交代的事(可以在它的對話視窗用語音說),判斷交給哪個節點,再用節點互相呼叫分派出去。建議用「每次詢問」模式:每次分派前會先問你。</p>
+        {candidates.length > 0 && <div className="chief-pick">
+          <span className="note">直接指定現有節點:</span>
+          {candidates.map(a => <button key={a.id} onClick={() => void pickChief(a.id)} title={`${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''}`}>{a.name}</button>)}
+        </div>}
+        <div className="note">或新增一個節點當總管:</div>
+      </>}
       <label>名稱<input value={name} onChange={e => setName(e.target.value)} placeholder="例如 Sirius" autoFocus /></label>
       <label>角色
         <span className="pick">
@@ -384,7 +423,7 @@ function AddNode({ caps, agents, onDone }: { caps: Capability[]; agents: AgentIn
       {error && <div className="form-error">{error}</div>}
       <div className="addform-actions">
         <button onClick={onDone}>取消</button>
-        <button className="primary" disabled={!name.trim() || !cwd.trim() || !cap?.available} onClick={() => void create()}>新增</button>
+        <button className="primary" disabled={!name.trim() || !cwd.trim() || !cap?.available} onClick={() => void create()}>{chief ? '新增並指定為總管' : '新增'}</button>
       </div>
     </div>
   );

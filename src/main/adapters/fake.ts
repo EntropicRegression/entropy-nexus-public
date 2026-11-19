@@ -120,7 +120,7 @@ class FakeSession implements AdapterSession {
     }
     this.busy = false;
     this.emit({ type: 'message', role: 'agent', text: '已中斷。' });
-    this.emit({ type: 'state', state: 'idle', detail: '已中斷' });
+    this.emit({ type: 'state', state: 'idle', detail: '已中斷', outcome: 'interrupted' });
   }
 
   respondApproval(requestId: string, decision: ApprovalDecision): void {

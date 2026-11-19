@@ -1,10 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ApprovalDecision, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, Update } from '../shared/types';
+import type { ApprovalDecision, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
-import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme } from './portraits';
+import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
 import { FILE_SCHEME, handleFileRequests, initMedia } from './media';
 import { Interop } from './interop';
 import { initProcs, reapStale } from './procs';
@@ -13,6 +13,7 @@ import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, r
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
+import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts } from './voice';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
 app.setPath('userData', process.env.NEXUS_DATA_DIR || join(app.getPath('appData'), 'entropy-nexus'));
@@ -66,13 +67,14 @@ function createWindow(): void {
  */
 type Methods = Record<string, (...args: any[]) => unknown>;
 
-function apiMethods(c: Core): Methods {
+/** source:這份方法表給誰用(桌面畫面或遠端),送出的指令記下來源,語音播報只念桌面發起的回合。 */
+function apiMethods(c: Core, source: SpeechSource): Methods {
   return {
     snapshot: () => ({ ...c.snapshot(), observed: observedList() }),
     history: (id: string) => c.history(id),
     create: (input: CreateAgentInput) => c.createAgent(input),
     remove: (id: string) => c.removeAgent(id),
-    send: (id: string, text: string, images?: string[]) => c.send(id, text, Array.isArray(images) ? images : []),
+    send: (id: string, text: string, images?: string[]) => c.send(id, text, Array.isArray(images) ? images : [], 'user', source),
     updateAgent: (id: string, patch: { name?: string; character?: string; model?: string }) => c.updateAgent(id, patch),
     savePastedImage: (mime: string, data: ArrayBuffer) => savePastedImage(mime, data),
     attachmentPreview: (path: string) => attachmentPreview(path),
@@ -83,7 +85,7 @@ function apiMethods(c: Core): Methods {
     termResize: (id: string, cols: number, rows: number) => c.termResize(id, cols, rows),
     approval: (id: string, requestId: string, decision: ApprovalDecision) => c.respondApproval(id, requestId, decision),
     interrupt: (id: string) => c.interrupt(id),
-    enqueue: (id: string, text: string, images?: string[]) => c.enqueue(id, text, Array.isArray(images) ? images : []),
+    enqueue: (id: string, text: string, images?: string[]) => c.enqueue(id, text, Array.isArray(images) ? images : [], source),
     cancelQueued: (id: string, queuedId: string) => c.cancelQueued(id, queuedId),
     editQueued: (id: string, queuedId: string, text: string) => c.editQueued(id, queuedId, text),
     resumeQueue: (id: string) => c.resumeQueue(id),
@@ -98,8 +100,8 @@ function apiMethods(c: Core): Methods {
     inspectDir: (cwd: string) => inspectDir(cwd),
     revertTask: (taskId: string, paths: string[] | null) => c.revertTask(taskId, paths),
     commitTask: (taskId: string, message: string) => c.commitTask(taskId, message),
-    sendReviewComments: (taskId: string, comments: ReviewComment[]) => c.sendReviewComments(taskId, Array.isArray(comments) ? comments : []),
-    requestReview: (taskId: string, reviewerId: string, note?: string) => c.requestReview(taskId, reviewerId, typeof note === 'string' ? note : ''),
+    sendReviewComments: (taskId: string, comments: ReviewComment[]) => c.sendReviewComments(taskId, Array.isArray(comments) ? comments : [], source),
+    requestReview: (taskId: string, reviewerId: string, note?: string) => c.requestReview(taskId, reviewerId, typeof note === 'string' ? note : '', source),
     worktreeStatus: (id: string) => c.worktreeStatus(id),
     mergeWorktree: (id: string) => c.mergeWorktree(id),
     openPr: (id: string) => c.openPullRequest(id),
@@ -121,6 +123,7 @@ function apiMethods(c: Core): Methods {
     getAvatar: (character: string) => avatarDataUrl(String(character ?? '')),
     getPersona: (character: string) => c.getPersona(String(character ?? '')),
     setPersona: (character: string, text: string) => c.setPersona(String(character ?? ''), String(text ?? '')),
+    setChief: (id: string | null) => c.setChief(typeof id === 'string' && id ? id : null),
   };
 }
 
@@ -138,10 +141,56 @@ function registerIpc(methods: Methods): void {
   // 拖放或貼上的檔案路徑由 preload 從 File 物件取得後登記,畫面本身不能指定任意路徑
   ipcMain.on('nexus:allowAttachment', (_e, path: string) => allowAttachments([path]));
   ipcMain.handle('nexus:openPortraits', async () => { await shell.openPath(portraitsDir()); });
+  // 語音模式:只給桌面畫面(不放進方法表,遠端的完整介面與手機都呼叫不到)
+  ipcMain.handle('nexus:voiceStatus', () => voiceStatus());
+  ipcMain.handle('nexus:voiceSet', (_e, patch) => voiceSet(patch && typeof patch === 'object' ? patch : {}));
+  ipcMain.handle('nexus:voiceTranscribe', (_e, wav: ArrayBuffer) => voiceTranscribe(wav));
+  ipcMain.handle('nexus:voiceTts', (_e, target: string | { character: string }, text: string) => voiceTts(target, String(text ?? '')));
+  ipcMain.handle('nexus:voiceCharacters', () => voiceCharacters());
+  // 角色的聲音:檔案都在主行程讀寫,畫面只送錄好的內容;選檔用主行程的對話框,畫面不能指定任意路徑
+  ipcMain.handle('nexus:voiceProfile', (_e, character: string) => voiceProfile(String(character ?? '')));
+  ipcMain.handle('nexus:voiceProfileSave', (_e, character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }) => {
+    const p = patch && typeof patch === 'object' ? patch : {};
+    saveVoice(String(character ?? ''), {
+      ...(p.wav === null ? { wav: null } : p.wav instanceof ArrayBuffer ? { wav: Buffer.from(p.wav) } : {}),
+      ...(typeof p.promptText === 'string' ? { promptText: p.promptText } : {}),
+      ...(typeof p.style === 'string' ? { style: p.style } : {}),
+    });
+    return voiceProfile(String(character ?? ''));
+  });
+  ipcMain.handle('nexus:voiceProfileImport', async (_e, character: string) => {
+    if (!win) return null;
+    const r = await dialog.showOpenDialog(win, { title: '選擇參考錄音', properties: ['openFile'], filters: [{ name: 'WAV 錄音', extensions: ['wav'] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    saveVoice(String(character ?? ''), { wav: readFileSync(r.filePaths[0]) });
+    return voiceProfile(String(character ?? ''));
+  });
+  ipcMain.handle('nexus:voiceProfileAudio', (_e, character: string) => { const b = voiceWav(String(character ?? '')); return b ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : null; });
   ipcMain.handle('nexus:pickDirectory', async () => {
     if (!win) return null;
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
     return r.canceled ? null : r.filePaths[0] ?? null;
+  });
+}
+
+/**
+ * 瀏覽器權限:Electron 預設全部放行,這裡改成只給需要的。
+ * 麥克風只給主視窗,而且只能要音訊(語音模式的按住說話);攝影機與其他權限一律拒絕。
+ * 複製到剪貼簿(程式碼區塊的複製按鈕)與全螢幕照常允許。
+ */
+function restrictPermissions(): void {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((wc, permission, cb, details) => {
+    if (permission === 'media') {
+      const types = (details as { mediaTypes?: string[] }).mediaTypes ?? [];
+      cb(!!win && wc === win.webContents && types.length > 0 && types.every(t => t === 'audio'));
+      return;
+    }
+    cb(permission === 'clipboard-sanitized-write' || permission === 'fullscreen');
+  });
+  ses.setPermissionCheckHandler((wc, permission, _origin, details) => {
+    if (permission !== 'media') return true;
+    return !!win && wc === win.webContents && (details as { mediaType?: string }).mediaType !== 'video';
   });
 }
 
@@ -247,9 +296,10 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     handleFileRequests(id => core?.agentCwd(id) ?? null);
     await core.init();
     if (core.isEmpty() && process.env.NEXUS_NO_SEED !== '1') core.seedDemo(app.getPath('home'));
-    const methods = apiMethods(core);
-    registerIpc(methods);
-    initRemote(core, store, dir, methods);
+    registerIpc(apiMethods(core, 'desktop'));
+    initRemote(core, store, dir, apiMethods(core, 'remote'));
+    // 語音播報(Phase 2a)只推給桌面畫面,不經 nexus:update(那條也會送到遠端與節點互相呼叫的服務)
+    core.setSpeech(n => win?.webContents.send('nexus:speech', n));
     // 外部觀察只推給桌面畫面;設定檔要等使用者在面板上按「安裝」才會修改
     initObserver(core, store, {
       push: u => { win?.webContents.send('nexus:update', u); remotePushFull(u); },
@@ -259,6 +309,12 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
         if (Notification.isSupported()) new Notification({ title, body, silent: true }).show();
       },
     });
+    // 語音模式(實驗性):狀態只推給桌面畫面;辨識時把節點名稱當提示詞,幫助辨識專有名詞
+    initVoice(store, s => win?.webContents.send('nexus:voice', s), () => {
+      const names = core?.snapshot().agents.filter(a => !a.parentId).map(a => a.name) ?? [];
+      return names.length ? `節點名稱:${names.join('、')}。` : '';
+    }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
+    restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);
     createWindow();
@@ -276,6 +332,6 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     stopRemote();
     stopObserver();
     interopRef?.stop();
-    void core.shutdown().finally(() => { store?.close(); app.quit(); });
+    void Promise.allSettled([stopVoice(), core.shutdown()]).finally(() => { store?.close(); app.quit(); });
   });
 }

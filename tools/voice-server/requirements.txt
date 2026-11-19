@@ -1,0 +1,6 @@
+faster-whisper>=1.1
+# 用 NVIDIA 顯示卡時(Windows):沒有另外安裝 CUDA Toolkit 與 cuDNN 的話,裝這兩個套件,服務會自動找到它們的 DLL
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12==9.*
+# 選用:把辨識結果轉成台灣用字的繁體中文
+# opencc-python-reimplemented
