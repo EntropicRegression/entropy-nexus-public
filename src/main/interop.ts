@@ -12,6 +12,7 @@ import type { Core } from './core';
  *   ask_node    把一段指令交給另一個節點,等它這個回合結束後拿回答覆
  *   wait_reply  ask_node 等太久先返回時,用它繼續等
  *   start_meeting 召開會議:主控台主持,參與的節點輪流發言幾輪,最後把完整紀錄交回召開者
+ *   meeting_say 會議中輪到主持人時,主持人用它發言(交給所有參與者,接著進行下一輪)或結束會議
  *
  * 設計:
  * - 每個節點有自己的網址(路徑裡帶一組亂數權杖),伺服器由權杖得知是誰在呼叫;只聽 127.0.0.1。
@@ -19,8 +20,10 @@ import type { Core } from './core';
  * - 防止互相呼叫成迴圈:被呼叫的節點如果正在(直接或間接)等呼叫者,就拒絕;呼叫鏈最多 MAX_DEPTH 層。
  * - 是否要使用者同意,跟著呼叫方節點的權限模式:「自動」直接送出,「每次詢問」先在呼叫方節點上跳授權。
  * - ask_node 最多等 WAIT_MS 就先返回(各家 CLI 對工具呼叫的逾時不同,有的只有一分鐘),之後用 wait_reply 接著等。
- * - 會議(start_meeting):召開者是主持人,自己不輪流發言(它的回合正卡在這個工具呼叫上),參與者是其他節點。
- *   主控台每一輪依序把「自己上次發言之後其他人說了什麼」交給下一位,每人一個回合;所有人在同一輪都表示沒有補充,或輪數用完就結束。
+ * - 會議(start_meeting):召開者是主持人,參與者是其他節點。主控台每一輪依序把「自己上次發言之後其他人說了什麼」交給下一位,每人一個回合。
+ *   預設(host_turns)每一輪結束、還有下一輪時,start_meeting / wait_reply 會返回「輪到主持人發言」,主持人用 meeting_say 發言
+ *   (下一輪的參與者會看到)或結束會議;同一輪所有參與者都表示沒有補充時也先交給主持人決定。主持人超過 MEETING_TURN_MS 沒有回應就散會。
+ *   host_turns 為 false 時主持人不發言:所有人在同一輪都表示沒有補充,或輪數用完就結束。
  *   「每次詢問」模式的召開者只在開會時問使用者一次,整場放行。每則發言即時記在召開者的對話裡,使用者看得到全程;
  *   中斷召開者(或它的回合結束)就散會,正在發言的節點也一併中斷。
  * - 被呼叫的節點照自己的權限模式與額度上限執行;送給它的指令前面會加一行,說明是哪個節點呼叫的、答覆會交還給誰。
@@ -32,7 +35,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -81,6 +84,12 @@ interface Meeting {
   /** 正在發言的節點那一回合的請求。 */
   current: Pending | null;
   waiters: Set<() => void>;
+  /** 每一輪之間是否輪到主持人發言。 */
+  hostTurns: boolean;
+  /** 正在等主持人發言(第 round 輪結束後);resolve(true) 表示結束會議。 */
+  hostTurn: { round: number; quiet: boolean; resolve: (end: boolean) => void } | null;
+  /** 主持人上次發言時的紀錄長度;輪到它時只給之後的新發言。 */
+  hostSeen: number;
 }
 
 const MEETING_MAX_ROUNDS = 6;
@@ -113,7 +122,7 @@ const TOOL_DEFS = [
   },
   {
     name: 'wait_reply',
-    description: 'ask_node 或 start_meeting 回傳「還在執行/進行中」時,用它繼續等結果。可以重複呼叫直到拿到結果。',
+    description: 'ask_node、start_meeting 或 meeting_say 回傳「還在執行/進行中」時,用它繼續等結果。可以重複呼叫直到拿到結果(會議輪到你發言時也會返回)。',
     inputSchema: {
       type: 'object',
       properties: { request_id: { type: 'string', description: 'ask_node 或 start_meeting 回傳的 request_id。' } },
@@ -123,15 +132,30 @@ const TOOL_DEFS = [
   },
   {
     name: 'start_meeting',
-    description: '召開一場會議,讓主控台面板上的幾個節點(其他 AI agent)針對一個主題輪流發言、互相回應,進行多輪討論。你是主持人:由你提出主題,主控台每一輪依序把其他人的發言交給下一位參與者,討論結束後把完整的會議紀錄交還給你,由你整理結論回報給使用者。適合需要多方意見、互相質疑或逐步收斂的問題;只想問一個節點一個問題時請用 ask_node。參與者看不到你的對話,所以 topic 要寫完整:背景、要討論的問題、希望得到什麼樣的結論。會議通常要幾分鐘,這個工具會先回傳 request_id,請接著呼叫 wait_reply 等到會議結束。',
+    description: '召開一場會議,讓主控台面板上的幾個節點(其他 AI agent)針對一個主題輪流發言、互相回應,進行多輪討論。你是主持人:由你提出主題,主控台每一輪依序把其他人的發言交給下一位參與者,討論結束後把完整的會議紀錄交還給你,由你整理結論回報給使用者。適合需要多方意見、互相質疑或逐步收斂的問題;只想問一個節點一個問題時請用 ask_node。參與者看不到你的對話,所以 topic 要寫完整:背景、要討論的問題、希望得到什麼樣的結論。預設每一輪結束(還有下一輪)時會輪到你發言:工具回傳「輪到你(主持人)發言」時,用 meeting_say 提問、回應或指定下一輪的重點,或結束會議。會議通常要幾分鐘,這個工具會先回傳 request_id,請接著呼叫 wait_reply 等到輪到你或會議結束。',
     inputSchema: {
       type: 'object',
       properties: {
         topic: { type: 'string', description: '會議主題與背景說明(完整寫出,參與者只看得到這段)。' },
         participants: { type: 'array', items: { type: 'string' }, description: '參與節點的名稱或 id(用 list_nodes 查),1 到 5 個,不含你自己。' },
-        rounds: { type: 'number', description: '最多討論幾輪(每輪每位參與者發言一次),1 到 6,預設 2。所有人都表示沒有補充時會提前結束。' },
+        rounds: { type: 'number', description: '最多討論幾輪(每輪每位參與者發言一次),1 到 6,預設 2。' },
+        host_turns: { type: 'boolean', description: '每一輪之間是否輪到你(主持人)發言,預設 true。設為 false 時你不發言,所有參與者同一輪都表示沒有補充就提前結束。' },
       },
       required: ['topic', 'participants'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'meeting_say',
+    description: '會議中輪到你(主持人)發言時使用(start_meeting 或 wait_reply 回傳「輪到你(主持人)發言」之後)。text 是你的發言:提問、回應、追問或指定下一輪要討論的重點,會交給所有參與者,接著進行下一輪;end 設為 true 則結束會議並拿回完整的會議紀錄(可以同時附上 text 當結語)。之後同樣用 wait_reply 等到下一次輪到你或會議結束。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        request_id: { type: 'string', description: 'start_meeting 回傳的 request_id(m 開頭)。' },
+        text: { type: 'string', description: '你的發言。' },
+        end: { type: 'boolean', description: '設為 true 結束會議。' },
+      },
+      required: ['request_id'],
       additionalProperties: false,
     },
   },
@@ -299,7 +323,15 @@ export class Interop {
           const raw = args.participants ?? args.nodes ?? args.members ?? args.attendees;
           const names = (Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[,、,\n]/) : []).map((x: unknown) => String(x).trim()).filter(Boolean);
           if (!topic || !names.length) throw new Error(`start_meeting 需要 topic(字串:會議主題與背景)與 participants(字串陣列:參與節點的名稱或 id)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。請用正確的參數再呼叫一次。`);
-          return text(await this.startMeeting(callerId, topic, names, Number(args.rounds ?? args.max_rounds ?? 2)));
+          const hostTurns = ![false, 'false'].includes(args.host_turns ?? args.hostTurns);
+          return text(await this.startMeeting(callerId, topic, names, Number(args.rounds ?? args.max_rounds ?? 2), hostTurns));
+        }
+        if (params?.name === 'meeting_say') {
+          const rid = pick('request_id', 'requestId', 'meeting_id', 'id');
+          const say = pick('text', 'message', 'statement', 'content', 'prompt');
+          const end = args.end === true || args.end === 'true';
+          if (!rid || (!say && !end)) throw new Error(`meeting_say 需要 request_id(start_meeting 回傳的 m 開頭識別碼),以及 text(你的發言)或 end: true(結束會議)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。`);
+          return text(await this.meetingSay(callerId, rid, say, end));
         }
         return text(`沒有這個工具:${String(params?.name)}`, true);
       } catch (err) {
@@ -412,7 +444,7 @@ ${prompt}`);
 
   // ---------- 會議
 
-  private async startMeeting(callerId: string, topic: string, names: string[], rounds: number): Promise<string> {
+  private async startMeeting(callerId: string, topic: string, names: string[], rounds: number, hostTurns: boolean): Promise<string> {
     const core = this.core!;
     this.prune();
     const caller = this.agents().find(a => a.id === callerId);
@@ -436,12 +468,12 @@ ${prompt}`);
     const who = members.map(a => this.describe(a)).join('、');
     // 「每次詢問」模式:開會時問一次,整場放行
     if (caller.permissionMode !== 'auto') {
-      const decision = await core.requestApproval(callerId, '召開會議', `${members.map(a => a.name).join('、')}(最多 ${total} 輪):${topic.replace(/\s+/g, ' ').slice(0, 80)}`, `要召開一場會議,參與的節點:${who}。最多 ${total} 輪,每輪每個節點發言一次(各算一個回合,會用到它們的額度);允許後整場會議不再逐次詢問。\n\n主題:\n${topic}`);
+      const decision = await core.requestApproval(callerId, '召開會議', `${members.map(a => a.name).join('、')}(最多 ${total} 輪):${topic.replace(/\s+/g, ' ').slice(0, 80)}`, `要召開一場會議,參與的節點:${who}。最多 ${total} 輪,每輪每個節點發言一次(各算一個回合,會用到它們的額度)${hostTurns ? ',每輪之間由召開者主持發言' : ''};允許後整場會議不再逐次詢問。\n\n主題:\n${topic}`);
       if (decision === 'deny') throw new Error('使用者拒絕召開這場會議。');
     }
-    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set() };
+    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0 };
     this.meetings.set(m.id, m);
-    core.note(callerId, `會議開始(${m.id}):參與者 ${who};最多 ${total} 輪。中斷這個節點就會散會。`);
+    core.note(callerId, `會議開始(${m.id}):參與者 ${who};最多 ${total} 輪${hostTurns ? ',每輪之間輪到主持人發言' : ''}。中斷這個節點就會散會。`);
     void this.runMeeting(m, `${caller.name}(${BACKEND_LABEL[caller.backend]}${caller.model ? ` · ${caller.model}` : ''})`).catch(err => this.endMeeting(m, 'failed', String((err as Error)?.message ?? err)));
     return this.awaitMeeting(m);
   }
@@ -450,6 +482,7 @@ ${prompt}`);
   private async runMeeting(m: Meeting, host: string): Promise<void> {
     const core = this.core!;
     const roster = m.participants.map(x => x.name).join('、');
+    const hostNote = m.hostTurns ? `主持人「${m.callerName}」會在每一輪之間發言(追問、回應或指定下一輪的重點),它的發言也會轉給你。` : '';
     // 每位參與者已經看過紀錄的哪裡(自己的 session 記得之前的內容,只給新的)
     const seen = new Map<string, number>();
     for (let round = 1; round <= m.rounds && m.status === 'running'; round++) {
@@ -464,7 +497,7 @@ ${prompt}`);
         const news = m.transcript.slice(seen.get(part.id) ?? 0).filter(t => t.round > 0 && t.name !== part.name);
         seen.set(part.id, m.transcript.length);
         const prompt = [
-          `(主控台:這是一場由節點「${host}」召開的會議,不是使用者直接下的指令。參與者:${roster}。現在是第 ${round} 輪(最多 ${m.rounds} 輪),輪到你「${part.name}」發言;你的發言會記入會議紀錄,交給其他參與者與主持人。)`,
+          `(主控台:這是一場由節點「${host}」召開的會議,不是使用者直接下的指令。參與者:${roster}。現在是第 ${round} 輪(最多 ${m.rounds} 輪),輪到你「${part.name}」發言;你的發言會記入會議紀錄,交給其他參與者與主持人。${hostNote})`,
           round === 1 || !seen.has(`${part.id}:topic`) ? `【主題】\n${m.topic}` : '',
           news.length ? `【你上次發言之後,其他人的發言】\n${news.map(t => `◆ ${t.name}(第 ${t.round} 輪):\n${t.text}`).join('\n\n')}` : round === 1 ? '【目前還沒有人發言,由你先開始】' : '【你上次發言之後,沒有新的發言】',
           `【請你發言】針對主題與其他人的發言提出你的看法:同意什麼、不同意什麼、有什麼補充或疑問。請直接講重點,不要客套,也不要重複別人說過的內容。這是討論,除非主題明確要求,否則不要修改檔案。如果你認為已經沒有需要補充的,請在發言最後單獨一行寫「${NOTHING_TO_ADD}」。`,
@@ -489,9 +522,60 @@ ${prompt}`);
         this.record(m, round, part.name, said.slice(-MEETING_STATEMENT_MAX) || '(沒有文字發言)');
       }
       if (!spoke) { this.endMeeting(m, 'failed', '這一輪沒有任何參與者完成發言'); return; }
+      // 還有下一輪:交給主持人發言或結束(所有人都沒有補充時也由主持人決定)
+      if (m.hostTurns && round < m.rounds) {
+        const end = await this.hostTurn(m, round, nothing === spoke);
+        if (m.status !== 'running') return;
+        if (end) break;
+        continue;
+      }
       if (nothing === spoke) { this.record(m, 0, '主控台', `第 ${round} 輪所有人都表示沒有補充,提前結束。`); break; }
     }
     this.endMeeting(m, 'done', '');
+  }
+
+  /** 第 round 輪結束,等主持人用 meeting_say 發言;回傳是否結束會議。太久沒回應就結束。 */
+  private hostTurn(m: Meeting, round: number, quiet: boolean): Promise<boolean> {
+    return new Promise<boolean>(resolve => {
+      const timer = setTimeout(() => {
+        if (m.hostTurn?.round !== round) return;
+        this.record(m, 0, '主控台', `主持人超過 ${Math.round(MEETING_TURN_MS / 60000)} 分鐘沒有發言,會議結束。`);
+        m.hostTurn.resolve(true);
+      }, MEETING_TURN_MS);
+      m.hostTurn = { round, quiet, resolve: end => { clearTimeout(timer); m.hostTurn = null; resolve(end); } };
+      this.core?.note(m.callerId, `【會議 ${m.id}】第 ${round} 輪結束,輪到主持人發言。`);
+      for (const w of m.waiters) w();
+      m.waiters.clear();
+    });
+  }
+
+  private async meetingSay(callerId: string, requestId: string, text: string, end: boolean): Promise<string> {
+    this.prune();
+    const m = this.meetings.get(requestId.trim());
+    if (!m || m.callerId !== callerId) throw new Error(`找不到會議「${requestId}」(可能已經過期,或不是你召開的)。`);
+    if (m.status !== 'running') return this.awaitMeeting(m);
+    const turn = m.hostTurn;
+    if (!turn) throw new Error('現在還沒輪到主持人發言(參與者還在發言)。請用 wait_reply 等到工具回傳「輪到你(主持人)發言」。');
+    const said = text.trim();
+    if (said.length > MAX_PROMPT) throw new Error(`發言太長(上限 ${MAX_PROMPT} 字)。`);
+    if (said) this.record(m, turn.round, `${m.callerName}(主持人)`, said);
+    if (end) this.record(m, 0, '主控台', '主持人結束了會議。');
+    // 自己的發言不必再回給自己
+    m.hostSeen = m.transcript.length;
+    turn.resolve(end);
+    return this.awaitMeeting(m);
+  }
+
+  /** 輪到主持人時回給它的內容:上次發言之後的新發言,以及怎麼繼續。 */
+  private hostTurnText(m: Meeting): string {
+    const turn = m.hostTurn!;
+    let news = m.transcript.slice(m.hostSeen).map(t => (t.round > 0 ? `◆ ${t.name}(第 ${t.round} 輪):\n${t.text}` : `〔${t.name === '主控台' ? '' : `${t.name}:`}${t.text}〕`)).join('\n\n');
+    if (news.length > MAX_REPLY) news = `(太長,只保留最後一段)\n${news.slice(-MAX_REPLY)}`;
+    return [
+      `會議第 ${turn.round} 輪結束(最多 ${m.rounds} 輪),輪到你(主持人)發言。request_id:${m.id}${turn.quiet ? '\n這一輪所有參與者都表示沒有補充。' : ''}`,
+      `【你上次發言之後的新發言】\n${news || '(沒有新的發言)'}`,
+      `請呼叫 meeting_say,帶上 request_id「${m.id}」:\n- text:你的發言(提問、回應、追問或指定下一輪的重點),會交給所有參與者,接著進行第 ${turn.round + 1} 輪;\n- 或 end 設為 true:結束會議,拿回完整的會議紀錄。\n${Math.round(MEETING_TURN_MS / 60000)} 分鐘內沒有回應,會議會自動結束。`,
+    ].join('\n\n');
   }
 
   /** 記一則發言,並即時顯示在召開者的對話裡。 */
@@ -508,19 +592,21 @@ ${prompt}`);
     const cur = m.current;
     if (cur && cur.status === 'running') { this.core?.interrupt(cur.targetId); this.finish(cur, 'failed', '會議中止'); }
     m.current = null;
+    m.hostTurn?.resolve(true);
     this.core?.note(m.callerId, status === 'done' ? `會議結束(${m.id}),共 ${m.transcript.filter(t => t.round > 0).length} 則發言。` : `會議中止(${m.id}):${error}`);
     for (const w of m.waiters) w();
     m.waiters.clear();
   }
 
   private async awaitMeeting(m: Meeting): Promise<string> {
-    if (m.status === 'running') {
+    if (m.status === 'running' && !m.hostTurn) {
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); m.waiters.delete(done); resolve(); };
         const timer = setTimeout(done, WAIT_MS);
         m.waiters.add(done);
       });
     }
+    if (m.status === 'running' && m.hostTurn) return this.hostTurnText(m);
     const said = m.transcript.filter(t => t.round > 0).length;
     if (m.status === 'running') return `會議進行中(已經 ${Math.round((Date.now() - m.createdAt) / 1000)} 秒,目前 ${said} 則發言${m.current ? `,正在發言:${m.current.targetName}` : ''})。request_id:${m.id}\n請呼叫 wait_reply,帶上這個 request_id 繼續等會議結束;結束後會拿到完整的會議紀錄。`;
     let log = m.transcript.map(t => (t.round > 0 ? `◆ ${t.name}(第 ${t.round} 輪):\n${t.text}` : `〔${t.name === '主控台' ? '' : `${t.name}:`}${t.text}〕`)).join('\n\n');
