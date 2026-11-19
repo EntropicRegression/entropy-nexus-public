@@ -29,6 +29,9 @@ export function App() {
   const [autopilot, setAutopilot] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  /** 新增節點面板是不是從總管區塊的「+」打開的(新增後指定為總管,也可以直接指定現有節點)。 */
+  const [addingChief, setAddingChief] = useState(false);
+  const [chiefId, setChiefId] = useState<string | null>(null);
   const [maxActive, setMaxActive] = useState(4);
   const [quotaStop, setQuotaStop] = useState(0);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -77,6 +80,7 @@ export function App() {
       setAutopilot(s.autopilot);
       setMaxActive(s.maxActive);
       setQuotaStop(s.quotaStop);
+      setChiefId(s.chiefId ?? null);
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
@@ -105,6 +109,7 @@ export function App() {
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
+      if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
         const o = u.observed;
         // 外部節點進入待授權也響一聲;授權要到外部的終端機處理
@@ -222,9 +227,9 @@ export function App() {
         </div>
       )}
       <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} onSelect={setSelectedId} onHover={h => setHover(h ? { ...h, side: 'right' } : null)} />
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={h => setHover(h ? { ...h, side: 'right' } : null)} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
         {hover && agents[hover.id] && hover.side === 'right' && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} side="right" />}
-        {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} />}
+        {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
         {showOld && <OldSessions onOpened={id => { setShowOld(false); setSelectedId(id); }} onClose={() => setShowOld(false)} />}
       </main>
@@ -248,7 +253,7 @@ export function App() {
           <ObservedRows list={Object.values(observed).sort((a, b) => a.startedAt - b.startedAt)} onOpened={setSelectedId} />
         </div>
         {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
-        {adding ? <AddNode caps={caps} agents={list} onDone={() => setAdding(false)} /> : (
+        {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>
             <button className="add old need-full" onClick={() => setShowOld(true)} title="接回終止過的節點,或三家 CLI 留在這台電腦上的舊對話">開啟舊 session</button>
@@ -290,33 +295,35 @@ function describe(e: NexusEvent): string {
 }
 
 /** PixiJS 主面板的 React 外殼。 */
-function Board({ agents, selectedId, avatars, onSelect, onHover }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void }) {
+function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
+  const addChiefRef = useRef(onAddChief);
+  addChiefRef.current = onAddChief;
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<BoardScene | null>(null);
-  const latest = useRef({ agents, selectedId, avatars });
-  latest.current = { agents, selectedId, avatars };
+  const latest = useRef({ agents, selectedId, avatars, chiefId });
+  latest.current = { agents, selectedId, avatars, chiefId };
 
   useEffect(() => {
     let dead = false;
-    const s = new BoardScene(onSelect, h => hoverRef.current(h));
+    const s = new BoardScene(onSelect, h => hoverRef.current(h), () => addChiefRef.current());
     void s.init(host.current!).then(() => {
       if (dead) { s.destroy(); return; }
       scene.current = s;
       s.setAvatars(latest.current.avatars);
-      s.sync(latest.current.agents, latest.current.selectedId);
+      s.sync(latest.current.agents, latest.current.selectedId, latest.current.chiefId);
     });
     return () => { dead = true; scene.current?.destroy(); scene.current = null; };
   }, [onSelect]);
 
-  useEffect(() => { scene.current?.sync(agents, selectedId); }, [agents, selectedId]);
+  useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
 
   return <div className="board" ref={host} />;
 }
 
-function AddNode({ caps, agents, onDone }: { caps: Capability[]; agents: AgentInfo[]; onDone: () => void }) {
+function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; agents: AgentInfo[]; chief?: boolean; onDone: () => void }) {
   const firstUsable = caps.find(c => c.available)?.backend ?? 'claude';
   const [name, setName] = useState('');
   const [character, setCharacter] = useState('');
@@ -343,15 +350,27 @@ function AddNode({ caps, agents, onDone }: { caps: Capability[]; agents: AgentIn
   const sameDir = cwd.trim() ? agents.filter(a => !a.parentId && norm(a.cwd) === norm(cwd)) : [];
   const create = async () => {
     try {
-      await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode });
+      await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode, ...(chief ? { chief: true } : {}) });
       onDone();
     } catch (e) {
       setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
     }
   };
+  const pickChief = async (id: string) => {
+    try { await window.nexus.setChief(id); onDone(); } catch (e) { setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+  };
+  const candidates = agents.filter(a => !a.parentId);
   return (
-    <div className="addform">
-      <div className="panel-title">新增節點</div>
+    <div className={`addform ${chief ? 'chief' : ''}`}>
+      <div className="panel-title">{chief ? '指定總管節點' : '新增節點'}</div>
+      {chief && <>
+        <p className="note">總管負責接收你交代的事(可以在它的對話視窗用語音說),判斷交給哪個節點,再用節點互相呼叫分派出去。建議用「每次詢問」模式:每次分派前會先問你。</p>
+        {candidates.length > 0 && <div className="chief-pick">
+          <span className="note">直接指定現有節點:</span>
+          {candidates.map(a => <button key={a.id} onClick={() => void pickChief(a.id)} title={`${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''}`}>{a.name}</button>)}
+        </div>}
+        <div className="note">或新增一個節點當總管:</div>
+      </>}
       <label>名稱<input value={name} onChange={e => setName(e.target.value)} placeholder="例如 Sirius" autoFocus /></label>
       <label>角色
         <span className="pick">
@@ -404,7 +423,7 @@ function AddNode({ caps, agents, onDone }: { caps: Capability[]; agents: AgentIn
       {error && <div className="form-error">{error}</div>}
       <div className="addform-actions">
         <button onClick={onDone}>取消</button>
-        <button className="primary" disabled={!name.trim() || !cwd.trim() || !cap?.available} onClick={() => void create()}>新增</button>
+        <button className="primary" disabled={!name.trim() || !cwd.trim() || !cap?.available} onClick={() => void create()}>{chief ? '新增並指定為總管' : '新增'}</button>
       </div>
     </div>
   );

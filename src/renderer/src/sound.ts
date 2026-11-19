@@ -146,21 +146,70 @@ function pump(): void {
   onSpeaking(false);
 }
 
+/** 正在播放的合成語音(Phase 3:節點自己的聲音)。 */
+let audio: { el: HTMLAudioElement; url: string } | null = null;
+
+function stopAudio(): void {
+  if (!audio) return;
+  audio.el.onended = null;
+  audio.el.onerror = null;
+  audio.el.pause();
+  URL.revokeObjectURL(audio.url);
+  audio = null;
+}
+
+/** 先試節點自己的聲音(語音服務的語音合成),沒有啟用、這個角色沒有參考錄音、或失敗時改用系統語音。 */
 function play(item: Item): void {
-  const synth = window.speechSynthesis;
-  if (!synth) return;
   playing = item;
   const mine = ++token;
-  const finish = () => {
+  onSpeaking(true);
+  clearWatchdog();
+  // 合成本身也要有上限,太久就改用系統語音
+  const tooSlow = new Promise<null>(r => { watchdog = window.setTimeout(() => r(null), 15000); });
+  void Promise.race([window.nexus.voiceTts(item.n.agentId, item.text).catch(() => null), tooSlow]).then(buf => {
     if (mine !== token) return;
     clearWatchdog();
+    if (buf) playAudio(item, buf, mine); else playSystem(item, mine);
+  });
+}
+
+function finisher(mine: number): () => void {
+  return () => {
+    if (mine !== token) return;
+    clearWatchdog();
+    stopAudio();
     playing = null;
     pump();
   };
+}
+
+function playAudio(item: Item, buf: ArrayBuffer, mine: number): void {
+  const finish = finisher(mine);
+  const url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  const el = new Audio(url);
+  audio = { el, url };
+  el.onended = finish;
+  el.onerror = () => { if (mine !== token) return; stopAudio(); playSystem(item, mine); };
+  el.onloadedmetadata = () => {
+    clearWatchdog();
+    if (Number.isFinite(el.duration)) watchdog = window.setTimeout(finish, el.duration * 1000 + 3000);
+  };
+  watchdog = window.setTimeout(finish, 30000);
+  // 自我檢查用:真的開始播放才記成 tts(被安全政策擋下或格式不支援時,會改用系統語音並記成 system)
+  const dbg = window as unknown as { __nexusSpokenLog?: string[]; __nexusSpokenVia?: string[] };
+  el.onplaying = () => { if (mine !== token) return; (dbg.__nexusSpokenLog ??= []).push(item.text); (dbg.__nexusSpokenVia ??= []).push('tts'); };
+  void el.play().catch(() => { if (mine !== token) return; stopAudio(); playSystem(item, mine); });
+}
+
+function playSystem(item: Item, mine: number): void {
+  const synth = window.speechSynthesis;
+  const finish = finisher(mine);
+  if (!synth) { finish(); return; }
   const u = utterance(item.text);
   u.onend = finish;
   u.onerror = finish;
-  onSpeaking(true);
+  (window as unknown as { __nexusSpokenVia?: string[] }).__nexusSpokenVia ??= [];
+  (window as unknown as { __nexusSpokenVia: string[] }).__nexusSpokenVia.push('system');
   // 系統語音偶爾不送結束事件:依長度估一個上限,時間到就停掉這則、換下一則
   clearWatchdog();
   watchdog = window.setTimeout(() => { if (mine === token) { synth.cancel(); finish(); } }, Math.min(25000, 3000 + speechUnits(item.text) * 320));
@@ -175,6 +224,7 @@ export function pauseSpeech(): void {
   playing = null;
   token++;
   clearWatchdog();
+  stopAudio();
   window.speechSynthesis?.cancel();
   if (cur.n.kind !== 'done') queue.unshift(cur);
   onSpeaking(false);
@@ -191,6 +241,7 @@ export function stopSpeaking(): void {
   playing = null;
   token++;
   clearWatchdog();
+  stopAudio();
   window.speechSynthesis?.cancel();
   onSpeaking(false);
 }

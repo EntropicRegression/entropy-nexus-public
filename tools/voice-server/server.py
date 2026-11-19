@@ -1,4 +1,4 @@
-"""Entropy Nexus 語音服務(實驗性,Phase 1:只做語音轉文字)。
+"""Entropy Nexus 語音服務(實驗性):語音轉文字(Phase 1),以及選用的語音合成(Phase 3)。
 
 由主控台(src/main/voice.ts)啟動,用環境變數拿到設定:
   NEXUS_VOICE_PORT        要聆聽的連接埠(必要,主控台每次挑一個空的)
@@ -7,14 +7,19 @@
   NEXUS_VOICE_MODEL       faster-whisper 的模型名稱或資料夾,預設 large-v3-turbo
   NEXUS_VOICE_DEVICE      auto(預設)、cuda 或 cpu
   NEXUS_VOICE_COMPUTE     計算精度;預設 cuda 用 int8_float16,cpu 用 int8
+  NEXUS_VOICE_TTS_DIR     選用:CosyVoice repo 資料夾;有設定才啟用語音合成(見 tts_cosyvoice.py)
+  NEXUS_VOICE_TTS_MODEL   選用:CosyVoice 2 模型資料夾,預設 <repo>/pretrained_models/CosyVoice2-0.5B
 
 只用 Python 標準函式庫加 faster-whisper(numpy 是它的相依套件),不需要 FastAPI。
 只聽 127.0.0.1,而且只接受 Host 是 127.0.0.1 或 localhost 的請求,避免瀏覽器裡的網頁借道送請求進來。
 
 端點:
-  GET  /health      {"status": "warming_up" | "ready" | "error", "model", "device", "error", "pid"}
+  GET  /health      {"status": "warming_up" | "ready" | "error", "model", "device", "error", "pid",
+                     "tts": {"status": "off" | "warming_up" | "ready" | "error", "error", "sampleRate"}}
   POST /transcribe  內容是 16 kHz、16-bit、單聲道的 WAV;標頭 X-Voice-Prompt(URL 編碼)可帶提示詞,
                     例如節點名稱,幫助辨識專有名詞。回傳 {"text", "audioMs", "durationMs", "language"}
+  POST /tts         JSON {"text", "wav"(參考錄音的路徑), "promptText"(錄音的內容,可省略,省略時自動辨識), "style"(語氣指令,可省略)};
+                    回傳 16-bit 單聲道 WAV(取樣率見 health 的 tts.sampleRate),標頭 X-Voice-Ms 是合成耗時
 """
 from __future__ import annotations
 
@@ -42,12 +47,23 @@ ZH_HINT = "以下是台灣華語的句子,使用繁體中文。"
 
 state = {"status": "warming_up", "error": "", "device": "", "model": MODEL}
 model = None
+TTS_DIR = os.environ.get("NEXUS_VOICE_TTS_DIR", "").strip()
+if TTS_DIR:
+    # faster-whisper(CTranslate2)與 PyTorch 各帶一份 OpenMP(libiomp5md.dll),同一個行程同時載入時
+    # Intel OpenMP 會直接結束行程;這是兩者並用時的通行做法(實測辨識與合成結果正常)
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+TTS_MODEL = os.environ.get("NEXUS_VOICE_TTS_MODEL", "").strip() or (os.path.join(TTS_DIR, "pretrained_models", "CosyVoice2-0.5B") if TTS_DIR else "")
+tts_state = {"status": "warming_up" if TTS_DIR else "off", "error": "", "sampleRate": 0}
+tts = None
+# 參考錄音的內容文字(沒有 voice.txt 時自動辨識一次);鍵是 (路徑, 修改時間)
+prompt_cache: dict = {}
 lock = threading.Lock()  # 一次只跑一段辨識,避免同時佔用顯示卡
 
 try:  # 選用:pip install opencc-python-reimplemented
     from opencc import OpenCC  # type: ignore
 
-    _cc = OpenCC("s2twp")
+    # 只轉字形(s2tw),不換詞彙:s2twp 會把「通过」換成「透過」,在「測試通過」這類句子是錯的
+    _cc = OpenCC("s2tw")
     to_tw = _cc.convert
 except Exception:  # noqa: BLE001 沒裝就不轉
     to_tw = None
@@ -109,6 +125,68 @@ def load_model() -> None:
     except Exception as err:  # noqa: BLE001
         state.update(status="error", error=f"模型載入失敗:{err}")
         log(state["error"])
+
+
+def load_tts() -> None:
+    global tts
+    if not TTS_DIR:
+        return
+    try:
+        # python -I 不會把腳本所在的資料夾放進 sys.path
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        from tts_cosyvoice import CosyVoiceEngine
+
+        t0 = time.time()
+        tts = CosyVoiceEngine(TTS_DIR, TTS_MODEL)
+        tts_state.update(status="ready", error="", sampleRate=tts.sample_rate)
+        log(f"語音合成已載入(CosyVoice 2,{tts.device},{time.time() - t0:.1f} 秒)")
+    except Exception as err:  # noqa: BLE001
+        tts_state.update(status="error", error=f"語音合成載入失敗:{err}")
+        log(tts_state["error"])
+
+
+def to_wav(audio, rate: int) -> bytes:
+    import numpy as np
+
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def prompt_text_of(path: str) -> str:
+    """參考錄音說了什麼;CosyVoice 的 zero-shot 需要它。用 Whisper 辨識一次並快取。"""
+    key = (path, os.path.getmtime(path))
+    if key in prompt_cache:
+        return prompt_cache[key]
+    if model is None:
+        raise ValueError("參考錄音沒有附上內容文字(voice.txt),語音轉文字的模型也還沒載入")
+    with open(path, "rb") as f:
+        data = f.read()
+    text = transcribe(data, "")["text"]
+    prompt_cache[key] = text
+    log(f"參考錄音的內容:{text}")
+    return text
+
+
+def synthesize(body: dict) -> tuple[bytes, int]:
+    text = str(body.get("text") or "").strip()[:500]
+    ref = str(body.get("wav") or "")
+    if not text:
+        raise ValueError("沒有要念的文字")
+    if not ref.lower().endswith(".wav") or not os.path.isfile(ref):
+        raise ValueError("找不到參考錄音")
+    style = str(body.get("style") or "").strip()[:200]
+    prompt = str(body.get("promptText") or "").strip()[:500] or ("" if style else prompt_text_of(ref))
+    t0 = time.time()
+    audio, rate = tts.synth(text, ref, prompt, style)
+    return to_wav(audio, rate), round((time.time() - t0) * 1000)
 
 
 def read_wav(data: bytes):
@@ -175,12 +253,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed():
             return
         if self.path == "/health":
-            self.send_json(200, {**state, "pid": os.getpid()})
+            self.send_json(200, {**state, "pid": os.getpid(), "tts": tts_state})
         else:
             self.send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         if not self.allowed():
+            return
+        if self.path == "/tts":
+            self.do_tts()
             return
         if self.path != "/transcribe":
             self.send_json(404, {"error": "not found"})
@@ -201,6 +282,36 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as err:  # noqa: BLE001
             log("辨識失敗:", err)
             self.send_json(500, {"error": f"辨識失敗:{err}"})
+
+
+def _tts_handler(self) -> None:
+    if tts_state["status"] != "ready":
+        self.send_json(503, {"error": "語音合成沒有啟用" if tts_state["status"] == "off" else "語音合成還在載入" if tts_state["status"] == "warming_up" else tts_state["error"]})
+        return
+    size = int(self.headers.get("Content-Length") or 0)
+    if size <= 0 or size > 64 * 1024:
+        self.send_json(413, {"error": "請求太大"})
+        return
+    try:
+        body = json.loads(self.rfile.read(size).decode("utf-8"))
+        wav, ms = synthesize(body if isinstance(body, dict) else {})
+    except ValueError as err:
+        self.send_json(400, {"error": str(err)})
+        return
+    except Exception as err:  # noqa: BLE001
+        log("合成失敗:", err)
+        self.send_json(500, {"error": f"合成失敗:{err}"})
+        return
+    self.send_response(200)
+    self.send_header("Content-Type", "audio/wav")
+    self.send_header("Content-Length", str(len(wav)))
+    self.send_header("X-Voice-Ms", str(ms))
+    self.send_header("Cache-Control", "no-store")
+    self.end_headers()
+    self.wfile.write(wav)
+
+
+Handler.do_tts = _tts_handler  # type: ignore[attr-defined]
 
 
 def parent_alive(pid: int) -> bool:
@@ -249,7 +360,7 @@ def main() -> None:
         log(f"監看主控台行程 {PARENT}")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     log(f"聆聽 127.0.0.1:{PORT},載入模型 {MODEL}…")
-    threading.Thread(target=load_model, daemon=True).start()
+    threading.Thread(target=lambda: (load_model(), load_tts()), daemon=True).start()
     server.serve_forever()
 
 

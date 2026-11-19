@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { ApprovalDecision, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
-import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme } from './portraits';
+import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
 import { FILE_SCHEME, handleFileRequests, initMedia } from './media';
 import { Interop } from './interop';
 import { initProcs, reapStale } from './procs';
@@ -13,7 +13,7 @@ import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, r
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
-import { initVoice, stopVoice, voiceSet, voiceStatus, voiceTranscribe } from './voice';
+import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts } from './voice';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
 app.setPath('userData', process.env.NEXUS_DATA_DIR || join(app.getPath('appData'), 'entropy-nexus'));
@@ -123,6 +123,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     getAvatar: (character: string) => avatarDataUrl(String(character ?? '')),
     getPersona: (character: string) => c.getPersona(String(character ?? '')),
     setPersona: (character: string, text: string) => c.setPersona(String(character ?? ''), String(text ?? '')),
+    setChief: (id: string | null) => c.setChief(typeof id === 'string' && id ? id : null),
   };
 }
 
@@ -144,6 +145,27 @@ function registerIpc(methods: Methods): void {
   ipcMain.handle('nexus:voiceStatus', () => voiceStatus());
   ipcMain.handle('nexus:voiceSet', (_e, patch) => voiceSet(patch && typeof patch === 'object' ? patch : {}));
   ipcMain.handle('nexus:voiceTranscribe', (_e, wav: ArrayBuffer) => voiceTranscribe(wav));
+  ipcMain.handle('nexus:voiceTts', (_e, target: string | { character: string }, text: string) => voiceTts(target, String(text ?? '')));
+  ipcMain.handle('nexus:voiceCharacters', () => voiceCharacters());
+  // 角色的聲音:檔案都在主行程讀寫,畫面只送錄好的內容;選檔用主行程的對話框,畫面不能指定任意路徑
+  ipcMain.handle('nexus:voiceProfile', (_e, character: string) => voiceProfile(String(character ?? '')));
+  ipcMain.handle('nexus:voiceProfileSave', (_e, character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }) => {
+    const p = patch && typeof patch === 'object' ? patch : {};
+    saveVoice(String(character ?? ''), {
+      ...(p.wav === null ? { wav: null } : p.wav instanceof ArrayBuffer ? { wav: Buffer.from(p.wav) } : {}),
+      ...(typeof p.promptText === 'string' ? { promptText: p.promptText } : {}),
+      ...(typeof p.style === 'string' ? { style: p.style } : {}),
+    });
+    return voiceProfile(String(character ?? ''));
+  });
+  ipcMain.handle('nexus:voiceProfileImport', async (_e, character: string) => {
+    if (!win) return null;
+    const r = await dialog.showOpenDialog(win, { title: '選擇參考錄音', properties: ['openFile'], filters: [{ name: 'WAV 錄音', extensions: ['wav'] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    saveVoice(String(character ?? ''), { wav: readFileSync(r.filePaths[0]) });
+    return voiceProfile(String(character ?? ''));
+  });
+  ipcMain.handle('nexus:voiceProfileAudio', (_e, character: string) => { const b = voiceWav(String(character ?? '')); return b ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : null; });
   ipcMain.handle('nexus:pickDirectory', async () => {
     if (!win) return null;
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
@@ -291,7 +313,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     initVoice(store, s => win?.webContents.send('nexus:voice', s), () => {
       const names = core?.snapshot().agents.filter(a => !a.parentId).map(a => a.name) ?? [];
       return names.length ? `節點名稱:${names.join('、')}。` : '';
-    });
+    }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);

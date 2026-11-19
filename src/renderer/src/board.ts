@@ -7,7 +7,7 @@ const FONT = '"Segoe UI", "Microsoft JhengHei", sans-serif';
 const CELL_W = 124;
 const CELL_H = 96;
 const HEADER = 44;
-const ZONES: Zone[] = ['planning', 'active', 'standby', 'auth', 'fault'];
+const ZONES: Zone[] = ['planning', 'active', 'chief', 'standby', 'auth', 'fault'];
 
 interface Rect { x: number; y: number; w: number; h: number }
 
@@ -158,8 +158,28 @@ export class BoardScene {
   private avatars = new Map<string, Texture | null>();
   private avatarLoading = new Set<string>();
   private showAvatars = true;
+  /** 總管節點;沒有指定時總管區塊顯示「+」六角形。 */
+  private chiefId: string | null = null;
+  private addChief = new Container();
 
-  constructor(private onSelect: (id: string | null) => void, private onHover: (hover: { id: string; x: number; y: number } | null) => void = () => {}) {}
+  constructor(private onSelect: (id: string | null) => void, private onHover: (hover: { id: string; x: number; y: number } | null) => void = () => {}, private onAddChief: () => void = () => {}) {}
+
+  /** 總管區塊裡的「+」六角形:按下去開啟新增(或指定)總管節點。 */
+  private buildAddChief(): void {
+    const g = new Graphics();
+    g.poly(hexPoints(30)).fill({ color: COLOR.chief, alpha: 0.06 }).stroke({ width: 1.5, color: COLOR.chief, alpha: 0.7 });
+    g.moveTo(-10, 0).lineTo(10, 0).moveTo(0, -10).lineTo(0, 10).stroke({ width: 2.5, color: COLOR.chief, alpha: 0.9, cap: 'round' });
+    const label = new Text({ text: '指定總管', style: { fontFamily: FONT, fontSize: 12, fontWeight: '600', fill: COLOR.chief } });
+    label.anchor.set(0.5, 0);
+    label.position.set(0, 38);
+    this.addChief.addChild(g, label);
+    this.addChief.eventMode = 'static';
+    this.addChief.cursor = 'pointer';
+    this.addChief.hitArea = new Circle(0, 8, 44);
+    this.addChief.on('pointertap', e => { e.stopPropagation(); this.onAddChief(); });
+    this.addChief.on('pointerover', () => { g.alpha = 1; label.alpha = 1; this.addChief.scale.set(1.06); });
+    this.addChief.on('pointerout', () => { this.addChief.scale.set(1); });
+  }
 
   async init(host: HTMLElement): Promise<void> {
     await this.app.init({
@@ -179,7 +199,8 @@ export class BoardScene {
       this.counts.set(z, count);
       this.app.stage.addChild(title, count);
     }
-    this.app.stage.addChild(this.nodeLayer);
+    this.buildAddChief();
+    this.app.stage.addChild(this.addChief, this.nodeLayer);
     this.app.stage.eventMode = 'static';
     this.app.stage.on('pointertap', () => this.onSelect(null));
     this.app.renderer.on('resize', () => this.layout());
@@ -194,7 +215,7 @@ export class BoardScene {
     this.ready = true;
     this.layout();
     // 自我檢查用:回報各節點在畫面上的位置
-    (window as unknown as Record<string, unknown>).__nexusBoard = { positions: () => [...this.nodes.values()].map(n => ({ id: n.id, x: n.root.x, y: n.root.y })), avatars: () => [...this.avatars].map(([c, t]) => [c, t !== null]) };
+    (window as unknown as Record<string, unknown>).__nexusBoard = { positions: () => [...this.nodes.values()].map(n => ({ id: n.id, x: n.root.x, y: n.root.y })), avatars: () => [...this.avatars].map(([c, t]) => [c, t !== null]), chiefPlus: () => ({ x: this.addChief.x, y: this.addChief.y, visible: this.addChief.visible }), rect: (z: Zone) => this.rects.get(z) };
   }
 
   destroy(): void {
@@ -228,9 +249,10 @@ export class BoardScene {
     return null;
   }
 
-  sync(agents: AgentInfo[], selectedId: string | null): void {
+  sync(agents: AgentInfo[], selectedId: string | null, chiefId: string | null = this.chiefId): void {
     this.agents = agents;
     this.selectedId = selectedId;
+    this.chiefId = chiefId;
     if (!this.ready) return;
     const alive = new Set(agents.map(a => a.id));
     for (const [id, view] of this.nodes) {
@@ -260,8 +282,11 @@ export class BoardScene {
     const restW = w - pad * 2 - gap - leftW;
     const authW = Math.round((restW - gap) * 0.5);
     const y2 = pad + topH + gap;
+    // 總管放在執行那一列的最右側,寬度約一個半節點
+    const chiefW = Math.max(170, Math.round(restW * 0.2));
     this.rects.set('planning', { x: pad, y: pad, w: leftW, h: topH });
-    this.rects.set('active', { x: pad + leftW + gap, y: pad, w: restW, h: topH });
+    this.rects.set('active', { x: pad + leftW + gap, y: pad, w: restW - gap - chiefW, h: topH });
+    this.rects.set('chief', { x: pad + leftW + gap + restW - chiefW, y: pad, w: chiefW, h: topH });
     this.rects.set('standby', { x: pad, y: y2, w: leftW, h: botH });
     this.rects.set('auth', { x: pad + leftW + gap, y: y2, w: authW, h: botH });
     this.rects.set('fault', { x: pad + leftW + gap + authW + gap, y: y2, w: restW - gap - authW, h: botH });
@@ -280,7 +305,7 @@ export class BoardScene {
       this.frames.poly([
         r.x, r.y, r.x + r.w - cut, r.y, r.x + r.w, r.y + cut,
         r.x + r.w, r.y + r.h, r.x + cut, r.y + r.h, r.x, r.y + r.h - cut,
-      ]).fill({ color: c, alpha: z === 'auth' || z === 'fault' ? 0.06 : 0.03 }).stroke({ width: 1.25, color: c, alpha: 0.55 });
+      ]).fill({ color: c, alpha: z === 'auth' || z === 'fault' || z === 'chief' ? 0.06 : 0.03 }).stroke({ width: z === 'chief' ? 1.5 : 1.25, color: c, alpha: z === 'chief' ? 0.75 : 0.55 });
       this.frames.moveTo(r.x + 14, r.y + 36).lineTo(r.x + r.w - 14, r.y + 36).stroke({ width: 1, color: c, alpha: 0.25 });
       this.frames.rect(r.x + 14, r.y + 15, 3, 13).fill({ color: c, alpha: 0.9 });
       this.titles.get(z)!.position.set(r.x + 24, r.y + 12);
@@ -312,7 +337,12 @@ export class BoardScene {
     // 子節點排在呼叫它的節點後面
     const rootTime = (a: AgentInfo) => this.agents.find(x => x.id === a.parentId)?.createdAt ?? a.createdAt;
     const ordered = [...this.agents].sort((p, q) => rootTime(p) - rootTime(q) || Number(Boolean(p.parentId)) - Number(Boolean(q.parentId)) || p.createdAt - q.createdAt);
-    for (const a of ordered) byZone.get(STATE_ZONE[a.state])!.push(a);
+    const chief = this.agents.find(a => a.id === this.chiefId && !a.parentId);
+    for (const a of ordered) byZone.get(a === chief ? 'chief' : STATE_ZONE[a.state])!.push(a);
+    // 沒有總管時顯示「+」六角形
+    const cr = this.rects.get('chief');
+    this.addChief.visible = !chief && !!cr;
+    if (cr) this.addChief.position.set(cr.x + cr.w / 2, cr.y + HEADER + (cr.h - HEADER) / 2 - 16);
     for (const z of ZONES) {
       const r = this.rects.get(z);
       const list = byZone.get(z)!;
@@ -326,6 +356,12 @@ export class BoardScene {
         if (Math.ceil(list.length / cols) * CELL_H * zoom <= room) break;
       }
       zoom = Math.max(zoom, 0.45);
+      // 總管只有一個:放在區塊正中間(和「+」同一個位置)
+      if (z === 'chief') {
+        const view = list[0] && this.nodes.get(list[0].id);
+        if (view) { view.zoom = 1; view.tx = r.x + r.w / 2; view.ty = r.y + HEADER + (r.h - HEADER) / 2 - 16; }
+        continue;
+      }
       list.forEach((a, i) => {
         const view = this.nodes.get(a.id);
         if (!view) return;

@@ -58,7 +58,7 @@ function Typed({ text }: { text: string }) {
 }
 
 /** 對話視窗:左側立繪,右側對話紀錄、工具活動、授權選項與輸入欄。 */
-export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onClose, onOpen }: { agent: AgentInfo; cap?: Capability; parentName: string; reviewTaskId: string | null; onReview: (taskId: string) => void; onClose: () => void; onOpen?: (agentId: string) => void }) {
+export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onClose, onOpen, isChief = false }: { agent: AgentInfo; cap?: Capability; parentName: string; reviewTaskId: string | null; onReview: (taskId: string) => void; onClose: () => void; onOpen?: (agentId: string) => void; isChief?: boolean }) {
   const isSub = a.parentId !== null;
   const [events, setEvents] = useState<NexusEvent[]>([]);
   const [liveFrom, setLiveFrom] = useState(Number.MAX_SAFE_INTEGER);
@@ -235,6 +235,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
       <div className="dlg-main">
         <header className="dlg-id">
           <b>{a.name}</b>
+          {isChief && <span className="tag-chief" title="總管節點:你交代的事由它判斷交給哪個節點(對它用語音說話就等於全域語音)">總管</span>}
           <span className="muted">{isSub ? `子代理 · 由 ${parentName || '上層節點'} 呼叫` : `${BACKEND_LABEL[a.backend]}${a.simulated ? ' · 模擬' : ''}`}</span>
           {!isSub && a.model && <span className="tag-model" title="這個節點指定的模型">{a.model}</span>}
           <span className="muted path" title={a.cwd}>{a.cwd}</span>
@@ -246,6 +247,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
           {!isSub && <button className={`ghost need-full ${editing ? 'on' : ''}`} onClick={openSettings} title="修改名稱、角色或模型">設定</button>}
           {!isSub && <span className="need-full" title={forkWhy || '從目前的對話分支出新節點,之後兩邊各自發展'}><button className={`ghost ${forking ? 'on' : ''}`} disabled={forkWhy !== ''} onClick={() => setForking(v => !v)}>分支對話</button></span>}
           {!isSub && !a.simulated && <button className={`ghost need-full ${a.terminal ? 'on' : ''}`} disabled={busy} onClick={() => void toggleTerminal()} title="切換到原生 CLI 的終端機畫面,或回到對話模式">{a.terminal ? '回到對話' : '終端機'}</button>}
+          {isChief && <button className="ghost need-full" onClick={() => void window.nexus.setChief(null)} title="不再把這個節點當總管;它會收到通知,不再套用總管守則">解除總管</button>}
           <button className={`ghost ${raw ? 'on' : ''}`} onClick={() => setRaw(v => !v)} title="切換原始輸出">原始輸出</button>
           {isSub ? null : offline
             ? (a.terminal ? null : <button className="primary need-op" onClick={() => void window.nexus.wake(a.id)}>{a.state === 'lost' ? '重新連線' : '喚醒'}</button>)

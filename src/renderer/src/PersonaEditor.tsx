@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
+import { VoiceEditor } from './Voice';
 
 const clean = (e: unknown) => String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 
 /**
  * 角色卡的檢視與編輯:新增節點面板與對話視窗的「設定」共用。
  * 角色卡存在立繪資料夾的角色子資料夾裡,同一個角色的所有節點共用一份。
+ * 底下是同一個角色的聲音(語音播報用的參考錄音、錄音內容與語氣),也是同一個角色的節點共用。
  */
 export function PersonaEditor({ character }: { character: string }) {
   const [text, setText] = useState('');
@@ -27,6 +29,7 @@ export function PersonaEditor({ character }: { character: string }) {
   };
   const dirty = text.trim() !== saved;
   return (
+    <>
     <div className="persona-edit">
       <div className="persona-head">
         <span>角色卡 · {character}</span>
@@ -47,5 +50,7 @@ export function PersonaEditor({ character }: { character: string }) {
       )}
       {note && <span className="note">{note}</span>}
     </div>
+    <VoiceEditor character={character} />
+    </>
   );
 }

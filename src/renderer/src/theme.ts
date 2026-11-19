@@ -9,6 +9,7 @@ export const COLOR = {
   dim: 0x6f8f9c,
   warn: 0xffb020,
   bad: 0xff4d5e,
+  chief: 0x3ee68a,
 };
 
 export const BACKEND_COLOR: Record<Backend, number> = {
@@ -23,6 +24,7 @@ export const ZONE_COLOR: Record<Zone, number> = {
   active: COLOR.accent,
   auth: COLOR.warn,
   fault: COLOR.bad,
+  chief: COLOR.chief,
 };
 
 export const ZONE_TITLE: Record<Zone, string> = {
@@ -31,6 +33,7 @@ export const ZONE_TITLE: Record<Zone, string> = {
   standby: '待命 STANDBY',
   auth: '待授權 AUTH',
   fault: '異常 FAULT',
+  chief: '總管 COMMAND',
 };
 
 export const STATE_COLOR: Record<AgentState, number> = {

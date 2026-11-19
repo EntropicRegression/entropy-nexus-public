@@ -34,6 +34,7 @@ const api: NexusApi = {
   getAvatar: character => ipcRenderer.invoke('nexus:getAvatar', character),
   getPersona: character => ipcRenderer.invoke('nexus:getPersona', character),
   setPersona: (character, text) => ipcRenderer.invoke('nexus:setPersona', character, text),
+  setChief: id => ipcRenderer.invoke('nexus:setChief', id),
   clearFinishedTasks: () => ipcRenderer.invoke('nexus:clearTasks'),
   getTaskChanges: taskId => ipcRenderer.invoke('nexus:taskChanges', taskId),
   listOldSessions: () => ipcRenderer.invoke('nexus:oldSessions'),
@@ -66,6 +67,12 @@ const api: NexusApi = {
   voiceStatus: () => ipcRenderer.invoke('nexus:voiceStatus'),
   voiceSet: patch => ipcRenderer.invoke('nexus:voiceSet', patch),
   voiceTranscribe: wav => ipcRenderer.invoke('nexus:voiceTranscribe', wav),
+  voiceTts: (target, text) => ipcRenderer.invoke('nexus:voiceTts', target, text),
+  voiceCharacters: () => ipcRenderer.invoke('nexus:voiceCharacters'),
+  voiceProfile: character => ipcRenderer.invoke('nexus:voiceProfile', character),
+  voiceProfileSave: (character, patch) => ipcRenderer.invoke('nexus:voiceProfileSave', character, patch),
+  voiceProfileImport: character => ipcRenderer.invoke('nexus:voiceProfileImport', character),
+  voiceProfileAudio: character => ipcRenderer.invoke('nexus:voiceProfileAudio', character),
   onVoice: cb => {
     const listener = (_e: unknown, s: VoiceStatus) => cb(s);
     ipcRenderer.on('nexus:voice', listener);

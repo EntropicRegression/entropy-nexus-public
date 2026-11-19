@@ -78,6 +78,11 @@ button.ghost { border: none; background: none; padding: 2px 6px; color: var(--di
 
 .addform { border-top: 1px solid var(--line); padding-bottom: 12px; }
 .addform label { display: flex; flex-direction: column; gap: 4px; margin: 0 16px 10px; font-size: 12px; color: var(--dim); }
+.addform.chief .panel-title { color: #3ee68a; }
+.addform > .note { display: block; margin: 0 16px 10px; font-size: 12px; color: var(--dim); }
+.chief-pick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 16px 12px; }
+.chief-pick .note { width: 100%; font-size: 12px; color: var(--dim); }
+.chief-pick button { border-color: rgba(62, 230, 138, 0.5); }
 .addform input, .addform select { font: inherit; color: var(--text); background: rgba(6, 10, 18, 0.8); border: 1px solid var(--line); border-radius: 2px; padding: 5px 8px; min-width: 0; user-select: text; }
 .pick { display: flex; gap: 6px; }
 .pick input { flex: 1; }
@@ -129,6 +134,7 @@ button.ghost { border: none; background: none; padding: 2px 6px; color: var(--di
 .dlg-id { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line-soft); }
 .dlg-id b { font-size: 16px; letter-spacing: 0.5px; }
 .tag-auto { font: 600 11px var(--mono); color: var(--warn); border: 1px solid rgba(255, 176, 32, 0.5); padding: 0 6px; }
+.tag-chief { font: 600 11px var(--mono); color: #3ee68a; border: 1px solid rgba(62, 230, 138, 0.6); padding: 0 6px; }
 button.ghost.on { color: var(--accent); }
 .dlg-stream { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; user-select: text; }
 .hint { padding: 8px 0; }
@@ -426,6 +432,11 @@ button.mute { font-size: 12px; }
 .persona-head .spacer { flex: 1; }
 .persona-head button { flex: none; white-space: nowrap; }
 .persona-edit textarea { min-height: 96px; max-height: 260px; resize: vertical; padding: 6px 8px; font: 13px/1.45 var(--font); color: var(--text); background: rgba(6, 10, 18, 0.85); border: 1px solid var(--line); border-radius: 2px; user-select: text; }
+.voice-edit { margin-top: 0; background: rgba(62, 230, 138, 0.04); border-color: rgba(62, 230, 138, 0.25); }
+.voice-edit textarea { min-height: 44px; }
+.voice-actions { flex-wrap: wrap; gap: 6px; }
+.voice-label, .addform .voice-label { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.voice-label input { padding: 5px 8px; font: 13px var(--font); color: var(--text); background: rgba(6, 10, 18, 0.85); border: 1px solid var(--line); border-radius: 2px; }
 .dlg-inputwrap { display: flex; flex-direction: column; gap: 6px; }
 .dlg-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 2px 1px 8px; font: 12px var(--mono); border: 1px solid var(--line); background: rgba(63, 216, 230, 0.07); }
@@ -475,6 +486,10 @@ button.mute { font-size: 12px; }
 .observe-preview { max-height: 180px; overflow: auto; margin: 6px 0; padding: 8px; font: 11px var(--mono); color: var(--dim); background: rgba(0, 0, 0, 0.35); border: 1px solid var(--line-soft); white-space: pre; user-select: text; }
 .voice-field { width: 100%; box-sizing: border-box; margin: 4px 0 8px; font: 12px var(--mono); }
 .voice-log { max-height: 160px; white-space: pre-wrap; }
+.voice-chars { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.voice-char { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.voice-char > span { flex: 1; }
+.voice-char em { font-style: normal; font-size: 11px; }
 .observe-actions { display: flex; gap: 8px; margin: 10px 0 6px; }
 .observed { margin-top: 10px; padding-top: 6px; border-top: 1px dashed var(--line-soft); }
 .observed-title { margin-bottom: 4px; font: 600 11px var(--mono); letter-spacing: 2px; color: var(--dim); }

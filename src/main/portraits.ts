@@ -1,5 +1,5 @@
 import { nativeImage, net, protocol } from 'electron';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -59,7 +59,7 @@ export function portraitsDir(): string {
 export function listCharacters(): string[] {
   try {
     return readdirSync(root, { withFileTypes: true })
-      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name)))
+      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav'))))
       .map(d => d.name)
       .sort((a, b) => a.localeCompare(b));
   } catch {
@@ -167,4 +167,84 @@ export function handlePortraitRequests(): void {
     const file = find(character, mood) ?? find(character, 'neutral');
     return file ? net.fetch(pathToFileURL(file).toString()) : new Response('not found', { status: 404 });
   });
+}
+
+/**
+ * 角色的聲音(語音模式 Phase 3):角色資料夾裡的 voice.wav 是給語音合成模仿的參考錄音(建議 3 到 10 秒、單人、沒有背景音),
+ * voice.txt(選用)是這段錄音說的內容,沒有就由語音服務自己辨識;style.txt(選用)是語氣指令,例如「用活潑、甜美的語氣說」。
+ * 沒有 voice.wav 時回傳 null,播報改用系統語音。
+ */
+export function voiceOf(character: string): { wav: string; promptText: string; style: string } | null {
+  let c: string;
+  try { c = checkCharacter(character); } catch { return null; }
+  const wav = join(root, c, 'voice.wav');
+  if (!existsSync(wav)) return null;
+  const read = (f: string) => { const p = join(root, c, f); try { return existsSync(p) ? readFileSync(p, 'utf8').replace(/^﻿/, '').trim().slice(0, 500) : ''; } catch { return ''; } };
+  return { wav, promptText: read('voice.txt'), style: read('style.txt') };
+}
+
+const VOICE_MAX = 5 * 1024 * 1024;
+const VOICE_MAX_MS = 30000;
+
+/** 檢查參考錄音:要是 PCM 16-bit 的 WAV、單聲道或雙聲道、最長 30 秒。回傳長度(毫秒)。 */
+export function wavInfo(buf: Buffer): { ms: number; rate: number; channels: number } {
+  if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') throw new Error('不是 WAV 檔');
+  let fmt: { format: number; channels: number; rate: number; bits: number } | null = null;
+  let dataSize = -1;
+  for (let o = 12; o + 8 <= buf.length;) {
+    const id = buf.toString('ascii', o, o + 4);
+    const size = buf.readUInt32LE(o + 4);
+    if (id === 'fmt ' && o + 24 <= buf.length) fmt = { format: buf.readUInt16LE(o + 8), channels: buf.readUInt16LE(o + 10), rate: buf.readUInt32LE(o + 12), bits: buf.readUInt16LE(o + 22) };
+    if (id === 'data') { dataSize = Math.min(size, buf.length - o - 8); break; }
+    o += 8 + size + (size % 2);
+  }
+  if (!fmt || dataSize < 0) throw new Error('WAV 檔的格式不完整');
+  if (fmt.format !== 1 && fmt.format !== 0xfffe) throw new Error('只接受未壓縮的 PCM WAV');
+  if (fmt.bits !== 16) throw new Error(`只接受 16-bit 的 WAV(這個檔案是 ${fmt.bits}-bit)`);
+  if (fmt.channels < 1 || fmt.channels > 2 || fmt.rate < 8000) throw new Error('WAV 的聲道或取樣率不支援');
+  const ms = Math.round((dataSize / (fmt.channels * 2) / fmt.rate) * 1000);
+  return { ms, rate: fmt.rate, channels: fmt.channels };
+}
+
+/** 角色的聲音設定,給角色卡編輯器顯示。 */
+export function voiceProfile(character: string): { hasVoice: boolean; ms: number; promptText: string; style: string } {
+  const c = checkCharacter(character);
+  const v = voiceOf(c);
+  let ms = 0;
+  if (v) { try { ms = wavInfo(readFileSync(v.wav)).ms; } catch { /* 檔案壞了就當作長度不明 */ } }
+  return { hasVoice: !!v, ms, promptText: v?.promptText ?? '', style: v?.style ?? '' };
+}
+
+/** 參考錄音的內容,給畫面播放原音;沒有時回傳 null。 */
+export function voiceWav(character: string): Buffer | null {
+  const v = voiceOf(checkCharacter(character));
+  return v ? readFileSync(v.wav) : null;
+}
+
+/**
+ * 儲存角色的聲音設定。wav:新的參考錄音(null 表示移除錄音與錄音內容);promptText、style:空字串表示刪掉那個檔案。
+ * 沒提供的欄位不動。角色資料夾不存在時建立。
+ */
+export function saveVoice(character: string, patch: { wav?: Buffer | null; promptText?: string; style?: string }): void {
+  const c = checkCharacter(character);
+  const dir = join(root, c);
+  mkdirSync(dir, { recursive: true });
+  const put = (f: string, text: string) => {
+    const p = join(dir, f);
+    const t = text.replace(/\r\n/g, '\n').trim().slice(0, 500);
+    if (t) writeFileSync(p, t, 'utf8'); else if (existsSync(p)) unlinkSync(p);
+  };
+  if (patch.wav === null) {
+    for (const f of ['voice.wav', 'voice.txt']) { const p = join(dir, f); if (existsSync(p)) unlinkSync(p); }
+  } else if (patch.wav) {
+    if (patch.wav.length > VOICE_MAX) throw new Error('錄音檔太大(上限 5 MB)');
+    const info = wavInfo(patch.wav);
+    if (info.ms < 2000) throw new Error('錄音太短,至少要 2 秒(建議 3 到 10 秒)');
+    if (info.ms > VOICE_MAX_MS) throw new Error('錄音太長,最多 30 秒(建議 3 到 10 秒)');
+    const tmp = join(dir, 'voice.wav.tmp');
+    writeFileSync(tmp, patch.wav);
+    renameSync(tmp, join(dir, 'voice.wav'));
+  }
+  if (typeof patch.promptText === 'string') put('voice.txt', patch.promptText);
+  if (typeof patch.style === 'string') put('style.txt', patch.style);
 }

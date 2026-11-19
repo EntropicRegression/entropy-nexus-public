@@ -41,6 +41,8 @@ export class Core {
   private sessions = new Map<string, AdapterSession>();
   /** 還沒告訴 agent 的變更(改名、換角色或角色卡被編輯),在下一則指令前面一起通知。 */
   private notices = new Map<string, Set<'name' | 'persona'>>();
+  /** 總管節點(主控語音模式);存在設定的 chief。 */
+  private chiefId: string | null = null;
   private capabilities = new Map<Backend, Capability>();
   private autopilot = true;
   private autopilotTimer: NodeJS.Timeout | null = null;
@@ -119,6 +121,8 @@ export class Core {
       const cwd = this.agents.get(t.agentId)?.cwd;
       if (cwd) this.taskCwd.set(t.id, cwd);
     }
+    const chief = this.store.getSetting('chief');
+    if (chief && this.agents.has(chief)) this.chiefId = chief;
     const stop = Number(this.store.getSetting('quotaStop'));
     if (Number.isInteger(stop) && stop >= 0 && stop <= 100) this.quotaStop = stop;
     const saved = Number(this.store.getSetting('maxActive'));
@@ -152,7 +156,26 @@ export class Core {
       usage: [...this.usage.values()],
       characters: listCharacters(),
       portraitsDir: portraitsDir(),
+      chiefId: this.chiefId,
     };
+  }
+
+  /**
+   * 指定總管節點(null 表示解除)。新舊總管都會在下一則指令前收到更新後的身分設定(總管守則加上或拿掉)。
+   * 只能指定面板上的最上層節點。
+   */
+  setChief(id: string | null): void {
+    const next = id && this.agents.get(id) && !this.agents.get(id)!.parentId ? id : null;
+    if (id && !next) throw new Error('找不到這個節點(子代理不能當總管)');
+    if (next === this.chiefId) return;
+    const prev = this.chiefId;
+    this.chiefId = next;
+    this.store.setSetting('chief', next ?? '');
+    for (const a of [prev, next]) if (a && this.agents.has(a)) {
+      this.addNotice(a, 'persona');
+      this.onAdapterEvent(a, { type: 'note', text: a === next ? '已指定為總管節點:使用者交代的事會由你判斷交給哪個節點。' : '已解除總管節點。' });
+    }
+    this.broadcast({ chiefId: next });
   }
 
   /** 這個 session 是不是面板上的節點;外部觀察用來排除主控台自己啟動的 CLI。 */
@@ -338,6 +361,8 @@ export class Core {
     }
     // 環境初始化做了什麼(複製的環境檔、連結的 node_modules、失敗項目)顯示在節點對話裡;分支時排在複製來的紀錄與分支說明之後
     if (setup) this.onAdapterEvent(agent.id, { type: 'note', text: setup });
+    // 要在啟動 session 之前指定,第一個身分設定就會帶著總管守則
+    if (input.chief) { this.chiefId = agent.id; this.store.setSetting('chief', agent.id); this.broadcast({ chiefId: agent.id }); }
     this.startSession(agent);
     return agent;
   }
@@ -364,6 +389,7 @@ export class Core {
     if (!this.agents.get(id)?.sessionId) removeMedia(id);
     this.store.markRemoved(id);
     this.agents.delete(id);
+    if (this.chiefId === id) { this.chiefId = null; this.store.setSetting('chief', ''); this.broadcast({ chiefId: null }); }
     this.broadcast({ removedId: id });
     this.schedulePump();
   }
@@ -429,7 +455,19 @@ export class Core {
   private persona(agent: AgentInfo): string {
     const name = `你在 Entropy Nexus 主控台中的名字是「${agent.name}」。使用者會用這個名字稱呼你;被問到你的名字或你是誰時,以這個名字回答。使用者之後可能替你改名,屆時會以「主控台通知」開頭的訊息告訴你,請以最新通知的名字為準。`;
     const card = this.personaCard(agent);
-    return card ? `${name}\n\n${card}` : name;
+    const parts = [name, this.chiefRules(agent), card].filter(Boolean);
+    return parts.join('\n\n');
+  }
+
+  /** 總管節點的工作守則;不是總管時回傳空字串。 */
+  private chiefRules(agent: AgentInfo): string {
+    if (agent.id !== this.chiefId) return '';
+    return `你是這個主控台的「總管」節點。使用者交代給你的事(常常是用語音說的、由語音辨識轉成的文字,可能有錯字或同音字)是要分派出去的工作:
+- 先用 list_nodes 看面板上有哪些節點、各自的後台、模型、狀態與工作目錄,再判斷這件事適合交給誰。使用者在句首直接叫了某個節點的名字(或聽起來像那個名字)時,就交給那個節點。
+- 用 ask_node 交辦。對方看不到你和使用者的對話,所以 prompt 要寫完整:背景、要做什麼、要讀的檔案(絕對路徑)、希望怎麼回覆。需要多方意見或討論時用 start_meeting。
+- 交辦之前,先用一句話說明你要交給誰、做什麼;判斷不出來、或指令聽起來不完整時,先問使用者,不要猜。
+- 除非使用者明確要你自己做,或沒有合適的節點,否則不要自己改檔案或執行指令。
+- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。`;
   }
 
   /** 角色卡包成一段有邊界的「主控台角色設定」,和使用者的指令分開;沒有角色卡時回傳空字串。 */
@@ -454,6 +492,8 @@ ${text}
     if (kinds.has('persona')) {
       const card = this.personaCard(agent);
       parts.push(card ? `(主控台通知:你的角色設定已更新,以下內容取代先前的角色設定。)\n${card}` : '(主控台通知:你的角色設定已移除,不再套用先前的角色設定。)');
+      const rules = this.chiefRules(agent);
+      parts.push(rules ? `(主控台通知:你已被指定為總管節點,以下守則取代先前的總管設定。)\n${rules}` : '(主控台通知:如果你先前是總管節點,現在已經解除,不再套用總管守則。)');
     }
     return `${parts.join('\n\n')}\n\n`;
   }

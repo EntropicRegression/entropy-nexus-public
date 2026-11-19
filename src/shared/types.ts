@@ -5,10 +5,10 @@ export type Backend = 'claude' | 'codex' | 'antigravity';
 /** 統一的七種狀態;三家 CLI 的事件都由轉接器翻譯成這一組。 */
 export type AgentState = 'idle' | 'planning' | 'working' | 'awaiting' | 'error' | 'lost' | 'sleeping';
 
-/** 主面板的五個區塊。 */
-export type Zone = 'standby' | 'planning' | 'active' | 'auth' | 'fault';
+/** 主面板的區塊。chief(總管)不對應任何狀態:被指定為總管的節點固定放在這裡。 */
+export type Zone = 'standby' | 'planning' | 'active' | 'auth' | 'fault' | 'chief';
 
-export const STATE_ZONE: Record<AgentState, Zone> = {
+export const STATE_ZONE: Record<AgentState, Exclude<Zone, 'chief'>> = {
   idle: 'standby',
   sleeping: 'standby',
   planning: 'planning',
@@ -266,6 +266,8 @@ export interface Snapshot {
   observed?: ObservedSession[];
   /** 只有遠端裝置拿到的快照才有:這支裝置的權限。 */
   access?: RemoteAccess;
+  /** 總管節點(主控語音模式):使用者對它說的話由它分派給其他節點;null 表示沒有指定。 */
+  chiefId: string | null;
 }
 
 /**
@@ -325,11 +327,15 @@ export interface Update {
   observed?: ObservedSession;
   /** 外部觀察節點移除(session 結束、閒置太久或被接手)。 */
   observedRemovedId?: string;
+  /** 總管節點換了(null 表示解除)。 */
+  chiefId?: string | null;
 }
 
 export interface CreateAgentInput {
   /** 在獨立的 git worktree 與分支上工作。 */
   isolate?: boolean;
+  /** 建立後指定為總管節點。 */
+  chief?: boolean;
   name: string;
   character: string;
   model: string;
@@ -449,9 +455,18 @@ export interface VoiceStatus {
   device: string;
   /** 語音服務最近的輸出,給設定面板除錯用。 */
   log: string[];
+  /** CosyVoice repo 資料夾;有填才啟用語音合成(Phase 3)。 */
+  ttsDir: string;
+  /** CosyVoice 2 模型資料夾;空字串表示 <ttsDir>/pretrained_models/CosyVoice2-0.5B。 */
+  ttsModel: string;
+  /** 語音合成的狀態:off 沒有設定、warming 載入中、ready 可以用、error 失敗(detail 是原因)。 */
+  tts: { state: 'off' | 'warming' | 'ready' | 'error'; detail: string };
 }
 
 export interface VoiceTranscript { text: string; audioMs: number; durationMs: number }
+
+/** 角色的聲音設定。ms 是參考錄音的長度。 */
+export interface VoiceProfile { hasVoice: boolean; ms: number; promptText: string; style: string }
 
 /**
  * 語音播報的通知(Phase 2a),主行程只推給桌面畫面。
@@ -465,9 +480,26 @@ export type SpeechNotice =
 
 /** preload 暴露給畫面的介面。 */
 export interface NexusApi {
+  /** 指定總管節點;null 表示解除。總管會收到額外的「總管守則」,負責把使用者交代的事分派給其他節點。 */
+  setChief(id: string | null): Promise<void>;
   /** 語音模式:只有桌面畫面能用;瀏覽器版的遠端介面回傳 state 為 unsupported。 */
   voiceStatus(): Promise<VoiceStatus>;
-  voiceSet(patch: { enabled?: boolean; command?: string; model?: string; restart?: boolean }): Promise<VoiceStatus>;
+  voiceSet(patch: { enabled?: boolean; command?: string; model?: string; ttsDir?: string; ttsModel?: string; restart?: boolean }): Promise<VoiceStatus>;
+  /**
+   * 用節點(或角色)的聲音合成一段話,回傳 WAV;語音合成沒有啟用、或這個角色沒有參考錄音(角色資料夾的 voice.wav)時回傳 null,
+   * 呼叫端改用系統語音。target 是節點 id,或 { character } 用來試聽。
+   */
+  voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null>;
+  /** 角色的聲音設定(角色資料夾的 voice.wav、voice.txt、style.txt);只有桌面畫面能用,瀏覽器版回傳 null。 */
+  voiceProfile(character: string): Promise<VoiceProfile | null>;
+  /** 儲存角色的聲音:wav 是新的參考錄音(16-bit WAV,2 到 30 秒;null 表示移除),promptText、style 空字串表示刪除。 */
+  voiceProfileSave(character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }): Promise<VoiceProfile>;
+  /** 從這台電腦選一個 WAV 檔當參考錄音(開檔案對話框);取消時回傳 null。 */
+  voiceProfileImport(character: string): Promise<VoiceProfile | null>;
+  /** 參考錄音的內容(播放原音用);沒有時回傳 null。 */
+  voiceProfileAudio(character: string): Promise<ArrayBuffer | null>;
+  /** 各角色有沒有參考錄音,給設定面板顯示。 */
+  voiceCharacters(): Promise<Array<{ character: string; hasVoice: boolean; style: string }>>;
   /** wav 是 16 kHz、16-bit、單聲道的 WAV 檔內容。 */
   voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript>;
   onVoice(cb: (s: VoiceStatus) => void): () => void;
