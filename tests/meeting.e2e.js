@@ -21,6 +21,7 @@
       ['T1', 'codex', 'auto'], ['T2', 'antigravity', 'auto'],
       ['Dis', 'claude', 'auto'], ['DP1', 'codex', 'auto'], ['DP2', 'antigravity', 'auto'],
       ['Brk', 'claude', 'auto'], ['BP1', 'codex', 'auto'], ['BP2', 'antigravity', 'auto'],
+      ['HP1', 'codex', 'auto'], ['HP2', 'antigravity', 'auto'], ['HN1', 'codex', 'auto'],
     ];
     const id = {};
     for (const [n, b, m] of spec) id[n] = (await mk(n, b, m)).id;
@@ -101,6 +102,15 @@
     // ---- 10. 忙碌略過
     ok((await meetPrompts('BP2')).length === 0, '忙碌的參與者沒有收到會議指令');
     ok((await notes('Brk')).some(t => t.includes('BP2') && t.includes('略過')), '召開者對話記了「略過」', (await notes('Brk')).join(' / '));
+    // ---- 11. 主持人發言
+    const hp1 = await meetPrompts('HP1'), hp2 = await meetPrompts('HP2');
+    ok(hp1.length === 2 && hp2.length === 2, '主持人在第 2 輪後結束:參與者各收到 2 次指令', `HP1=${hp1.length} HP2=${hp2.length}`);
+    ok(hp1[0]?.includes('主持人「Host」會在每一輪之間發言'), '主持人發言模式的指令有說明主持人會發言', hp1[0]);
+    ok(!p1[0]?.includes('主持人「'), 'host_turns: false 的會議沒有這段說明', p1[0]);
+    ok(hp1[1]?.includes('◆ Host(主持人)(第 1 輪):\nHOST-ASKS-R1') && hp1[1].includes('◆ HP2(第 1 輪):\nSAY-HP2-R1'), '第 2 輪 HP1 收到主持人與 HP2 的發言', hp1[1]);
+    ok(hp2[1]?.includes('HOST-ASKS-R1') && hp2[1].includes('SAY-HP1-R2') && !hp2[1].includes('SAY-HP1-R1'), '第 2 輪 HP2 收到主持人與 HP1 第 2 輪的發言', hp2[1]);
+    ok(hn.some(t => /^【會議 m\w+】第 1 輪結束,輪到主持人發言/.test(t)) && hn.some(t => /^【會議 m\w+\|第 1 輪\|Host\(主持人\)】\nHOST-ASKS-R1/.test(t)), '召開者對話有「輪到主持人發言」與主持人的發言', hn.join(' / '));
+    ok((await meetPrompts('HN1')).length === 1, '全部無補充、主持人結束後沒有第 2 輪');
     log(done ? '主控台端結束' : '等不到用戶端回報');
   } catch (err) {
     log('失敗', err.stack ?? err.message);

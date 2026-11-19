@@ -49,7 +49,7 @@ try {
   const t2 = Date.now();
   const m2 = await meet('Host', {
     topic: `請討論 MEETING-TOPIC-ONE。${script('P1=SAY-P1-R1|SAY-P1-R2|SAY-P1-R3', 'P2=SAY-P2-R1|SAY-P2-R2|SAY-P2-R3')}`,
-    participants: ['P1', 'P2'], rounds: 3,
+    participants: ['P1', 'P2'], rounds: 3, host_turns: false,
   });
   check('先回傳會議進行中與 m 開頭的 request_id', !m2.first.error && m2.first.text.includes('會議進行中') && /request_id:m\w+/.test(m2.first.text), m2.first.text);
   check('第一次回傳大約在 WAIT_MS(2.5 秒)', m2.polls >= 1, `polls=${m2.polls}`);
@@ -63,7 +63,7 @@ try {
   // ---- 5. 提前結束:所有人同一輪都回【無補充】
   const m5 = await meet('Host', {
     topic: `沒有什麼好講的。${script('N1=無補充。\\n【無補充】', 'N2=我也沒有。\\n【無補充】')}`,
-    participants: ['N1', 'N2'], rounds: 3,
+    participants: ['N1', 'N2'], rounds: 3, host_turns: false,
   });
   check('全部【無補充】時提前結束,紀錄有「提前結束」', !m5.error && m5.text.includes('提前結束') && m5.text.startsWith('會議結束。'), m5.text);
   check('提前結束時只有第一輪的 2 則發言', entries(m5.text).length === 2 && !m5.text.includes('(第 2 輪)'), m5.text);
@@ -71,7 +71,7 @@ try {
   // ---- 6. 每次詢問的召開者(授權由 e2e 回應,e2e 檢查授權次數與工具名稱)
   const m6 = await meet('Ask', {
     topic: `K-ALLOW 請討論。${script('Q1=SAY-Q1-R1|SAY-Q1-R2', 'Q2=SAY-Q2-R1|SAY-Q2-R2')}`,
-    participants: ['Q1', 'Q2'], rounds: 2,
+    participants: ['Q1', 'Q2'], rounds: 2, host_turns: false,
   });
   check('每次詢問的召開者經授權後開會成功', !m6.error && m6.text.startsWith('會議結束。') && entries(m6.text).length === 4, m6.text);
   const m6d = await call('Ask', 'start_meeting', { topic: '請拒絕這場會議', participants: ['R1'], rounds: 1 });
@@ -90,13 +90,40 @@ try {
   check('上一場結束後同一個召開者可以再開', !m7c.error && m7c.text.includes('◆ T2(第 1 輪):\nSAY-T2'), m7c.text);
 
   // ---- 9. 散會:e2e 看到會議開始就對 Dis 送一句短指令,它的回合結束(回到待命)時會議應中止
-  const m9 = await meet('Dis', { topic: '會被中途散會的會議', participants: ['DP1', 'DP2'], rounds: 3 });
+  const m9 = await meet('Dis', { topic: '會被中途散會的會議', participants: ['DP1', 'DP2'], rounds: 3, host_turns: false });
   check('召開者回合結束後 wait_reply 回「會議中止」', !m9.error && m9.text.startsWith('會議中止:') && m9.text.includes('召開會議的節點已經停下來'), m9.text);
   check('中止的會議紀錄裡沒有任何發言', entries(m9.text).length === 0, m9.text);
 
   // ---- 10. 參與者忙碌時該輪略過:e2e 看到會議開始就讓 BP2 停在等使用者回答(BP1 沒有腳本,要發言好幾秒,所以比 BP2 的檢查早)
   const m10 = await meet('Brk', { topic: '有人很忙的會議', participants: ['BP1', 'BP2'], rounds: 1 });
   check('參與者忙碌時該輪略過並記一則說明', !m10.error && m10.text.includes('BP2:(第 1 輪略過:') && entries(m10.text).length === 1 && entries(m10.text)[0].name === 'BP1', m10.text);
+
+  // ---- 11. 主持人發言(預設 host_turns):每輪之間輪到主持人,用 meeting_say 發言或結束
+  const HT = '輪到你(主持人)發言';
+  const h1 = await meet('Host', {
+    topic: `主持人會發言的會議 HOST-TOPIC。${script('HP1=SAY-HP1-R1|SAY-HP1-R2|SAY-HP1-R3', 'HP2=SAY-HP2-R1|SAY-HP2-R2|SAY-HP2-R3')}`,
+    participants: ['HP1', 'HP2'], rounds: 3,
+  });
+  check('第 1 輪結束後輪到主持人,附上兩人的發言', !h1.error && h1.text.includes('會議第 1 輪結束') && h1.text.includes(HT) && h1.text.includes('SAY-HP1-R1') && h1.text.includes('SAY-HP2-R1'), h1.text);
+  const hid = rid(h1.text);
+  check('輪到主持人時 wait_reply 立刻回同樣的提示', (await call('Host', 'wait_reply', { request_id: hid })).text.includes(HT));
+  check('別人不能用 meeting_say', (await call('HP1', 'meeting_say', { request_id: hid, text: 'x' })).error);
+  check('meeting_say 缺 text 與 end 回錯誤', (await call('Host', 'meeting_say', { request_id: hid })).error);
+  const h2say = await call('Host', 'meeting_say', { request_id: hid, text: 'HOST-ASKS-R1:請 HP1 說明理由' });
+  // 第 2 輪通常要超過 WAIT_MS 才講完;若已經又輪到主持人,這項沒辦法驗,視為通過
+  check('第 2 輪進行中時 meeting_say 回錯誤(還沒輪到主持人)', !h2say.text.includes('會議進行中') || (await call('Host', 'meeting_say', { request_id: hid, text: 'too-early' })).error, h2say.text);
+  const h2 = await finish('Host', h2say);
+  check('主持人發言後進行第 2 輪,再輪到主持人,只附新的發言', !h2.error && h2.text.includes('會議第 2 輪結束') && h2.text.includes('SAY-HP1-R2') && h2.text.includes('SAY-HP2-R2') && !h2.text.includes('SAY-HP1-R1') && !h2.text.includes('HOST-ASKS-R1'), h2.text);
+  const h3 = await finish('Host', await call('Host', 'meeting_say', { request_id: hid, text: 'HOST-CLOSING', end: true }));
+  check('end: true 結束會議並回完整紀錄(含主持人發言,沒有第 3 輪)', !h3.error && h3.text.startsWith('會議結束。') && h3.text.includes('◆ Host(主持人)(第 1 輪):\nHOST-ASKS-R1') && h3.text.includes('HOST-CLOSING') && h3.text.includes('主持人結束了會議') && !h3.text.includes('(第 3 輪)'), h3.text);
+  check('紀錄裡參與者發言 2 輪 × 2 人', entries(h3.text).map(x => `${x.name}${x.round}`).join() === 'HP11,HP21,HP12,HP22', entries(h3.text).map(x => `${x.name}${x.round}`).join());
+  check('會議結束後 meeting_say 回完整紀錄', (await call('Host', 'meeting_say', { request_id: hid, text: 'late' })).text.includes('【會議紀錄】'));
+
+  // ---- 12. 主持人發言模式下全部【無補充】:不自動結束,交給主持人決定
+  const q1 = await meet('Host', { topic: `沒什麼好講。${script('HN1=沒有。\\n【無補充】')}`, participants: ['HN1'], rounds: 3 });
+  check('全部【無補充】時仍輪到主持人,並註明沒有補充', !q1.error && q1.text.includes(HT) && q1.text.includes('所有參與者都表示沒有補充'), q1.text);
+  const q2 = await finish('Host', await call('Host', 'meeting_say', { request_id: rid(q1.text), end: true }));
+  check('主持人只用 end 結束(不附發言)', !q2.error && q2.text.startsWith('會議結束。') && entries(q2.text).length === 1 && !q2.text.includes('(主持人)('), q2.text);
 
   console.log(`[client] ${bad ? `有 ${bad} 項不符` : '用戶端全部通過'}`);
 } catch (err) {

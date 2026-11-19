@@ -238,7 +238,7 @@ class AntigravitySession implements AdapterSession {
     if (note) this.emit(note);
     body = withPaths(body, paths);
     const agy = this.opts.interop?.agy;
-    const hint = agy && this.hintInterop ? `(主控台工具:你可以用 call_mcp_tool 呼叫 MCP 伺服器「${agy.server}」的工具,把工作交給主控台面板上的其他節點或向它們提問:list_nodes 列出節點、ask_node 把指令交給某個節點並取回答覆(參數 node、prompt)、wait_reply 繼續等候(參數 request_id)、start_meeting 召開會議讓幾個節點多輪討論(參數 topic、participants、rounds)。使用者沒有要求時不必使用。)
+    const hint = agy && this.hintInterop ? `(主控台工具:你可以用 call_mcp_tool 呼叫 MCP 伺服器「${agy.server}」的工具,把工作交給主控台面板上的其他節點或向它們提問:list_nodes 列出節點、ask_node 把指令交給某個節點並取回答覆(參數 node、prompt)、wait_reply 繼續等候(參數 request_id)、start_meeting 召開會議讓幾個節點多輪討論(參數 topic、participants、rounds)、meeting_say 會議中輪到你主持發言或結束會議(參數 request_id、text、end)。使用者沒有要求時不必使用。)
 
 ` : '';
     this.hintInterop = false;
