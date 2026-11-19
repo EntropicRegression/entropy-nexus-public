@@ -1,0 +1,43 @@
+# 相依套件與建置產物
+node_modules/
+out/
+dist/
+release/
+*.tsbuildinfo
+
+# 測試與執行期資料
+.test-data/
+*.log
+*.db
+*.db-shm
+*.db-wal
+coverage/
+
+# 環境變數與憑證(不要提交任何金鑰)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# AI 工具與編輯器的本機設定
+.claude/
+.codex/
+.gemini/
+.agents/
+.codegraph/
+.vscode/
+.idea/
+*.iml
+
+# 作業系統
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 個人筆記與暫存
+*.local.md
+tmp/
+temp/

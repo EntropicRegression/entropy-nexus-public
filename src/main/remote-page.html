@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#060a12">
+<title>Entropy Nexus</title>
+<style>
+:root { --bg:#060a12; --panel:#0c1622; --line:rgba(63,216,230,.28); --soft:rgba(63,216,230,.12); --accent:#3fd8e6; --text:#d8f4f8; --dim:#7d9aa6; --warn:#ffb020; --bad:#ff4d5e; --ok:#4be08a; --mono:ui-monospace,"Cascadia Mono",Consolas,monospace; }
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body { margin:0; height:100%; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif; }
+body { display:flex; flex-direction:column; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+header { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); }
+header b { font:600 14px var(--mono); letter-spacing:3px; color:var(--accent); }
+.sp { flex:1; }
+#conn { font-size:12px; color:var(--dim); } #conn.on { color:var(--ok); } #conn.off { color:var(--bad); }
+.view { display:none; flex:1; min-height:0; flex-direction:column; } .view.show { display:flex; }
+.scroll { flex:1; min-height:0; overflow-y:auto; padding:12px 16px 20px; }
+nav { display:flex; border-top:1px solid var(--line); } nav.hide { display:none; }
+nav button { flex:1; border:none; border-radius:0; background:none; color:var(--dim); padding:12px 0; font-size:13px; }
+nav button.on { color:var(--accent); box-shadow:inset 0 2px 0 var(--accent); }
+nav button i { font-style:normal; margin-left:4px; padding:0 6px; border-radius:9px; background:var(--warn); color:#111; font-size:11px; }
+h2 { margin:18px 0 8px; font:600 12px var(--mono); letter-spacing:2px; color:var(--accent); } h2:first-child { margin-top:0; }
+button { font:inherit; color:var(--text); background:rgba(63,216,230,.07); border:1px solid var(--line); border-radius:3px; padding:10px 14px; min-height:44px; }
+button:active { background:rgba(63,216,230,.2); } button:disabled { opacity:.4; }
+button.pri { border-color:var(--accent); color:var(--accent); }
+button.warn { border-color:var(--warn); color:var(--warn); background:rgba(255,176,32,.1); }
+button.bad { border-color:rgba(255,77,94,.6); color:var(--bad); background:rgba(255,77,94,.07); }
+button.link { border:none; background:none; padding:6px 0; min-height:0; color:var(--accent); }
+button.sm { min-height:34px; padding:5px 10px; font-size:13px; }
+input,textarea,select { font:inherit; color:var(--text); background:#050910; border:1px solid var(--line); border-radius:3px; padding:10px 12px; width:100%; }
+label { display:block; margin:12px 0 4px; font-size:12px; color:var(--dim); }
+label.chk { display:flex; align-items:center; gap:8px; color:var(--text); font-size:14px; } label.chk input { width:auto; }
+.hint { font-size:12px; color:var(--dim); margin-top:4px; } .hint.w { color:var(--warn); }
+.card { display:flex; align-items:center; gap:12px; width:100%; margin-bottom:8px; padding:12px; text-align:left; background:var(--panel); border:1px solid var(--soft); border-left:3px solid var(--accent); border-radius:3px; }
+.card.awaiting { border-left-color:var(--warn); } .card.error,.card.lost { border-left-color:var(--bad); } .card.sleeping { opacity:.6; border-left-color:var(--dim); }
+.card.sub { margin-left:18px; width:calc(100% - 18px); padding:8px 12px; border-left-style:dashed; }
+.m { flex:1; min-width:0; } .n { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.d { font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.s { font-size:12px; color:var(--dim); white-space:nowrap; }
+.awaiting .s { color:var(--warn); } .error .s,.lost .s { color:var(--bad); }
+.task { display:block; width:100%; text-align:left; margin-bottom:8px; padding:10px 12px; background:var(--panel); border:1px solid var(--soft); border-left:3px solid var(--accent); border-radius:3px; font-size:13px; min-height:0; }
+.task.awaiting { border-left-color:var(--warn); } .task.failed { border-left-color:var(--bad); } .task.done,.task.interrupted { border-left-color:var(--dim); }
+.task .t { display:flex; justify-content:space-between; gap:8px; font-size:12px; color:var(--dim); }
+.task .t b { color:var(--accent); font-weight:600; } .task.awaiting .t b { color:var(--warn); } .task.failed .t b { color:var(--bad); } .task.done .t b,.task.interrupted .t b { color:var(--dim); }
+.task .ti { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.chip { display:inline-block; margin-top:4px; padding:1px 8px; font:12px var(--mono); color:var(--accent); border:1px solid var(--line); }
+.plus { color:var(--ok); } .minus { color:var(--bad); }
+.empty { color:var(--dim); font-size:13px; padding:8px 0; }
+.bar { display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--soft); }
+#log { flex:1; min-height:0; overflow-y:auto; padding:12px 16px; }
+.msg { margin-bottom:12px; overflow-wrap:anywhere; } .msg .w { display:block; font:600 11px var(--mono); color:var(--dim); margin-bottom:2px; }
+.msg.user { color:var(--accent); white-space:pre-wrap; }
+.msg p { margin:0 0 6px; white-space:pre-wrap; } .msg pre { margin:6px 0; padding:8px 10px; overflow-x:auto; background:#03070c; border:1px solid var(--soft); font:12px/1.5 var(--mono); }
+.msg code { padding:0 4px; font:13px var(--mono); color:#a8eef3; background:rgba(63,216,230,.1); }
+details.ln, .ln { margin:0 0 8px; font-size:12px; color:var(--dim); overflow-wrap:anywhere; }
+details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding:6px 8px; max-height:160px; overflow:auto; background:#03070c; border:1px solid var(--soft); font:11px/1.5 var(--mono); white-space:pre-wrap; color:var(--text); }
+.ln.err { color:var(--bad); } .ln.appr { color:var(--warn); } .ln.note { color:var(--accent); }
+.rimg { display:block; margin:4px 0 8px; } .rimg img { display:block; max-width:100%; max-height:260px; border:1px solid var(--soft); background:#03070c; }
+.rimg.fail { font:12px var(--mono); color:var(--dim); overflow-wrap:anywhere; } .rlink { display:block; margin:4px 0 8px; font-size:13px; color:var(--accent); }
+#lightbox { position:fixed; inset:0; z-index:10; display:none; align-items:center; justify-content:center; padding:12px; background:rgba(2,4,8,.92); } #lightbox img { max-width:100%; max-height:100%; object-fit:contain; }
+#act { padding:10px 16px; border-top:1px solid var(--soft); display:flex; flex-direction:column; gap:8px; }
+.box { padding:10px; border:1px solid rgba(255,176,32,.55); background:rgba(255,176,32,.07); border-radius:3px; }
+.box b { display:block; color:var(--warn); font-size:12px; letter-spacing:1px; margin-bottom:4px; }
+.what { font:13px var(--mono); overflow-wrap:anywhere; margin-bottom:8px; }
+.row { display:flex; gap:8px; flex-wrap:wrap; } .row > * { flex:1; }
+.opt.on { border-color:var(--warn); color:var(--warn); background:rgba(255,176,32,.16); }
+.send { display:flex; gap:8px; align-items:flex-end; } .send textarea { flex:1; min-height:44px; max-height:120px; resize:none; } .send button { flex:none; }
+.queue { display:flex; flex-direction:column; gap:6px; } .qi { display:flex; align-items:center; gap:6px; font-size:13px; } .qi .ti { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); } .qp { font-size:12px; color:var(--warn); display:flex; align-items:center; gap:8px; }
+.task.queued { border-left-style:dashed; } .task.queued .t b { color:var(--dim); }
+.files { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; } .files span { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:2px 2px 2px 2px; font:12px var(--mono); border:1px solid var(--line); }
+.files img, .files i { width:40px; height:40px; flex:none; object-fit:cover; display:inline-flex; align-items:center; justify-content:center; font:600 11px var(--mono); font-style:normal; color:var(--dim); background:rgba(0,0,0,.3); }
+.files b { font-weight:400; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .files em { flex:none; padding:0 4px; font-size:10px; font-style:normal; border:1px solid currentColor; } .files em.em { color:var(--accent); } .files em.po { color:var(--warn); }
+#menu { display:none; padding:10px 16px; border-bottom:1px solid var(--soft); background:var(--panel); } #menu.show { display:block; }
+.hp { margin:6px 0; } .hp .h { display:flex; justify-content:space-between; font-size:12px; color:var(--dim); } .hp .h b { font:600 12px var(--mono); }
+.hp .b { display:flex; gap:2px; height:9px; margin-top:3px; padding:2px; border:1px solid var(--soft); background:rgba(0,0,0,.4); } .hp .b i { flex:1; background:rgba(255,255,255,.06); transform:skewX(-18deg); }
+.hp.ok { --c:var(--ok); } .hp.low { --c:var(--warn); } .hp.crit { --c:var(--bad); } .hp.mp { --c:#5cb8ff; } .hp .h b { color:var(--c); } .hp .b i.on { background:var(--c); }
+.file { margin-bottom:8px; border:1px solid var(--soft); background:var(--panel); border-radius:3px; }
+.file summary { display:flex; align-items:center; gap:8px; padding:10px 12px; list-style:none; font:13px var(--mono); }
+.file summary em { font:12px -apple-system,sans-serif; font-style:normal; color:var(--accent); } .file.A summary em { color:var(--ok); } .file.D summary em { color:var(--bad); }
+.file summary .p { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+.diff { margin:0; padding:6px 0; overflow-x:auto; font:12px/1.5 var(--mono); border-top:1px solid var(--soft); }
+.diff span { display:block; padding:0 10px; min-width:max-content; white-space:pre; }
+.diff .i { background:rgba(75,224,138,.13); color:#b9f5d2; } .diff .r { background:rgba(255,77,94,.14); color:#ffc4ca; } .diff .h { color:var(--accent); background:rgba(63,216,230,.07); }
+#gate { padding:24px 20px; } #gate p { color:var(--dim); font-size:14px; } .f { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+.errtxt { color:var(--bad); font-size:13px; min-height:18px; }
+#toast { position:fixed; left:16px; right:16px; bottom:76px; padding:10px 12px; background:#0c1622; border:1px solid var(--line); border-radius:3px; font-size:13px; display:none; z-index:9; } #toast.bad { border-color:var(--bad); color:var(--bad); }
+/* 非完整權限的裝置:隱藏不能用的按鈕(真正的限制在伺服器) */
+.role-viewer #addbtn, .role-viewer #oldbtn, .role-operator #addbtn, .role-operator #oldbtn,
+.role-viewer #m-rename, .role-viewer #m-model, .role-viewer #m-persona, .role-viewer #m-merge, .role-viewer #m-remove,
+.role-operator #m-rename, .role-operator #m-model, .role-operator #m-persona, .role-operator #m-merge, .role-operator #m-remove,
+.role-viewer #c-commit, .role-viewer #c-revert, .role-viewer [data-rev], .role-operator #c-commit, .role-operator #c-revert, .role-operator [data-rev],
+.role-viewer #m-sleep, .role-viewer [data-qc], .role-viewer #act button, .role-viewer #act input, .role-viewer #act textarea, .role-viewer #act .files { display: none !important; }
+.role-viewer #act::after { content: '唯讀權限:只能觀看,不能下指令。'; display: block; padding: 10px 2px; font-size: 13px; color: var(--dim); }
+</style>
+</head>
+<body>
+<header><b>ENTROPY NEXUS</b><span class="sp"></span><span id="conn"></span></header>
+
+<section id="gate" style="display:none">
+  <h2>配對這支手機</h2>
+  <p>在電腦的主控台按頂部的「手機」,用相機掃描畫面上的 QR code,或把配對碼輸入下方。配對碼五分鐘內有效,只能用一次。</p>
+  <div class="f">
+    <input id="code" placeholder="配對碼" autocapitalize="characters" autocomplete="off">
+    <input id="devname" placeholder="這支裝置的名稱" value="我的手機">
+    <button class="pri" id="pairbtn">配對</button>
+    <div class="errtxt" id="pairerr"></div>
+  </div>
+</section>
+
+<section class="view" id="v-nodes"><div class="scroll" id="nodes"></div></section>
+<section class="view" id="v-tasks"><div class="scroll" id="tasks"></div></section>
+<section class="view" id="v-more"><div class="scroll" id="more"></div></section>
+<section class="view" id="v-detail">
+  <div class="bar"><button class="link" data-back>‹ 返回</button><div class="m"><div class="n" id="dn"></div><div class="d" id="dd"></div></div><span class="s" id="ds"></span><button class="sm" id="menubtn">⋯</button></div>
+  <div id="menu"></div>
+  <div id="log"></div>
+  <div id="act"></div>
+</section>
+<section class="view" id="v-sub">
+  <div class="bar"><button class="link" data-back>‹ 返回</button><div class="m"><div class="n" id="st"></div><div class="d" id="sd"></div></div></div>
+  <div class="scroll" id="sub"></div>
+</section>
+<nav id="nav"><button data-tab="nodes" class="on">節點<span id="badge"></span></button><button data-tab="tasks">任務</button><button data-tab="more">更多</button></nav>
+<div id="toast"></div>
+<div id="lightbox"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const STATE = { idle: '待命', planning: '規劃中', working: '執行中', awaiting: '待授權', error: '出錯', lost: '失聯', sleeping: '休眠' };
+  const TASK = { running: '執行中', awaiting: '待授權', done: '完成', failed: '失敗', interrupted: '已中斷' };
+  const BACKEND = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity' };
+  const ORDER = { awaiting: 0, error: 1, lost: 1, working: 2, planning: 2, idle: 3, sleeping: 4 };
+  const BUSY = ['planning', 'working', 'awaiting'];
+  let token = localStorage.getItem('nexus.token') || '';
+  let agents = {}, tasks = [], usage = [], settings = { maxActive: 4, quotaStop: 0 }, device = '', access = { role: 'full', agents: null };
+  let tab = 'nodes', current = null, events = [], live = '', picked = {}, files = [], stack = [], embedKinds = {};
+
+  const toast = (msg, bad) => { const t = $('toast'); t.textContent = msg; t.className = bad ? 'bad' : ''; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, bad ? 5000 : 2500); };
+  const api = async (path, body) => {
+    const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 401) { token = ''; localStorage.removeItem('nexus.token'); showGate('配對已失效,請重新配對。'); throw new Error('unauthorized'); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || '操作失敗');
+    return j;
+  };
+  // 會改變東西的操作:失敗時把原因顯示出來
+  const run = async (path, body, okMsg) => { try { const r = await api(path, body); if (okMsg) toast(okMsg); return r; } catch (e) { if (e.message !== 'unauthorized') toast(e.message, true); return null; } };
+  const k = n => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+  const hp = (label, remain, note, kind) => { const r = Math.max(0, Math.min(1, remain)), lit = Math.round(r * 20), lv = kind || (r > .5 ? 'ok' : r > .2 ? 'low' : 'crit'); return `<div class="hp ${lv}"><div class="h"><span>${esc(label)}${note ? ' · ' + esc(note) : ''}</span><b>${Math.round(r * 100)}%</b></div><div class="b">${Array.from({ length: 20 }, (_, i) => `<i class="${i < lit ? 'on' : ''}"></i>`).join('')}</div></div>`; };
+  const when = ts => { const d = new Date(ts * 1000); return (d.toDateString() === new Date().toDateString() ? '' : `${d.getMonth() + 1}/${d.getDate()} `) + d.toTimeString().slice(0, 5); };
+  const usageBars = backend => { const u = usage.find(x => x.backend === backend); if (!u) return ''; if (u.unsupported) return `<div class="hint">${BACKEND[backend]} 不提供剩餘額度</div>`; if (!u.windows.length) return '<div class="hint">尚未取得剩餘額度</div>'; return u.windows.map(w => hp(`${w.group && !w.label.includes(w.group) ? w.group + ' · ' : ''}${w.label}額度`, 1 - w.used, w.resetsAt ? when(w.resetsAt) + ' 重置' : '')).join(''); };
+  // 圖片:本機路徑經 /api/file 讀取(與桌面版相同的路徑限制),遠端圖片不自動載入,只給連結
+  const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+  const isLocalImage = s => s.length <= 400 && IMG_EXT.test(s) && !/[<>"|?*\n]|\]\(/.test(s) && (/^file:\/\//i.test(s) || (!/^[a-z][\w+.-]*:\/\//i.test(s) && (/[\\/]/.test(s) || !/\s/.test(s))));
+  const imgRef = (src, alt, quiet) => /^https?:\/\//i.test(src) ? `<a class="rlink" href="${esc(src)}" target="_blank" rel="noopener noreferrer">遠端圖片${alt ? '「' + esc(alt) + '」' : ''}(點開在瀏覽器檢視)</a>` : `<span class="rimg"${quiet ? ' data-quiet="1"' : ''} data-path="${esc(src)}"></span>`;
+  // 段落裡單獨成行、或以行內程式碼出現的圖片路徑,在段落下方附上預覽;路徑已經在文字裡,讀不到就不顯示
+  const bare = p => { const out = new Set(); for (const l of p.split('\n')) { const t = l.replace(/^\s*([-*•]|\d+[.)])\s+/, '').trim().replace(/^(["'`])(.*)\1$/, '$2').trim(); if (isLocalImage(t)) out.add(t); } for (const m of p.matchAll(/`([^`\n]+)`/g)) if (isLocalImage(m[1].trim())) out.add(m[1].trim()); return [...out]; };
+  const para = p => { const imgs = []; const body = p.replace(/!\[([^\]\n]*)\]\((<[^>\n]+>|[^)\s]+)\)/g, (_, alt, src) => { imgs.push(imgRef(src.replace(/^<(.*)>$/, '$1').trim(), alt)); return '\u0000' + (imgs.length - 1) + '\u0000'; }); return `<p>${esc(body).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/\u0000(\d+)\u0000/g, (_, i) => imgs[i])}</p>` + bare(p).map(x => imgRef(x, '', true)).join(''); };
+  // 簡單的排版:程式碼區塊、行內程式碼、粗體、圖片
+  const md = text => String(text).split(/```/).map((seg, i) => i % 2 ? `<pre>${esc(seg.replace(/^[^\n]*\n/, ''))}</pre>` : seg.split(/\n{2,}/).filter(p => p.trim()).map(para).join('')).join('');
+  // 圖片要帶通行碼才能讀,所以用 fetch 取回後轉成 blob 網址;同一張只抓一次
+  const imgCache = new Map();
+  function hydrate(el) {
+    el.querySelectorAll('.rimg:not([data-done])').forEach(sp => {
+      sp.dataset.done = '1';
+      const path = sp.dataset.path, key = current + '|' + path;
+      let v = imgCache.get(key);
+      if (!v) { v = fetch('/api/file?id=' + encodeURIComponent(current) + '&path=' + encodeURIComponent(path), { headers: { Authorization: 'Bearer ' + token } }).then(r => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status))))).then(b => URL.createObjectURL(b)).catch(() => 'fail'); imgCache.set(key, v); }
+      v.then(u => {
+        if (u === 'fail') { if (sp.dataset.quiet) sp.remove(); else { sp.className = 'rimg fail'; sp.textContent = path; } return; }
+        const im = document.createElement('img');
+        im.alt = ''; im.onload = () => { const l = $('log'); if (l.scrollHeight - l.scrollTop - l.clientHeight < im.height + 80) l.scrollTop = l.scrollHeight; };
+        im.src = u; sp.appendChild(im);
+      });
+    });
+  }
+
+  function showGate(msg) {
+    $('gate').style.display = 'block'; document.querySelectorAll('.view').forEach(v => v.classList.remove('show')); $('nav').classList.add('hide');
+    $('pairerr').textContent = msg || ''; $('conn').textContent = '';
+  }
+  $('pairbtn').onclick = async () => {
+    $('pairerr').textContent = '';
+    try {
+      const r = await fetch('/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: $('code').value.trim(), name: $('devname').value.trim() }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '配對失敗');
+      token = j.token; localStorage.setItem('nexus.token', token); history.replaceState(null, '', '/'); start();
+    } catch (e) { $('pairerr').textContent = e.message; }
+  };
+
+  // ---------- 畫面切換
+  function show(view) { document.querySelectorAll('.view').forEach(v => v.classList.toggle('show', v.id === 'v-' + view)); $('nav').classList.toggle('hide', view === 'detail' || view === 'sub'); }
+  function showTab(t) { tab = t; current = null; stack = []; document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); show(t); render(); }
+  document.querySelectorAll('nav button').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
+  document.querySelectorAll('[data-back]').forEach(b => { b.onclick = () => { const prev = stack.pop(); if (prev) prev(); else showTab(tab); }; });
+  function render() { if (current) renderHead(); else if (tab === 'nodes') renderNodes(); else if (tab === 'tasks') renderTasks(); else renderMore(); const need = Object.values(agents).filter(a => ['awaiting', 'error', 'lost'].includes(a.state)).length; $('badge').innerHTML = need ? `<i>${need}</i>` : ''; }
+
+  // ---------- 節點清單
+  function renderNodes() {
+    const all = Object.values(agents);
+    const roots = all.filter(a => !a.parentId || !agents[a.parentId]).sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.createdAt - b.createdAt);
+    let h = `<h2>節點 ${roots.length}</h2>`;
+    if (!roots.length) h += '<div class="empty">還沒有節點。</div>';
+    for (const r of roots) for (const a of [r, ...all.filter(x => x.parentId === r.id)]) h += `<button class="card ${a.state} ${a.parentId ? 'sub' : ''}" data-id="${a.id}"><div class="m"><div class="n">${esc(a.name)}</div><div class="d">${a.parentId ? '子代理' : esc(BACKEND[a.backend])}${a.model ? ' · ' + esc(a.model) : ''}${a.detail ? ' · ' + esc(a.detail) : ''}</div></div><span class="s">${STATE[a.state]}</span></button>`;
+    h += '<div class="row" style="margin-top:14px"><button class="pri" id="addbtn">+ 新增節點</button><button id="oldbtn">開啟舊 session</button></div>';
+    $('nodes').innerHTML = h;
+    $('nodes').querySelectorAll('.card').forEach(el => { el.onclick = () => open(el.dataset.id); });
+    $('addbtn').onclick = openAdd; $('oldbtn').onclick = openOld;
+  }
+
+  // ---------- 任務
+  function taskCard(t) { return `<button class="task ${t.status}" data-task="${t.id}"><div class="t"><b>${TASK[t.status]}</b><span>${esc(t.agentName)}${t.model ? ' · ' + esc(t.model) : ''}</span></div><div class="ti">${esc(t.title)}</div>${t.subs && t.subs.length ? `<div class="t"><span>子代理 ${t.subs.length} 個</span></div>` : ''}${t.changes && (t.changes.files || t.endedAt === null) ? `<span class="chip">${t.endedAt === null ? '檢視目前變更' : `${t.changes.committed ? '已提交 · ' : ''}變更 ${t.changes.files} 個檔案 <span class="plus">+${t.changes.added}</span> <span class="minus">−${t.changes.removed}</span>`}</span>` : ''}${t.cost && t.cost.tokens ? `<div class="t"><span>花費 ${k(t.cost.tokens)} tokens${t.cost.usd >= 0.001 ? ' · 約 $' + t.cost.usd.toFixed(3) : ''}</span></div>` : ''}${t.note ? `<div class="t"><span class="minus">${esc(t.note)}</span></div>` : ''}</button>`; }
+  function renderTasks() {
+    const act = tasks.filter(t => t.endedAt === null), fin = tasks.filter(t => t.endedAt !== null).sort((a, b) => b.endedAt - a.endedAt).slice(0, 30);
+    // 排隊中的指令依排入時間列出,可以直接取消
+    const queued = Object.values(agents).flatMap(a => (a.queued || []).map(q => ({ a, q }))).sort((x, y) => x.q.createdAt - y.q.createdAt);
+    const qcard = ({ a, q }) => `<div class="task queued"><div class="t"><b>排隊中${a.queuePaused ? '(已暫停)' : ''}</b><span>${esc(a.name)}</span></div><div class="ti">${esc(q.text)}</div><div class="row" style="margin-top:6px"><button class="sm bad" data-qa="${a.id}" data-qc="${q.id}">取消</button></div></div>`;
+    $('tasks').innerHTML = `<h2>進行中 ${act.length}</h2>${act.map(taskCard).join('') || '<div class="empty">沒有進行中的任務。</div>'}${queued.length ? `<h2>排隊中 ${queued.length}</h2>${queued.map(qcard).join('')}` : ''}<h2>已結束</h2>${fin.map(taskCard).join('') || '<div class="empty">還沒有結束的任務。</div>'}`;
+    $('tasks').querySelectorAll('[data-qc]').forEach(b => { b.onclick = () => run('/api/cancelqueued', { id: b.dataset.qa, queuedId: b.dataset.qc }); });
+    $('tasks').querySelectorAll('button.task').forEach(el => { el.onclick = () => { const t = tasks.find(x => x.id === el.dataset.task); if (t.changes && (t.changes.files || t.endedAt === null)) openChanges(t.id); else if (agents[t.agentId]) open(t.agentId); }; });
+  }
+
+  // ---------- 更多:用量與設定
+  function renderMore() {
+    let h = '<h2>剩餘額度</h2>';
+    for (const b of ['claude', 'codex', 'antigravity']) h += `<div style="margin-bottom:10px"><div class="n" style="font-size:13px">${BACKEND[b]}</div>${usageBars(b)}</div>`;
+    if (access.role === 'full') h += `<h2>設定</h2><label>同時執行上限</label><input id="setmax" type="number" min="1" max="32" value="${settings.maxActive}"><label>額度上限(%;0 表示不限制)</label><input id="setquota" type="number" min="0" max="100" value="${settings.quotaStop}"><div class="hint">某家後台的額度用到這個百分比,就不再送出新指令。</div><div class="row" style="margin-top:10px"><button class="pri" id="setsave">儲存設定</button></div>`;
+    h += `<h2>這支裝置</h2><div class="d">${esc(device)} · ${access.role === 'full' ? '完整權限' : (access.role === 'operator' ? '操作權限' : '唯讀權限') + (access.agents ? ' · ' + access.agents.length + ' 個節點' : ' · 全部節點')}</div><div class="row" style="margin-top:8px"><button class="bad" id="logout">登出這支裝置</button></div><div class="hint">登出只清除這支手機上的通行碼;要讓它徹底失效,請到電腦上的「手機」面板撤銷。</div>`;
+    $('more').innerHTML = h;
+    if ($('setsave')) $('setsave').onclick = async () => { const r = await run('/api/settings', { maxActive: Number($('setmax').value), quotaStop: Number($('setquota').value) }, '已儲存'); if (r) { settings.maxActive = Number($('setmax').value); settings.quotaStop = Number($('setquota').value); } };
+    $('logout').onclick = () => { if (confirm('登出這支裝置?')) { token = ''; localStorage.removeItem('nexus.token'); showGate(''); } };
+  }
+
+  // ---------- 節點詳細
+  function line(e) {
+    if (e.type === 'message') return e.role === 'user' ? `<div class="msg user"><span class="w">你</span>${esc(e.text)}</div>` : `<div class="msg agent"><span class="w">${esc(agents[current]?.name ?? '')}</span>${md(e.text)}</div>`;
+    if (e.type === 'image') return `<div class="msg agent"><span class="w">${esc(agents[current]?.name ?? '')}</span>${imgRef(e.path)}${e.caption ? `<div class="hint">${esc(e.caption)}</div>` : ''}</div>`;
+    if (e.type === 'tool' && e.phase === 'start') return e.detail ? `<details class="ln"><summary>▸ ${esc(e.name)} · ${esc(e.summary)}</summary><pre>${esc(e.detail)}</pre></details>` : `<div class="ln">▸ ${esc(e.name)} · ${esc(e.summary)}</div>`;
+    if (e.type === 'tool' && e.failed) return `<div class="ln err">✕ ${esc(e.name)} 失敗</div>`;
+    if (e.type === 'error') return `<div class="ln err">錯誤:${esc(e.message)}</div>`;
+    if (e.type === 'note') return `<div class="ln note">${esc(e.text)}</div>`;
+    if (e.type === 'approval_request') return `<div class="ln appr">請求授權:${esc(e.tool)} · ${esc(e.summary)}</div>`;
+    if (e.type === 'approval_resolved') return `<div class="ln appr">→ ${e.decision === 'deny' ? '已拒絕' : '已允許'}</div>`;
+    if (e.type === 'question') return `<div class="ln appr">提問:${esc(e.questions.map(q => q.question).join(' / '))}</div>`;
+    if (e.type === 'question_resolved') return `<div class="ln appr">→ ${e.answers ? '已回答:' + esc(Object.values(e.answers).flat().join('、')) : '已略過'}</div>`;
+    if (e.type === 'subagent') return `<div class="ln note">${e.phase === 'start' ? '啟動子代理:' : '子代理結束:'}${esc(e.name)}</div>`;
+    return '';
+  }
+  function renderLog(stick) {
+    const el = $('log'), atEnd = stick || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    el.innerHTML = events.map(line).join('') + (live ? `<div class="msg agent"><span class="w">${esc(agents[current]?.name ?? '')}</span>${md(live)}▍</div>` : '') || '<div class="empty">還沒有對話。</div>';
+    hydrate(el);
+    if (atEnd) el.scrollTop = el.scrollHeight;
+  }
+  // 點圖片放大,再點一下關閉
+  $('log').addEventListener('click', ev => { const im = ev.target.closest('.rimg img'); if (!im) return; $('lightbox').innerHTML = `<img src="${im.src}" alt="">`; $('lightbox').style.display = 'flex'; });
+  $('lightbox').onclick = () => { $('lightbox').style.display = 'none'; $('lightbox').innerHTML = ''; };
+  function renderMenu() {
+    const a = agents[current]; if (!a) return;
+    const busy = BUSY.includes(a.state), off = a.state === 'sleeping' || a.state === 'lost';
+    let h = usageBars(a.backend);
+    if (a.context && a.context.max) h += hp('記憶空間', 1 - a.context.used / a.context.max, `已用 ${k(a.context.used)} / ${k(a.context.max)}`, 'mp');
+    if (a.spent && a.spent.tokens) h += `<div class="hint">累計花費 ${k(a.spent.tokens)} tokens${a.spent.usd >= 0.001 ? ' · 約 $' + a.spent.usd.toFixed(3) : ''}</div>`;
+    if (a.worktree) h += `<div class="hint">獨立工作區 · 分支 ${esc(a.worktree.branch)}(基於 ${esc(a.worktree.base)})</div>`;
+    h += `<div class="hint">${esc(a.cwd)}</div>`;
+    if (!a.parentId) {
+      const last = tasks.filter(t => t.agentId === a.id && t.changes).sort((x, y) => y.startedAt - x.startedAt)[0];
+      h += '<div class="row" style="margin-top:10px">';
+      if (last) h += '<button class="sm" id="m-changes">變更</button>';
+      h += `<button class="sm" id="m-rename">改名</button><button class="sm" id="m-model" ${busy ? 'disabled' : ''}>換模型</button>`;
+      if (a.character) h += '<button class="sm" id="m-persona">角色卡</button>';
+      if (a.worktree) h += `<button class="sm" id="m-merge" ${busy ? 'disabled' : ''}>合併回 ${esc(a.worktree.base)}</button>`;
+      if (!off && !a.terminal) h += `<button class="sm" id="m-sleep" ${busy ? 'disabled' : ''}>休眠</button>`;
+      h += '<button class="sm bad" id="m-remove">終止</button></div>';
+    }
+    $('menu').innerHTML = h;
+    const on = (id, fn) => { if ($(id)) $(id).onclick = fn; };
+    on('m-changes', () => { const t = tasks.filter(x => x.agentId === a.id && x.changes).sort((x, y) => y.startedAt - x.startedAt)[0]; openChanges(t.id); });
+    on('m-rename', async () => { const n = prompt('新的名稱', a.name); if (n && n.trim()) await run('/api/update', { id: a.id, name: n.trim() }, '已改名'); });
+    on('m-model', async () => { const n = prompt('模型代號(留空用預設)。換模型會重新啟動 session,對話內容保留。', a.model || ''); if (n !== null) await run('/api/update', { id: a.id, model: n.trim() }, '已更換模型'); });
+    on('m-persona', () => openPersona(a.character));
+    on('m-merge', async () => { if (confirm(`把這個工作區的成果合併回 ${a.worktree.base}?有衝突會自動取消。`)) await run('/api/merge', { id: a.id }, '已合併'); });
+    on('m-sleep', () => run('/api/sleep', { id: a.id }));
+    on('m-remove', async () => { if (confirm(`終止「${a.name}」?節點會從面板移除,之後可以從「開啟舊 session」接回來。`)) { await run('/api/remove', { id: a.id }); showTab('nodes'); } });
+  }
+  function renderHead() {
+    const a = agents[current];
+    if (!a) { showTab(tab); return; }
+    $('dn').textContent = a.name;
+    $('dd').textContent = (a.parentId ? '子代理' : BACKEND[a.backend]) + (a.model ? ' · ' + a.model : '');
+    $('ds').textContent = STATE[a.state];
+    $('ds').style.color = a.state === 'awaiting' ? 'var(--warn)' : ['error', 'lost'].includes(a.state) ? 'var(--bad)' : 'var(--dim)';
+    if ($('menu').classList.contains('show')) renderMenu();
+    const draft = $('cmd') ? $('cmd').value : '';
+    const focused = document.activeElement && document.activeElement.id === 'cmd';
+    let h = '';
+    const p = a.pendingApproval, q = a.pendingQuestion, busy = BUSY.includes(a.state);
+    if (p) h += `<div class="box"><b>需要你的授權</b><div class="what">${esc(p.tool)} · ${esc(p.summary)}</div>${p.detail ? `<details class="ln"><summary>檢視完整內容</summary><pre>${esc(p.detail.slice(0, 3000))}</pre></details>` : ''}<div class="row"><button class="warn" data-dec="allow">允許</button>${p.canAllowSession ? '<button data-dec="allow_session">本次都允許</button>' : ''}<button class="bad" data-dec="deny">拒絕</button></div></div>`;
+    if (q) {
+      h += '<div class="box"><b>它有問題要問你</b>';
+      for (const x of q.questions) h += `<div class="what">${esc(x.question)}</div><div class="row">${x.options.map(o => `<button class="opt ${(picked[x.id] || []).includes(o.label) ? 'on' : ''}" data-q="${esc(x.id)}" data-o="${esc(o.label)}" data-multi="${x.multi ? 1 : 0}">${esc(o.label)}</button>`).join('')}</div><input data-other="${esc(x.id)}" placeholder="其他(自行輸入)" style="margin:8px 0">`;
+      h += '<div class="row"><button class="warn" id="qsend">送出回答</button><button id="qskip">略過</button></div></div>';
+    }
+    // 排隊中的指令:暫停時顯示原因與繼續按鈕
+    if (!a.parentId && !a.terminal && (a.queued || []).length) h += `<div class="queue">${a.queuePaused ? `<div class="qp">佇列已暫停:${esc(a.queuePaused)} <button class="sm warn" id="qresume">繼續</button></div>` : ''}${a.queued.map((x, i) => `<div class="qi"><span class="ti">${i + 1}. ${esc(x.text)}</span><button class="sm" data-qedit="${x.id}">編輯</button><button class="sm bad" data-qcancel="${x.id}">取消</button></div>`).join('')}</div>`;
+    if (a.parentId) h += '<div class="empty">子代理由上層節點指揮,這裡只能觀看。</div>';
+    else if (a.terminal) h += '<div class="empty">這個節點在電腦上的終端機模式,手機無法操作。</div>';
+    else if (a.state === 'sleeping' || a.state === 'lost') h += `<button class="pri" id="wake">${a.state === 'lost' ? '重新連線' : '喚醒'}</button>`;
+    else {
+      // 已附加的檔案:圖片顯示縮圖,PDF 顯示副檔名;標示這個後台會內嵌還是只傳路徑
+      const embeds = (embedKinds[a.backend] || []);
+      h += `${files.length ? `<div class="files">${files.map((f, i) => `<span>${f.thumb ? `<img src="${f.thumb}" alt="">` : `<i>${f.kind === 'pdf' ? 'PDF' : '檔案'}</i>`}<b>${esc(f.name)}</b>${embedKinds[a.backend] ? `<em class="${embeds.includes(f.kind) ? 'em' : 'po'}">${embeds.includes(f.kind) ? '內嵌' : '僅路徑'}</em>` : ''}<button class="link" data-rmfile="${i}" aria-label="移除">✕</button></span>`).join('')}</div>` : ''}<div class="send"><button class="sm" id="attach" ${files.length >= 6 ? 'disabled' : ''}>附加</button><textarea id="cmd" rows="1" placeholder="${busy ? '執行中,可排隊下一句' : '輸入指令'}"></textarea>${busy ? '<button class="pri" id="queue">排隊</button><button class="bad" id="stop">中斷</button>' : '<button class="pri" id="go">送出</button>'}</div><div class="hint">可附加圖片(PNG、JPEG、WebP、GIF,8 MB 內)或 PDF(20 MB 內),最多 6 個。</div><input type="file" id="pick" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" style="display:none">`;
+    }
+    $('act').innerHTML = h;
+    if ($('cmd')) { $('cmd').value = draft; if (focused) $('cmd').focus(); }
+    $('act').querySelectorAll('[data-dec]').forEach(b => { b.onclick = () => run('/api/approve', { id: a.id, requestId: p.requestId, decision: b.dataset.dec }); });
+    $('act').querySelectorAll('.opt').forEach(b => { b.onclick = () => { const id = b.dataset.q, cur = picked[id] || []; picked[id] = b.dataset.multi === '1' ? (cur.includes(b.dataset.o) ? cur.filter(x => x !== b.dataset.o) : [...cur, b.dataset.o]) : (cur.includes(b.dataset.o) ? [] : [b.dataset.o]); renderHead(); }; });
+    const on = (id, fn) => { if ($(id)) $(id).onclick = fn; };
+    on('qsend', () => { const answers = {}; for (const x of q.questions) { const other = $('act').querySelector(`[data-other="${CSS.escape(x.id)}"]`).value.trim(); answers[x.id] = [...(picked[x.id] || []), ...(other ? [other] : [])]; if (!answers[x.id].length) { toast('每一題都要回答', true); return; } } picked = {}; run('/api/answer', { id: a.id, requestId: q.requestId, answers }); });
+    on('qskip', () => { picked = {}; run('/api/answer', { id: a.id, requestId: q.requestId, answers: null }); });
+    on('wake', () => run('/api/wake', { id: a.id }));
+    on('stop', () => run('/api/interrupt', { id: a.id }));
+    $('act').querySelectorAll('[data-rmfile]').forEach(b => { b.onclick = () => { files.splice(Number(b.dataset.rmfile), 1); renderHead(); }; });
+    on('attach', () => $('pick').click());
+    if ($('pick')) $('pick').onchange = async () => {
+      const f = $('pick').files[0]; if (!f) return;
+      const kind = f.type === 'application/pdf' ? 'pdf' : 'image';
+      if (f.size > (kind === 'pdf' ? 20 : 8) * 1024 * 1024) { toast(kind === 'pdf' ? 'PDF 超過 20 MB' : '圖片超過 8 MB', true); return; }
+      try {
+        const r = await fetch('/api/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': f.type, 'X-File-Name': encodeURIComponent(f.name) }, body: f });
+        const j = await r.json(); if (!r.ok) throw new Error(j.error || '上傳失敗');
+        // 縮圖在手機上直接讀檔產生,不必再向電腦要
+        const thumb = kind === 'image' ? await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(''); fr.readAsDataURL(f); }) : '';
+        files.push({ name: f.name, path: j.path, kind, thumb }); renderHead();
+      } catch (e) { toast(e.message, true); }
+    };
+    on('go', () => { const t = $('cmd').value.trim(); if (!t && !files.length) return; const images = files.map(f => f.path); const text = (t || '請看附上的檔案。') + (images.length ? '\n\n附加的檔案:\n' + images.map(p => '- ' + p).join('\n') : ''); $('cmd').value = ''; files = []; run('/api/send', { id: a.id, text, images }); });
+    on('queue', () => { const t = $('cmd').value.trim(); if (!t && !files.length) return; const images = files.map(f => f.path); const text = (t || '請看附上的檔案。') + (images.length ? '\n\n附加的檔案:\n' + images.map(p => '- ' + p).join('\n') : ''); $('cmd').value = ''; files = []; run('/api/enqueue', { id: a.id, text, images }, '已排隊'); });
+    on('qresume', () => run('/api/resumequeue', { id: a.id }));
+    $('act').querySelectorAll('[data-qcancel]').forEach(b => { b.onclick = () => run('/api/cancelqueued', { id: a.id, queuedId: b.dataset.qcancel }); });
+    $('act').querySelectorAll('[data-qedit]').forEach(b => { b.onclick = async () => { const x = (agents[a.id].queued || []).find(q => q.id === b.dataset.qedit); if (!x) return; const n = prompt('修改排隊中的指令', x.text); if (n && n.trim()) await run('/api/editqueued', { id: a.id, queuedId: x.id, text: n.trim() }); }; });
+  }
+  $('menubtn').onclick = () => { $('menu').classList.toggle('show'); if ($('menu').classList.contains('show')) renderMenu(); };
+  async function open(id) {
+    current = id; events = []; live = ''; picked = {}; files = [];
+    $('menu').classList.remove('show'); show('detail'); renderHead(); renderLog(true);
+    // 各後台能內嵌哪些附件,用來在附件上標示「內嵌」或「僅路徑」
+    if (!Object.keys(embedKinds).length) api('/api/meta').then(m => { for (const c of m.capabilities) embedKinds[c.backend] = c.attachments || []; renderHead(); }).catch(() => {});
+    try { events = await api('/api/history?id=' + encodeURIComponent(id)); renderLog(true); } catch {}
+  }
+
+  // ---------- 子畫面:變更檢視、新增節點、開啟舊 session
+  function openSub(title, desc) { const back = current ? (id => () => open(id))(current) : null; if (back) stack.push(back); current = null; $('st').textContent = title; $('sd').textContent = desc || ''; $('sub').innerHTML = '<div class="empty">讀取中…</div>'; show('sub'); }
+  // 角色卡:同一個角色的節點共用一份,儲存後這些節點會在下一則指令前收到新的角色設定
+  async function openPersona(character) {
+    openSub('角色卡', character);
+    let p; try { p = await api('/api/persona?character=' + encodeURIComponent(character)); } catch (e) { $('sub').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    $('sub').innerHTML = `${p.truncated ? `<div class="hint w">角色卡超過 ${p.max} 字,超出的部分不會交給 agent。</div>` : ''}<textarea id="p-text" rows="12" maxlength="${p.max}" placeholder="寫下這個角色的身分、說話風格與職責"></textarea><div class="hint" id="p-count"></div><div class="row" style="margin-top:10px"><button class="pri" id="p-save">儲存角色卡</button></div>`;
+    const t = $('p-text'), count = () => { $('p-count').textContent = `${t.value.length} / ${p.max} 字。同一個角色的節點共用這份角色卡。`; };
+    t.value = p.text; count(); t.oninput = count;
+    $('p-save').onclick = () => run('/api/persona', { character, text: t.value }, '已儲存角色卡');
+  }
+  async function openChanges(taskId) {
+    const t = tasks.find(x => x.id === taskId); if (!t) return;
+    openSub('變更檢視', `${t.agentName} · ${t.title}`);
+    const load = async () => {
+      let set; try { set = await api('/api/changes?task=' + encodeURIComponent(taskId)); } catch (e) { $('sub').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+      const cur = tasks.find(x => x.id === taskId) || t, done = cur.endedAt !== null, can = done && set.source === 'git' && set.files.length;
+      let h = `<div class="d" style="margin-bottom:8px">${set.files.length} 個檔案 <span class="plus">+${set.files.reduce((n, f) => n + f.added, 0)}</span> <span class="minus">−${set.files.reduce((n, f) => n + f.removed, 0)}</span>${cur.changes && cur.changes.committed ? ' · 已提交 ' + esc(cur.changes.committed) : ''}</div>`;
+      if (set.note) h += `<div class="hint w">${esc(set.note)}</div>`;
+      if (!done) h += '<div class="hint w">任務還在執行,這是到目前為止的變更。</div>';
+      if (can) h += '<div class="row" style="margin:10px 0"><button class="pri sm" id="c-commit">提交這些變更</button><button class="bad sm" id="c-revert">還原整個任務</button></div>';
+      if (!set.files.length) h += `<div class="empty">${done ? '這個任務沒有修改任何檔案。' : '目前還沒有檔案被修改。'}</div>`;
+      set.files.forEach((f, i) => { h += `<details class="file ${f.status}" ${i === 0 ? 'open' : ''}><summary><em>${{ A: '新增', M: '修改', D: '刪除' }[f.status]}</em><span class="p">${esc(f.path)}</span><span><span class="plus">+${f.added}</span> <span class="minus">−${f.removed}</span></span></summary>${f.binary ? '<div class="empty" style="padding:8px 12px">二進位檔案</div>' : `<div class="diff">${f.patch.split('\n').map(l => `<span class="${l.startsWith('@@') ? 'h' : l.startsWith('+') ? 'i' : l.startsWith('-') ? 'r' : ''}">${esc(l) || ' '}</span>`).join('')}</div>`}${can ? `<div style="padding:8px 12px"><button class="sm bad" data-rev="${esc(f.path)}">還原這個檔案</button></div>` : ''}</details>`; });
+      $('sub').innerHTML = h;
+      const res = r => r && toast(`已還原 ${r.reverted.length} 個檔案${r.skipped.length ? `,跳過 ${r.skipped.length} 個(${r.skipped[0].reason})` : ''}`);
+      if ($('c-commit')) $('c-commit').onclick = async () => { const m = prompt('提交訊息', t.title.slice(0, 72)); if (m === null) return; const r = await run('/api/commit', { taskId, message: m }); if (r) { toast('已提交 ' + r.commit); load(); } };
+      if ($('c-revert')) $('c-revert').onclick = async () => { if (!confirm('把這個任務改過的檔案恢復成任務開始前的內容?之後又被改過的檔案會跳過。')) return; res(await run('/api/revert', { taskId, paths: null })); load(); };
+      $('sub').querySelectorAll('[data-rev]').forEach(b => { b.onclick = async () => { if (!confirm(`還原 ${b.dataset.rev}?`)) return; res(await run('/api/revert', { taskId, paths: [b.dataset.rev] })); load(); }; });
+    };
+    load();
+  }
+  async function openAdd() {
+    openSub('新增節點', '');
+    let meta; try { meta = await api('/api/meta'); } catch (e) { $('sub').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    const caps = meta.capabilities.filter(c => c.available);
+    $('sub').innerHTML = `<label>後台 CLI</label><select id="a-backend">${caps.map(c => `<option value="${c.backend}">${BACKEND[c.backend]}${c.simulated ? '(模擬)' : ''}</option>`).join('')}</select><div class="hint" id="a-note"></div>
+      <label>名稱</label><input id="a-name" placeholder="例如 Sirius">
+      <label>模型</label><input id="a-model" list="a-models" placeholder="預設(使用 CLI 的設定)"><datalist id="a-models"></datalist>
+      <label>工作目錄</label><select id="a-dirs"><option value="">最近用過的資料夾…</option>${meta.dirs.map(d => `<option>${esc(d)}</option>`).join('')}</select><input id="a-cwd" placeholder="或輸入電腦上的完整路徑" style="margin-top:6px"><div class="hint" id="a-dir"></div>
+      <label class="chk"><input type="checkbox" id="a-iso" disabled> 獨立工作區(git worktree)</label>
+      <div id="a-permwrap"><label>權限模式</label><select id="a-perm"><option value="ask">每次詢問</option><option value="auto">自動執行</option></select></div>
+      <div class="row" style="margin-top:16px"><button class="pri" id="a-go">新增</button></div>`;
+    const sync = () => { const c = caps.find(x => x.backend === $('a-backend').value); $('a-note').textContent = c ? c.note : ''; $('a-models').innerHTML = (c ? c.models : []).map(m => `<option value="${esc(m)}">`).join(''); $('a-permwrap').style.display = c && c.approvals ? '' : 'none'; };
+    $('a-backend').onchange = () => { $('a-model').value = ''; sync(); }; sync();
+    let timer; const inspect = () => { clearTimeout(timer); timer = setTimeout(async () => { const cwd = $('a-cwd').value.trim(); if (!cwd) { $('a-dir').textContent = ''; $('a-iso').disabled = true; $('a-iso').checked = false; return; } try { const d = await api('/api/inspect?cwd=' + encodeURIComponent(cwd)); $('a-dir').textContent = !d.exists ? '資料夾不存在。' : !d.isRepo ? '不是 git 版本庫,不能用獨立工作區。' : !d.hasCommit ? '版本庫還沒有提交,不能用獨立工作區。' : `git 版本庫,目前分支 ${d.branch}。`; $('a-iso').disabled = !(d.isRepo && d.hasCommit); if ($('a-iso').disabled) $('a-iso').checked = false; } catch {} }, 300); };
+    $('a-dirs').onchange = () => { if ($('a-dirs').value) { $('a-cwd').value = $('a-dirs').value; inspect(); } };
+    $('a-cwd').oninput = inspect;
+    $('a-go').onclick = async () => { const a = await run('/api/create', { backend: $('a-backend').value, name: $('a-name').value.trim(), model: $('a-model').value.trim(), cwd: $('a-cwd').value.trim(), isolate: $('a-iso').checked, permissionMode: $('a-perm').value }); if (a) { agents[a.id] = a; stack = []; open(a.id); } };
+  }
+  async function openOld() {
+    openSub('開啟舊 session', '讀取三家 CLI 的紀錄需要幾秒');
+    let list; try { list = await api('/api/oldsessions'); } catch (e) { $('sub').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    $('sd').textContent = `${list.length} 個可以接回來的對話`;
+    const draw = filter => {
+      const shown = list.filter(s => filter === 'all' || s.backend === filter).slice(0, 80);
+      $('sub').innerHTML = `<div class="row" style="margin-bottom:10px">${['all', 'claude', 'codex', 'antigravity'].map(b => `<button class="sm ${filter === b ? 'pri' : ''}" data-f="${b}">${b === 'all' ? '全部' : BACKEND[b].split(' ')[0]}</button>`).join('')}</div>` + (shown.map((s, i) => `<button class="card ${s.cwdExists ? '' : 'sleeping'}" data-i="${list.indexOf(s)}"><div class="m"><div class="n">${esc(s.title)}</div><div class="d">${BACKEND[s.backend]} · ${s.source === 'nexus' ? '主控台開過 · ' + esc(s.name) : 'CLI 的對話'}${s.maybeActive ? ' · 可能使用中' : ''}</div><div class="d">${esc(s.cwd)}</div></div></button>`).join('') || '<div class="empty">沒有符合的舊 session。</div>');
+      $('sub').querySelectorAll('[data-f]').forEach(b => { b.onclick = () => draw(b.dataset.f); });
+      $('sub').querySelectorAll('.card').forEach(el => { el.onclick = async () => {
+        const s = list[Number(el.dataset.i)];
+        if (!s.cwdExists) { toast('原本的資料夾已經不存在', true); return; }
+        if (s.maybeActive && !confirm('這個對話幾分鐘內還有更新,可能正被其他程式使用。確定要開啟?')) return;
+        const name = s.source === 'nexus' ? s.name : prompt('節點名稱(會跟著這個 session 保存)', s.name);
+        if (!name) return;
+        const a = await run('/api/opensession', { ...s, name });
+        if (a) { agents[a.id] = a; stack = []; open(a.id); }
+      }; });
+    };
+    draw('all');
+  }
+
+  // ---------- 即時更新
+  function apply(u) {
+    if (u.agent) { const was = agents[u.agent.id]; agents[u.agent.id] = u.agent; if (u.agent.state === 'awaiting' && (!was || was.state !== 'awaiting') && navigator.vibrate) navigator.vibrate(120); }
+    if (u.removedId) delete agents[u.removedId];
+    if (u.task) { const i = tasks.findIndex(t => t.id === u.task.id); if (i >= 0) tasks[i] = u.task; else tasks.push(u.task); }
+    if (u.tasks) tasks = u.tasks;
+    if (u.usage) { const i = usage.findIndex(x => x.backend === u.usage.backend); if (i >= 0) usage[i] = u.usage; else usage.push(u.usage); }
+    if (u.maxActive !== undefined) settings.maxActive = u.maxActive;
+    if (u.quotaStop !== undefined) settings.quotaStop = u.quotaStop;
+    if (current) {
+      if (u.delta && u.delta.agentId === current) { live += u.delta.text; renderLog(); }
+      if (u.event && u.event.agentId === current) {
+        const e = u.event;
+        if ((e.type === 'message' && e.role === 'agent') || (e.type === 'state' && ['idle', 'error', 'lost'].includes(e.state))) live = '';
+        if (!['state', 'session', 'plan', 'usage', 'delta'].includes(e.type)) events.push(e);
+        renderLog();
+      }
+      if ((u.agent && u.agent.id === current) || u.removedId === current || u.usage) renderHead();
+    } else if ($('v-sub').classList.contains('show')) { /* 子畫面由自己的操作更新 */ }
+    else if (tab !== 'more' || u.usage) render();
+    const need = Object.values(agents).filter(a => ['awaiting', 'error', 'lost'].includes(a.state)).length;
+    $('badge').innerHTML = need ? `<i>${need}</i>` : '';
+    document.title = (need ? `(${need}) ` : '') + 'Entropy Nexus';
+  }
+  // 用 fetch 讀取更新串流才能帶上通行碼;斷線後自動重連並重新抓狀態
+  async function stream() {
+    for (;;) {
+      try {
+        const s = await api('/api/state');
+        agents = Object.fromEntries(s.agents.map(a => [a.id, a])); tasks = s.tasks; usage = s.usage; settings = { maxActive: s.maxActive, quotaStop: s.quotaStop }; device = s.device; access = s.access || access; document.body.className = access.role === 'full' ? '' : 'role-' + access.role;
+        $('conn').textContent = '已連線'; $('conn').className = 'on';
+        if (!$('v-sub').classList.contains('show')) render();
+        const r = await fetch('/api/stream', { headers: { Authorization: 'Bearer ' + token } });
+        if (r.status === 401) { token = ''; localStorage.removeItem('nexus.token'); showGate('配對已被撤銷,請重新配對。'); return; }
+        const reader = r.body.getReader(), dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); if (chunk.startsWith('data: ')) { try { apply(JSON.parse(chunk.slice(6))); } catch {} } }
+        }
+      } catch (e) { if (e.message === 'unauthorized') return; }
+      if (!token) return;
+      $('conn').textContent = '重新連線中…'; $('conn').className = 'off';
+      await new Promise(r => setTimeout(r, 2500));
+    }
+  }
+  function start() { $('gate').style.display = 'none'; $('nav').classList.remove('hide'); showTab('nodes'); stream(); }
+
+  const code = new URLSearchParams(location.search).get('pair');
+  if (token) start(); else { showGate(''); if (code) $('code').value = code; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { NexusApi, Update } from '../shared/types';
+
+// 畫面只能透過這組固定的函式與主行程溝通,拿不到 Node 或 ipcRenderer 本身
+const api: NexusApi = {
+  getSnapshot: () => ipcRenderer.invoke('nexus:snapshot'),
+  getHistory: id => ipcRenderer.invoke('nexus:history', id),
+  createAgent: input => ipcRenderer.invoke('nexus:create', input),
+  removeAgent: id => ipcRenderer.invoke('nexus:remove', id),
+  send: (id, text, images) => ipcRenderer.invoke('nexus:send', id, text, images),
+  updateAgent: (id, patch) => ipcRenderer.invoke('nexus:updateAgent', id, patch),
+  pickFiles: () => ipcRenderer.invoke('nexus:pickFiles'),
+  savePastedImage: (mime, data) => ipcRenderer.invoke('nexus:savePastedImage', mime, data),
+  attachmentPreview: path => ipcRenderer.invoke('nexus:attachmentPreview', path),
+  // 拖放或貼上的檔案:路徑只能從使用者給的 File 物件取得,順便向主行程登記,之後才能讀縮圖
+  pathForFile: file => { const p = webUtils.getPathForFile(file); if (p) ipcRenderer.send('nexus:allowAttachment', p); return p; },
+  openTerminal: (id, cols, rows) => ipcRenderer.invoke('nexus:openTerminal', id, cols, rows),
+  closeTerminal: id => ipcRenderer.invoke('nexus:closeTerminal', id),
+  termAttach: id => ipcRenderer.invoke('nexus:termAttach', id),
+  termWrite: (id, data) => ipcRenderer.invoke('nexus:termWrite', id, data),
+  termResize: (id, cols, rows) => ipcRenderer.invoke('nexus:termResize', id, cols, rows),
+  respondApproval: (id, requestId, decision) => ipcRenderer.invoke('nexus:approval', id, requestId, decision),
+  interrupt: id => ipcRenderer.invoke('nexus:interrupt', id),
+  enqueue: (id, text, images) => ipcRenderer.invoke('nexus:enqueue', id, text, images),
+  cancelQueued: (id, queuedId) => ipcRenderer.invoke('nexus:cancelQueued', id, queuedId),
+  editQueued: (id, queuedId, text) => ipcRenderer.invoke('nexus:editQueued', id, queuedId, text),
+  resumeQueue: id => ipcRenderer.invoke('nexus:resumeQueue', id),
+  answerQuestion: (id, requestId, answers) => ipcRenderer.invoke('nexus:answer', id, requestId, answers),
+  sleep: id => ipcRenderer.invoke('nexus:sleep', id),
+  wake: id => ipcRenderer.invoke('nexus:wake', id),
+  setAutopilot: on => ipcRenderer.invoke('nexus:autopilot', on),
+  setMaxActive: n => ipcRenderer.invoke('nexus:maxActive', n),
+  openPortraitsFolder: () => ipcRenderer.invoke('nexus:openPortraits'),
+  getAvatar: character => ipcRenderer.invoke('nexus:getAvatar', character),
+  getPersona: character => ipcRenderer.invoke('nexus:getPersona', character),
+  setPersona: (character, text) => ipcRenderer.invoke('nexus:setPersona', character, text),
+  clearFinishedTasks: () => ipcRenderer.invoke('nexus:clearTasks'),
+  getTaskChanges: taskId => ipcRenderer.invoke('nexus:taskChanges', taskId),
+  listOldSessions: () => ipcRenderer.invoke('nexus:oldSessions'),
+  inspectDir: cwd => ipcRenderer.invoke('nexus:inspectDir', cwd),
+  revertTask: (taskId, paths) => ipcRenderer.invoke('nexus:revertTask', taskId, paths),
+  commitTask: (taskId, message) => ipcRenderer.invoke('nexus:commitTask', taskId, message),
+  sendReviewComments: (taskId, comments) => ipcRenderer.invoke('nexus:sendReviewComments', taskId, comments),
+  requestReview: (taskId, reviewerId, note) => ipcRenderer.invoke('nexus:requestReview', taskId, reviewerId, note),
+  worktreeStatus: id => ipcRenderer.invoke('nexus:worktreeStatus', id),
+  mergeWorktree: id => ipcRenderer.invoke('nexus:mergeWorktree', id),
+  openPullRequest: id => ipcRenderer.invoke('nexus:openPr', id),
+  setQuotaStop: n => ipcRenderer.invoke('nexus:quotaStop', n),
+  remoteStatus: () => ipcRenderer.invoke('nexus:remoteStatus'),
+  remoteSet: patch => ipcRenderer.invoke('nexus:remoteSet', patch),
+  remoteNewCode: () => ipcRenderer.invoke('nexus:remoteNewCode'),
+  remoteRevoke: id => ipcRenderer.invoke('nexus:remoteRevoke', id),
+  remotePairAccess: access => ipcRenderer.invoke('nexus:remotePairAccess', access),
+  remoteSetDevice: (id, access) => ipcRenderer.invoke('nexus:remoteSetDevice', id, access),
+  remoteAudit: () => ipcRenderer.invoke('nexus:remoteAudit'),
+  observeStatus: () => ipcRenderer.invoke('nexus:observeStatus'),
+  observeInstall: () => ipcRenderer.invoke('nexus:observeInstall'),
+  observeUninstall: () => ipcRenderer.invoke('nexus:observeUninstall'),
+  observeNewToken: () => ipcRenderer.invoke('nexus:observeNewToken'),
+  observeTakeover: (sessionId, name) => ipcRenderer.invoke('nexus:observeTakeover', sessionId, name),
+  openOldSession: input => ipcRenderer.invoke('nexus:openOldSession', input),
+  forkAgent: input => ipcRenderer.invoke('nexus:forkAgent', input),
+  pickDirectory: () => ipcRenderer.invoke('nexus:pickDirectory'),
+  canReveal: (agentId, text) => ipcRenderer.invoke('nexus:canReveal', agentId, text),
+  revealPath: (agentId, text) => ipcRenderer.invoke('nexus:revealPath', agentId, text),
+  onUpdate: cb => {
+    const listener = (_e: unknown, u: Update) => cb(u);
+    ipcRenderer.on('nexus:update', listener);
+    return () => { ipcRenderer.removeListener('nexus:update', listener); };
+  },
+};
+
+contextBridge.exposeInMainWorld('nexus', api);

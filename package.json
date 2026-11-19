@@ -1,0 +1,72 @@
+{
+  "name": "entropy-nexus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "多家 AI CLI 的科技風主控台",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "postinstall": "node node_modules/electron/install.js",
+    "dist": "electron-vite build && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "pixi.js": "^8.23.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "author": "Entroppy",
+  "license": "MIT",
+  "build": {
+    "appId": "com.entropynexus.app",
+    "productName": "Entropy Nexus",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Entropy Nexus",
+      "artifactName": "Entropy-Nexus-Setup-${version}.exe"
+    },
+    "asarUnpack": [
+      "node_modules/@lydell/**"
+    ]
+  },
+  "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.18"
+  }
+}
