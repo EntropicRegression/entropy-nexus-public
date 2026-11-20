@@ -22,6 +22,8 @@ const report = (size, title, issues) => {
 
 app.whenReady().then(async () => {
   const w = new BrowserWindow({ width: 1440, height: 900, show: false, useContentSize: true, webPreferences: { backgroundThrottling: false } });
+  // 視窗要真的顯示出來:隱藏的視窗不會跑動畫格,主面板的節點就停在半路,檢查會誤判
+  w.showInactive();
   const js = src => w.webContents.executeJavaScript(src, true);
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const shot = async name => writeFileSync(join(shots, `${name}.png`), (await w.webContents.capturePage()).toPNG());

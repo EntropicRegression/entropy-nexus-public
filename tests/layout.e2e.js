@@ -52,6 +52,120 @@
         await window.__layoutClose();
       }
     }
+    // ---- 第二輪:30 個節點,分散在待命、待授權、總管三個區塊(另有幾個休眠),只檢查主面板和對話視窗。
+    // 小視窗一定排不下:要出現「另外 N 個」,點下去列出被收起來的節點,選一個會打開它的對話視窗,而且都不能超出區塊。
+    const until = async (fn, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const v = await fn(); if (v) return v; await wait(200); } return null; };
+    const click = async (x, y) => { document.title = `INPUT:${Date.now()}|${JSON.stringify({ type: 'click', x: Math.round(x), y: Math.round(y) })}`; await wait(500); };
+    const check = (cond, what, extra = '') => { if (!cond) total++; log(cond ? '通過' : '不符', what + (cond || !extra ? '' : ` → ${String(extra).slice(0, 240)}`)); };
+    const report = (size, title, issues) => {
+      total += issues.length;
+      log(issues.length ? '不符' : '通過', `[${size}] ${title}`, issues.length ? `${issues.length} 項` : '');
+      for (const i of issues.slice(0, 12)) log('   -', i);
+    };
+    // 這一輪只看主面板:頂部列與新增節點表單的問題第一輪已經列過
+    const boardOnly = () => window.__boardIssues();
+    const board = window.__nexusBoard;
+    const rectOf = () => document.querySelector('.board canvas').getBoundingClientRect();
+    await window.nexus.setMaxActive(32);
+    for (let i = 14; i < 30; i++) ids.push((await window.nexus.createAgent({ name: `節點${String(i + 1).padStart(2, '0')}`, character: '', model: '', backend: backends[i % 3], cwd, permissionMode: 'ask' })).id);
+    await wait(2500);
+    // 8 個節點停在「等你回答」(待授權區),4 個休眠(留在待命區)
+    const asking = ids.slice(14, 22);
+    for (const id of asking) await window.nexus.send(id, '提問');
+    for (const id of ids.slice(22, 26)) await window.nexus.sleep(id);
+    const states = async () => { const c = {}; for (const a of (await window.nexus.getSnapshot()).agents) c[a.state] = (c[a.state] ?? 0) + 1; return c; };
+    const settled = await until(async () => { const s = await states(); return s.awaiting === 8 && !s.planning && !s.working ? s : null; }, 20000);
+    check(!!settled, '第二輪:30 個節點,8 個待授權、其餘待命或休眠', JSON.stringify(await states()));
+    let sawMore = 0;
+    for (const [w, h, label] of SIZES) {
+      const size = `30 個節點 ${label} ${w}×${h}`;
+      document.title = `SIZE:${w},${h}`;
+      await wait(1800);
+      await window.__layoutClose();
+      await wait(1200);
+      log(`=== ${size}:面板 ${JSON.stringify(board.size())} ${JSON.stringify(board.mode())}`);
+      report(size, '主畫面', boardOnly());
+      const scales = board.positions().map(p => p.scale);
+      log(`   畫出 ${scales.length} 個節點,縮放 ${Math.min(...scales).toFixed(2)}–${Math.max(...scales).toFixed(2)};收起來:${JSON.stringify(board.hidden().map(x => [x.zone, x.count]))}`);
+      await shot(`30-${label}-board`);
+      const more = board.more()[0];
+      if (more) {
+        sawMore++;
+        // 點「另外 N 個」:列出被收起來的節點
+        const c = rectOf();
+        await click(c.left + more.x, c.top + more.y);
+        const pop = await until(() => document.querySelector('.board-more'), 3000);
+        const hiddenIds = board.hidden().find(x => x.zone === more.zone)?.ids ?? [];
+        const rows = [...(pop?.querySelectorAll('.bm-row') ?? [])];
+        check(!!pop && rows.length === hiddenIds.length && rows.length === more.count, `[${size}] 點「另外 ${more.count} 個」列出被收起來的節點`, JSON.stringify({ pop: !!pop, rows: rows.length, hidden: hiddenIds.length }));
+        if (pop) {
+          const pr = pop.getBoundingClientRect(), stage = document.querySelector('.stage').getBoundingClientRect();
+          check(pr.left >= stage.left - 1 && pr.right <= stage.right + 1 && pr.top >= stage.top - 1 && pr.bottom <= stage.bottom + 1 && pr.height >= 90, `[${size}] 清單在主面板區裡`, JSON.stringify({ pop: [pr.left, pr.top, pr.right, pr.bottom], stage: [stage.left, stage.top, stage.right, stage.bottom] }));
+          report(size, '「另外 N 個」清單(按鈕點得到)', window.__layoutAudit().filter(i => i.includes('bm-row') || i.includes('關閉清單')));
+          await shot(`30-${label}-more`);
+          // 選清單裡最後一個節點:打開它的對話視窗,而且它會被換到看得到的位置
+          const targetId = hiddenIds[hiddenIds.length - 1];
+          const name = rows[rows.length - 1].querySelector('.bm-name').textContent;
+          const r = rows[rows.length - 1].getBoundingClientRect();
+          rows[rows.length - 1].scrollIntoView({ block: 'nearest' });
+          await wait(200);
+          const r2 = rows[rows.length - 1].getBoundingClientRect();
+          await click(r2.left + r2.width / 2, r2.top + r2.height / 2);
+          const dlg = await until(() => document.querySelector('.dialog'), 3000);
+          await wait(1500);
+          check(!!dlg && dlg.textContent.includes(name) && !document.querySelector('.board-more'), `[${size}] 從清單選「${name}」會打開它的對話視窗,清單關閉`, JSON.stringify({ dlg: !!dlg, r: [r.left, r.top] }));
+          check(board.positions().some(p => p.id === targetId), `[${size}] 選取的節點換到看得到的位置`);
+          report(size, '對話視窗(從清單打開)', boardOnly());
+          await shot(`30-${label}-more-dialog`);
+          await window.__layoutClose();
+          await wait(600);
+        }
+      }
+      // 對話視窗:主面板只剩上方一條
+      [...document.querySelectorAll('.row')].find(r => r.textContent.includes('節點01'))?.click();
+      await wait(1800);
+      const dlg = document.querySelector('.dialog')?.getBoundingClientRect();
+      const cv = rectOf();
+      check(!!dlg && cv.bottom <= dlg.top + 1, `[${size}] 主面板的底邊在對話視窗上方,不重疊`, JSON.stringify({ board: cv.bottom, dialog: dlg?.top }));
+      const portrait = document.querySelector('.dlg-portrait')?.getBoundingClientRect();
+      check(!!portrait && portrait.top >= cv.bottom - 1, `[${size}] 立繪不蓋到主面板`, JSON.stringify({ portrait: portrait?.top, board: cv.bottom }));
+      log(`   對話視窗打開:面板 ${JSON.stringify(board.size())} ${JSON.stringify(board.mode())},畫出 ${board.positions().length} 個,收起來:${JSON.stringify(board.hidden().map(x => [x.zone, x.count]))}`);
+      report(size, '對話視窗', boardOnly());
+      await shot(`30-${label}-dialog`);
+      await window.__layoutClose();
+    }
+    check(sawMore >= 2, `30 個節點時,至少兩種視窗大小出現「另外 N 個」(實際 ${sawMore} 種)`);
+
+    // ---- 第三輪:節點在區塊之間移動(規劃 → 執行 → 待命)時,區塊大小跟著調整,任何時候都不能跑出面板
+    document.title = 'SIZE:1100,700';
+    await wait(1800);
+    for (const id of asking) { const q = (await window.nexus.getSnapshot()).agents.find(a => a.id === id)?.pendingQuestion; if (q) await window.nexus.answerQuestion(id, q.requestId, { q1: ['紅色'] }); }
+    const autos = [];
+    for (let i = 0; i < 6; i++) autos.push((await window.nexus.createAgent({ name: `自動${i + 1}`, character: '', model: '', backend: backends[i % 3], cwd, permissionMode: 'auto' })).id);
+    await wait(2000);
+    for (const id of autos) await window.nexus.send(id, '跑一輪');
+    const zonesSeen = new Set();
+    let outside = 0, settledChecks = 0, settledIssues = [];
+    const t0 = Date.now();
+    let shotTaken = false;
+    while (Date.now() - t0 < 30000) {
+      await wait(350);
+      const sz = board.size();
+      const ps = board.positions();
+      // 移動途中:節點(含文字)至少要在面板裡,不會跑到事件紀錄或側欄上
+      outside += ps.filter(p => p.x - 56 * p.scale < -1 || p.x + 56 * p.scale > sz.w + 1 || p.y - 34 * p.scale < -1 || p.y + 64 * p.scale > sz.h + 1).length;
+      const snap = (await window.nexus.getSnapshot()).agents;
+      for (const a of snap) zonesSeen.add({ idle: 'standby', sleeping: 'standby', planning: 'planning', working: 'active', awaiting: 'auth', error: 'fault', lost: 'fault' }[a.state]);
+      // 節點都滑到定位時做完整檢查(同一個時間點取狀態和檢查,中間不能等待,否則版面可能又變了)
+      if (board.settled()) { settledChecks++; const issues = boardOnly(); if (issues.length) settledIssues = issues; if (!shotTaken && snap.some(a => a.state === 'working')) { shotTaken = true; await shot('30-移動中'); } }
+      if (Date.now() - t0 > 6000 && snap.every(a => a.state === 'idle' || a.state === 'sleeping')) break;
+    }
+    check(zonesSeen.has('planning') && zonesSeen.has('active'), `第三輪:節點經過規劃區與執行區(看到 ${[...zonesSeen].join('、')})`);
+    check(outside === 0, '節點移動途中沒有跑出面板', `${outside} 次`);
+    check(settledChecks >= 3 && settledIssues.length === 0, `動畫停下來時的完整檢查都通過(檢查了 ${settledChecks} 次)`, settledIssues.join(';'));
+    await wait(1500);
+    report('36 個節點 最小視窗 1100×700', '全部回到待命後的主畫面', boardOnly());
+    await shot('30-結束');
     log(total ? `有 ${total} 項不符` : '全部通過');
     log('主控台端結束');
   } catch (err) {

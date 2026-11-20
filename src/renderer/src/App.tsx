@@ -11,9 +11,9 @@ import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
-import { BoardScene } from './board';
+import { BoardScene, type BoardMore } from './board';
 import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
-import { BACKEND_COLOR, STATE_COLOR, hex } from './theme';
+import { BACKEND_COLOR, STATE_COLOR, ZONE_TITLE, hex } from './theme';
 
 const MAX_EVENTS = 80;
 // 「需要你」的排最上面
@@ -337,10 +337,23 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
   const scene = useRef<BoardScene | null>(null);
   const latest = useRef({ agents, selectedId, avatars, chiefId });
   latest.current = { agents, selectedId, avatars, chiefId };
+  // 區塊排不下時「另外 N 個」的清單:點面板上的標記打開,列出被收起來的節點
+  const [more, setMore] = useState<BoardMore | null>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!more) return;
+    const close = () => scene.current?.closeMore();
+    // 點清單和面板以外的地方、或按 Esc 就關掉(面板上的點擊由面板自己處理)
+    const onDown = (e: PointerEvent) => { if (e.target instanceof Node && !moreRef.current?.contains(e.target) && !host.current?.contains(e.target)) close(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    return () => { document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('keydown', onKey, true); };
+  }, [more !== null]);
 
   useEffect(() => {
     let dead = false;
-    const s = new BoardScene(onSelect, h => hoverRef.current(h), () => addChiefRef.current());
+    const s = new BoardScene(id => { s.closeMore(); onSelect(id); }, h => hoverRef.current(h), () => addChiefRef.current(), setMore);
     void s.init(host.current!).then(() => {
       if (dead) { s.destroy(); return; }
       scene.current = s;
@@ -353,7 +366,40 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
   useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
 
-  return <div className="board" ref={host} />;
+  // 清單放在標記的上方或下方(看哪邊空間大),不超出面板
+  const box = host.current?.parentElement;
+  const zoneName = more ? ZONE_TITLE[more.zone].split(' ')[0] : '';
+  const moreStyle = (() => {
+    if (!more || !box) return undefined;
+    const W = box.clientWidth, H = box.clientHeight, width = Math.min(232, W - 16);
+    const top = more.y - 34 * more.zoom, bottom = more.y + 64 * more.zoom;
+    const left = Math.max(8, Math.min(more.x - width / 2, W - width - 8));
+    return H - bottom >= top
+      ? { left, width, top: bottom + 4, maxHeight: Math.max(96, Math.min(360, H - bottom - 12)) }
+      : { left, width, bottom: `calc(100% - ${Math.round(top - 4)}px)`, maxHeight: Math.max(96, Math.min(360, top - 12)) };
+  })();
+  return (
+    <>
+      <div className="board" ref={host} />
+      {more && moreStyle && (
+        <div className="board-more" ref={moreRef} style={moreStyle} role="dialog" aria-label={`${zoneName}區塊的其他節點`}>
+          <div className="bm-head">
+            <b>{zoneName}</b><span>另外 {more.ids.length} 個</span>
+            <button className="ghost" aria-label="關閉清單" onClick={() => scene.current?.closeMore()}>×</button>
+          </div>
+          <div className="bm-list">
+            {more.ids.map(id => agents.find(a => a.id === id)).filter((a): a is AgentInfo => !!a).map(a => (
+              <button key={a.id} className={`bm-row s-${a.state}`} onClick={() => { scene.current?.closeMore(); onSelect(a.id); }} title={`打開「${a.name}」的對話視窗`}>
+                <i style={{ background: hex(BACKEND_COLOR[a.backend]) }} />
+                <span className="bm-name">{a.parentId ? '↳ ' : ''}{a.name}</span>
+                <span className="bm-state">{a.detail || STATE_LABEL[a.state]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; agents: AgentInfo[]; chief?: boolean; onDone: () => void }) {
