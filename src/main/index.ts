@@ -257,6 +257,14 @@ function scheduleScreenshot(): void {
         })().catch(err => console.error('[test] 設定檔案失敗', err));
         return;
       }
+      // SIZE:寬,高:調整視窗內容區的大小(測試小視窗的版面;會暫時放寬最小尺寸);ZOOM:倍率:模擬 Windows 的顯示縮放
+      if (title.startsWith('SIZE:')) {
+        const [cw, ch] = title.slice(5).split(',').map(Number);
+        w.setMinimumSize(400, 300);
+        w.setContentSize(cw, ch);
+        return;
+      }
+      if (title.startsWith('ZOOM:')) { w.webContents.setZoomFactor(Number(title.slice(5)) || 1); return; }
       if (title.startsWith('SHOT:')) void w.webContents.capturePage().then(img => writeFileSync(join(testDir, `${title.slice(5)}.png`), img.toPNG()));
     });
     w.webContents.once('did-finish-load', () => {

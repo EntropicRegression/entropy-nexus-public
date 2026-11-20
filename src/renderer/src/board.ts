@@ -215,7 +215,7 @@ export class BoardScene {
     this.ready = true;
     this.layout();
     // 自我檢查用:回報各節點在畫面上的位置
-    (window as unknown as Record<string, unknown>).__nexusBoard = { positions: () => [...this.nodes.values()].map(n => ({ id: n.id, x: n.root.x, y: n.root.y })), avatars: () => [...this.avatars].map(([c, t]) => [c, t !== null]), chiefPlus: () => ({ x: this.addChief.x, y: this.addChief.y, visible: this.addChief.visible }), rect: (z: Zone) => this.rects.get(z) };
+    (window as unknown as Record<string, unknown>).__nexusBoard = { positions: () => [...this.nodes.values()].map(n => ({ id: n.id, x: n.root.x, y: n.root.y, scale: n.root.scale.x })), avatars: () => [...this.avatars].map(([c, t]) => [c, t !== null]), chiefPlus: () => ({ x: this.addChief.x, y: this.addChief.y, visible: this.addChief.visible }), rect: (z: Zone) => this.rects.get(z), size: () => ({ w: this.app.screen.width, h: this.app.screen.height }) };
   }
 
   destroy(): void {
