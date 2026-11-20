@@ -53,6 +53,8 @@ const SUITES = [
   { name: 'review-comments', group: 'e2e', min: 1.5, ...bash('tests/review-comments.sh') },
   { name: 'web-full', group: 'e2e', min: 2, ...bash('tests/web-full.sh') },
   { name: 'worktree-setup', group: 'e2e', min: 1, ...bash('tests/worktree-setup.sh') },
+  { name: 'layout', group: 'e2e', min: 6, timeout: 15, ...bash('tests/layout.sh') },
+  { name: 'layout-web', group: 'e2e', min: 6, timeout: 15, cmd: 'bash', args: ['-c', 'LAYOUT_WEB=1 bash tests/layout.sh'] },
   // ---- 需要本機語音環境
   { name: 'voice', group: 'local', min: 2, ...bash('tests/voice.sh') },
   { name: 'voice-tts', group: 'local', min: 3, ...bash('tests/voice-tts.sh') },
