@@ -30,7 +30,7 @@ app.whenReady().then(async () => {
     check('完整介面知道自己是唯讀', info.role === 'viewer' && info.agents?.[0] === agentId && info.cls.includes('role-viewer'), JSON.stringify(info));
     check('節點清單只有一個節點', info.rows.length === 1, JSON.stringify(info.rows));
     const top = await visibleButtons('.topbar button, .topbar label, .roster button.add');
-    check('頂部沒有設定類的按鈕', !top.some(t => /手機|外部觀察|同時上限|額度上限|新增節點|開啟舊/.test(t)), JSON.stringify(top));
+    check('頂部沒有設定類的按鈕', !top.some(t => /手機|遠端|語音|外部觀察|同時上限|額度上限|新增節點|開啟舊/.test(t)), JSON.stringify(top));
     await js(`document.querySelector('.roster-list .row').click(); 0`);
     await wait(1500);
     const dlg = await visibleButtons('.dialog button, .dlg button, [class^="dlg"] button');

@@ -1,0 +1,41 @@
+/* 回覆排版(Markdown.tsx)。選擇器多帶一層 .md,讓特異性不低於 styles.css 裡既有的 .md-* 規則,不受載入順序影響。 */
+
+.md .md-h { margin: 12px 0 4px; line-height: 1.35; }
+.md .md-h:first-child { margin-top: 0; }
+.md .md-h1 { font-size: 18px; padding-bottom: 3px; border-bottom: 1px solid var(--line-soft); }
+.md .md-h2 { font-size: 16px; padding-bottom: 2px; border-bottom: 1px solid var(--line-soft); }
+.md .md-h3 { font-size: 15px; }
+.md .md-h4 { font-size: 14px; }
+.md .md-h5 { font-size: 13px; color: var(--text); }
+.md .md-h6 { font-size: 12.5px; color: var(--dim); }
+
+.md strong { color: #eafcff; font-weight: 700; }
+.md em { font-style: italic; }
+.md del { color: var(--dim); text-decoration: line-through; }
+
+/* 清單:可巢狀;項目裡的段落不再有外距 */
+.md ul.md-ul, .md ol.md-ol { margin: 2px 0 6px; padding-left: 22px; }
+.md li > p { margin: 0; }
+.md li > p + p, .md li > p + ul, .md li > p + ol, .md li > ul, .md li > ol { margin-top: 3px; }
+.md ul.md-ul ul.md-ul { list-style: circle; }
+.md ul.md-ul ul.md-ul ul.md-ul { list-style: square; }
+.md li::marker { color: var(--accent); }
+.md li.md-task-item { list-style: none; margin-left: -18px; }
+.md li.md-task-item > p:first-of-type { display: inline; }
+.md .md-task { display: inline-block; width: 18px; color: var(--accent); }
+.md li.md-task-item.done > p { color: var(--dim); }
+
+/* 引用 */
+.md blockquote.md-quote { margin: 6px 0; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); color: var(--dim); background: rgba(63, 216, 230, 0.03); }
+.md blockquote.md-quote strong { color: var(--text); }
+
+.md hr.md-hr { height: 0; margin: 10px 0; border: none; border-top: 1px solid var(--line); }
+
+/* 表格:外層可左右捲動,表頭與斑馬紋沿用主題色 */
+.md .md-table-wrap { margin: 8px 0; max-width: 100%; overflow-x: auto; border: 1px solid var(--line-soft); }
+.md table.md-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.5; }
+.md .md-table th, .md .md-table td { min-width: 4em; max-width: 42em; padding: 4px 10px; border: 1px solid var(--line-soft); text-align: left; vertical-align: top; overflow-wrap: break-word; word-break: normal; }
+.md .md-table th { color: var(--accent); font-weight: 600; white-space: nowrap; background: rgba(63, 216, 230, 0.1); border-bottom: 1px solid var(--line); }
+.md .md-table tbody tr:nth-child(even) td { background: rgba(63, 216, 230, 0.04); }
+.md .md-table tbody tr:hover td { background: rgba(63, 216, 230, 0.09); }
+.md .md-table code { white-space: nowrap; }

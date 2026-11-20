@@ -542,3 +542,23 @@ button.mute { font-size: 12px; }
 .role-viewer .need-op, .role-viewer .need-full, .role-operator .need-full { display: none !important; }
 .role-viewer .dlg-input, .role-viewer .queue-item button, .role-viewer .queue-paused button, .role-viewer .q-actions, .role-viewer .q-head button { display: none !important; }
 .role-viewer .dlg-inputwrap::after { content: '唯讀權限:只能觀看這個節點,不能下指令。'; display: block; padding: 8px 12px; font-size: 12px; color: var(--dim); border-top: 1px solid var(--line-soft); }
+
+/* 頂部列整理:上限欄位合成一組、「?」說明、分隔線與小面板 */
+.topbar .limits { display: inline-flex; align-items: center; gap: 10px; }
+.topbar button.help { width: 18px; height: 18px; padding: 0; line-height: 16px; border: 1px solid var(--line); border-radius: 50%; font: 600 11px var(--mono); text-align: center; }
+.topbar-sep { width: 1px; height: 18px; background: var(--line); }
+.topbar button.stop-speak { color: var(--warn); }
+.topbar-pop { position: absolute; right: 16px; top: 52px; z-index: 41; width: 400px; max-height: calc(100% - 80px); overflow-y: auto; padding: 12px 16px 14px; background: #070d16; border: 1px solid var(--line); border-top: 2px solid var(--accent); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6); }
+.limit-pop { width: 460px; }
+.pop-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.pop-row .remote-note { margin: 0; }
+.pop-row button.mute { flex: none; min-width: 72px; padding: 3px 8px; border: 1px solid var(--line); }
+.help-list { margin: 0 0 6px; padding-left: 18px; font-size: 12px; line-height: 1.6; color: var(--text); }
+.remote-sub.first { margin-top: 4px; }
+.speak-row { display: flex; align-items: center; gap: 10px; }
+.speak-row .remote-note { margin: 0; }
+button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px solid var(--line); }
+.hub-tabs { display: flex; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
+.hub-tabs button { padding: 4px 10px; font-size: 12px; border-bottom: 2px solid transparent; }
+.hub-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+.remote-section { }

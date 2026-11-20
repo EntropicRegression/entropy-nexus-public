@@ -158,6 +158,8 @@ class AntigravitySession implements AdapterSession {
   private introduce: boolean;
   /** agy 的 MCP 工具是延遲載入的,模型要知道伺服器名稱才找得到;這個 session 的第一則訊息前面提示一次。 */
   private hintInterop = true;
+  /** 圖片要放在工作目錄才顯示得出來的提示,同樣每個 session 第一則訊息帶一次。 */
+  private hintImage = true;
 
   constructor(private bin: string, private opts: StartOptions, private emit: Emit) {
     this.introduce = Boolean(opts.persona) && !opts.sessionId;
@@ -242,7 +244,13 @@ class AntigravitySession implements AdapterSession {
 
 ` : '';
     this.hintInterop = false;
-    const content = `${hint}${this.introduce ? `(主控台設定:${this.opts.persona})
+    // 主控台只讀得到工作目錄裡的圖片(agy 把產生的圖放在自己的資料夾,不在其中);續接的對話不帶身分設定,
+    // 所以這段獨立於 introduce,每個 session 物件(含續接)的第一則訊息都提示一次
+    const imageHint = this.hintImage ? `(主控台顯示圖片的規則:要讓使用者在主控台對話裡看到圖片,必須把圖片存進或複製到工作目錄「${this.opts.cwd}」之內,並在回覆中用工作目錄內的路徑引用,例如 ![說明](相對路徑.png)。放在工作目錄以外的圖片(包含你自己的暫存或產生圖片的資料夾)主控台無法顯示。)
+
+` : '';
+    this.hintImage = false;
+    const content = `${imageHint}${hint}${this.introduce ? `(主控台設定:${this.opts.persona})
 
 ` : ''}${body}`;
     this.introduce = false;

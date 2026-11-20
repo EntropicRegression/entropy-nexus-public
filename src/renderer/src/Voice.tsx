@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { VoiceProfile, VoiceStatus } from '../../shared/types';
-import { pauseSpeech, resumeSpeech } from './sound';
+import { pauseSpeech, resumeSpeech, setSpeakOn, useSpeakOn } from './sound';
 
 /**
  * 語音模式(實驗性,Phase 1):按住說話 → 錄成 16 kHz 單聲道 WAV → 主控台的語音服務轉成文字 → 填進輸入框。
@@ -145,6 +145,7 @@ export function MicButton({ disabled, onText, onNote }: { disabled: boolean; onT
 /** 頂部「語音」的設定面板。 */
 export function VoicePanel({ onClose }: { onClose: () => void }) {
   const st = useVoice();
+  const speakOn = useSpeakOn();
   const [command, setCommand] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [ttsDir, setTtsDir] = useState<string | null>(null);
@@ -177,8 +178,15 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="remote voice">
-      <div className="remote-head"><b>語音模式(實驗性)</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
-      {!st ? <div className="empty">讀取中…</div> : <>
+      <div className="remote-head"><b>語音</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
+      <div className="remote-sub first">語音播報(朗讀)</div>
+      <div className="speak-row">
+        <button className={`ghost mute speak-switch ${speakOn ? 'on' : ''}`} aria-pressed={speakOn} onClick={() => setSpeakOn(!speakOn)}>{speakOn ? '朗讀 開' : '朗讀 關'}</button>
+        <span className="remote-note">預設關閉,設定會記住。不需要啟用下面的語音模式就能用。</span>
+      </div>
+      <p className="remote-note">打開後,會用系統語音念出:你從桌面交辦的回合正常完成時的一句重點;節點等你授權、有問題要問你,或你交辦的回合出錯、失聯、排隊的指令被額度上限擋住時的提醒。節點互相呼叫、會議、遠端送來的指令與被中斷的回合不念完成摘要;子代理的回覆不念。朗讀中頂部會出現「停止朗讀」,按下去會停掉目前這則並清空佇列。</p>
+      <div className="remote-sub">語音模式(實驗性)</div>
+      {!st ?<div className="empty">讀取中…</div> : <>
         <p className="remote-note">啟用後,對話視窗的輸入框旁會出現「說話」按鈕:按住說話,放開後由本機的語音服務轉成文字填進輸入框,你確認後再自己送出。語音不會上傳到網路,也不能用來回覆授權。需要先在這台電腦準備 Python 與 faster-whisper(見 tools/voice-server/README.md)。</p>
         <label className="toggle">
           <input type="checkbox" checked={st.enabled} disabled={busy} onChange={e => act({ enabled: e.target.checked })} />

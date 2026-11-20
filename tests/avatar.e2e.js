@@ -26,7 +26,9 @@
     await wait(3500);
     await shot('avatar-2-working');
     // 關掉開關:回到原本的六角形,設定會記住
-    const btn = () => [...document.querySelectorAll('.topbar button')].find(b => b.textContent.startsWith('頭像'));
+    // 頭像開關在頂部「顯示」的小面板裡
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '顯示').click(); await wait(300);
+    const btn = () => [...document.querySelectorAll('.view-pop button')].find(b => b.textContent.startsWith('頭像'));
     expect('開關預設開啟', btn().textContent === '頭像 開');
     btn().click(); await wait(1200);
     expect('關閉後記住設定', btn().textContent === '頭像 關' && localStorage.getItem('nexus.avatars') === '0');

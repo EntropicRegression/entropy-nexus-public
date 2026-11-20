@@ -1,4 +1,4 @@
-// 權限的畫面驗收(主控台這一側,假資料模式):在「手機」面板把下一支配對裝置設成唯讀、只看一個節點,截圖面板,
+// 權限的畫面驗收(主控台這一側,假資料模式):在「遠端」面板把下一支配對裝置設成唯讀、只看一個節點,截圖面板,
 // 印出配對碼;tests/access-ui-browser.cjs 當成唯讀的瀏覽器連進來檢查畫面。裝置配對後再等一段時間就結束。見 tests/access-ui.sh。
 (async () => {
   const log = (...a) => console.log('[test]', ...a);
@@ -10,7 +10,7 @@
     await window.nexus.remoteSet({ enabled: true });
     const snap = await window.nexus.getSnapshot();
     const a = snap.agents.find(x => !x.parentId);
-    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '手機').click();
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '遠端').click();
     await wait(1500);
     // 經畫面操作:選「唯讀」→「只有指定的節點」→ 勾第一個節點
     const click = async el => { el.click(); await wait(3600); };

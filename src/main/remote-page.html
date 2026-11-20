@@ -53,6 +53,12 @@ label.chk { display:flex; align-items:center; gap:8px; color:var(--text); font-s
 .msg.user { color:var(--accent); white-space:pre-wrap; }
 .msg p { margin:0 0 6px; white-space:pre-wrap; } .msg pre { margin:6px 0; padding:8px 10px; overflow-x:auto; background:#03070c; border:1px solid var(--soft); font:12px/1.5 var(--mono); }
 .msg code { padding:0 4px; font:13px var(--mono); color:#a8eef3; background:rgba(63,216,230,.1); }
+.msg .hd { margin:10px 0 4px; font-weight:600; color:var(--accent); font-size:14px; } .msg .h1 { font-size:17px; } .msg .h2 { font-size:15.5px; } .msg .h5, .msg .h6 { color:var(--dim); font-size:13px; }
+.msg ul, .msg ol { margin:2px 0 6px; padding-left:20px; } .msg li > p { margin:0; } .msg li.task { list-style:none; margin-left:-16px; } .msg .tk { color:var(--accent); margin-right:4px; }
+.msg blockquote { margin:6px 0; padding:2px 0 2px 10px; border-left:2px solid var(--accent); color:var(--dim); }
+.msg hr { border:none; border-top:1px solid var(--soft); margin:10px 0; } .msg del { color:var(--dim); } .msg .lnk { color:var(--accent); border-bottom:1px dotted var(--soft); }
+.msg .tw { margin:6px 0; overflow-x:auto; border:1px solid var(--soft); -webkit-overflow-scrolling:touch; } .msg table { border-collapse:collapse; width:max-content; min-width:100%; font-size:12.5px; line-height:1.45; }
+.msg th, .msg td { padding:4px 8px; border:1px solid var(--soft); text-align:left; vertical-align:top; overflow-wrap:normal; min-width:3.5em; max-width:24em; } .msg th { color:var(--accent); background:rgba(63,216,230,.1); white-space:nowrap; } .msg tbody tr:nth-child(even) td { background:rgba(63,216,230,.04); }
 details.ln, .ln { margin:0 0 8px; font-size:12px; color:var(--dim); overflow-wrap:anywhere; }
 details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding:6px 8px; max-height:160px; overflow:auto; background:#03070c; border:1px solid var(--soft); font:11px/1.5 var(--mono); white-space:pre-wrap; color:var(--text); }
 .ln.err { color:var(--bad); } .ln.appr { color:var(--warn); } .ln.note { color:var(--accent); }
@@ -158,9 +164,91 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
   const imgRef = (src, alt, quiet) => /^https?:\/\//i.test(src) ? `<a class="rlink" href="${esc(src)}" target="_blank" rel="noopener noreferrer">遠端圖片${alt ? '「' + esc(alt) + '」' : ''}(點開在瀏覽器檢視)</a>` : `<span class="rimg"${quiet ? ' data-quiet="1"' : ''} data-path="${esc(src)}"></span>`;
   // 段落裡單獨成行、或以行內程式碼出現的圖片路徑,在段落下方附上預覽;路徑已經在文字裡,讀不到就不顯示
   const bare = p => { const out = new Set(); for (const l of p.split('\n')) { const t = l.replace(/^\s*([-*•]|\d+[.)])\s+/, '').trim().replace(/^(["'`])(.*)\1$/, '$2').trim(); if (isLocalImage(t)) out.add(t); } for (const m of p.matchAll(/`([^`\n]+)`/g)) if (isLocalImage(m[1].trim())) out.add(m[1].trim()); return [...out]; };
-  const para = p => { const imgs = []; const body = p.replace(/!\[([^\]\n]*)\]\((<[^>\n]+>|[^)\s]+)\)/g, (_, alt, src) => { imgs.push(imgRef(src.replace(/^<(.*)>$/, '$1').trim(), alt)); return '\u0000' + (imgs.length - 1) + '\u0000'; }); return `<p>${esc(body).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/\u0000(\d+)\u0000/g, (_, i) => imgs[i])}</p>` + bare(p).map(x => imgRef(x, '', true)).join(''); };
-  // 簡單的排版:程式碼區塊、行內程式碼、粗體、圖片
-  const md = text => String(text).split(/```/).map((seg, i) => i % 2 ? `<pre>${esc(seg.replace(/^[^\n]*\n/, ''))}</pre>` : seg.split(/\n{2,}/).filter(p => p.trim()).map(para).join('')).join('');
+  // 排版:程式碼區塊、標題、清單(可巢狀、核取方塊)、表格(可左右捲動)、引用、分隔線,以及行內的粗體、斜體、刪除線、連結、行內程式碼、圖片。
+  // 一律先跳脫再套記號,不輸出原始 HTML;連結只顯示文字,不會開啟。
+  const inl = (t, K) => {
+    const top = !K; K = K || [];
+    const hold = h => '\u0000' + (K.push(h) - 1) + '\u0000';
+    let o = esc(String(t)
+      .replace(/!\[([^\]\n]*)\]\((<[^>\n]+>|[^)\s]+)\)/g, (_, alt, src) => hold(imgRef(src.replace(/^<(.*)>$/, '$1').trim(), alt)))
+      .replace(/\[([^\]\n]+)\]\((<[^>\n]+>|[^)\s]+)\)/g, (_, x, h) => hold('<span class="lnk" title="' + esc(h.replace(/^<(.*)>$/, '$1')) + '">' + inl(x.replace(/^`([^`]+)`$/, '$1'), K) + '</span>'))
+      .replace(/`([^`\n]+)`/g, (_, c) => hold('<code>' + esc(c) + '</code>')))
+      .replace(/&lt;br\s*\/?&gt;/gi, '<br>')
+      .replace(/\*\*\*(?=[^\s*])([^\n]*?[^\s*])\*\*\*/g, '<b><i>$1</i></b>')
+      .replace(/\*\*(?=\S)([^\n]*?[^\s*])\*\*/g, '<b>$1</b>')
+      .replace(/~~(?=\S)([^\n]*?[^\s~])~~/g, '<del>$1</del>')
+      .replace(/\*(?=[^\s*])([^*\n]*[^\s*])\*/g, '<i>$1</i>');
+    if (top) for (let n = 0; n < 4 && o.includes('\u0000'); n++) o = o.replace(/\u0000(\d+)\u0000/g, (_, i) => K[i] ?? '');
+    return o;
+  };
+  const cells = l => { const s = l.trim().replace(/^\|/, ''); const out = []; let cur = ''; for (let i = 0; i < s.length; i++) { const c = s[i]; if (c === '\\' && s[i + 1] === '|') { cur += '|'; i++; } else if (c === '`' && s.indexOf('`', i + 1) > 0) { const e = s.indexOf('`', i + 1); cur += s.slice(i, e + 1).replace(/\\\|/g, '|'); i = e; } else if (c === '|') { out.push(cur.trim()); cur = ''; } else cur += c; } if (cur.trim() || !/\|\s*$/.test(l)) out.push(cur.trim()); return out; };
+  const SEPR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+  const tbl = (lines, i) => {
+    const h = lines[i], s = lines[i + 1];
+    if (s === undefined || !h.includes('|') || !s.includes('|') || !SEPR.test(s)) return null;
+    const hc = cells(h), sc = cells(s), rows = []; let j = i + 2;
+    while (j < lines.length && lines[j].trim() && lines[j].includes('|') && !/^\s*(```|~~~)/.test(lines[j])) rows.push(cells(lines[j++]));
+    const n = Math.max(hc.length, sc.length, ...rows.map(r => r.length));
+    const al = k => { const c = (sc[k] || '').trim(); return c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : ''; };
+    const row = (tag, r) => '<tr>' + Array.from({ length: n }, (_, k) => `<${tag}${al(k) ? ' style="text-align:' + al(k) + '"' : ''}>${inl(r[k] || '')}</${tag}>`).join('') + '</tr>';
+    return { html: `<div class="tw"><table><thead>${row('th', hc)}</thead>${rows.length ? '<tbody>' + rows.map(r => row('td', r)).join('') + '</tbody>' : ''}</table></div>`, next: j };
+  };
+  const ind = l => { let w = 0; for (const c of l) { if (c === ' ') w++; else if (c === '\t') w += 4; else break; } return w; };
+  const cut = (l, n) => { let w = 0, k = 0; while (k < l.length && w < n) { const c = l[k]; if (c === ' ') w++; else if (c === '\t') w += 4; else break; k++; } return l.slice(k); };
+  const MARK = /^(\s*)([-*+•]|\d{1,9}[.)])(?:(\s+)(.*))?$/, HR = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/, FENCE = /^(\s*)(`{3,}|~{3,})(.*)$/;
+  const mk = l => (HR.test(l) ? null : MARK.exec(l));
+  const fenceClose = l => { const f = FENCE.exec(l); return f && !(f[2][0] === '`' && f[3].includes('`')) ? new RegExp('^\\s*' + f[2][0] + '{' + f[2].length + ',}\\s*$') : null; };
+  const blocks = lines => {
+    let h = '', para = [];
+    const flush = () => { if (para.length) { const p = para.join('\n'); h += `<p>${inl(p)}</p>` + bare(p).map(x => imgRef(x, '', true)).join(''); para = []; } };
+    for (let i = 0; i < lines.length;) {
+      const l = lines[i];
+      const close = fenceClose(l);
+      if (close) { flush(); const pad = ind(l), body = []; i++; while (i < lines.length && !close.test(lines[i])) body.push(cut(lines[i++], pad)); i++; h += `<pre>${esc(body.join('\n'))}</pre>`; continue; }
+      if (!l.trim()) { flush(); i++; continue; }
+      const t = tbl(lines, i);
+      if (t) { flush(); h += t.html; i = t.next; continue; }
+      const hd = /^\s*(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/.exec(l);
+      if (hd) { flush(); h += `<div class="hd h${hd[1].length}">${inl(hd[2])}</div>`; i++; continue; }
+      if (HR.test(l)) { flush(); h += '<hr>'; i++; continue; }
+      if (/^\s{0,3}>/.test(l)) { flush(); const q = []; while (i < lines.length && /^\s{0,3}>/.test(lines[i])) q.push(lines[i++].replace(/^\s{0,3}> ?/, '')); h += `<blockquote>${blocks(q)}</blockquote>`; continue; }
+      const m = mk(l);
+      if (m) {
+        flush();
+        const ord = /\d/.test(m[2][0]); let items = '';
+        while (i < lines.length) {
+          const lm = mk(lines[i]);
+          if (!lm || /\d/.test(lm[2][0]) !== ord) break;
+          const base = ind(lm[1]), off = base + lm[2].length + Math.min(Math.max((lm[3] ?? ' ').length, 1), 4);
+          let first = lm[4] ?? '', task = '';
+          const tm = /^\[([ xX])\](?:\s+(.*))?$/.exec(first);
+          if (tm) { task = tm[1] === ' ' ? '☐' : '☑'; first = tm[2] ?? ''; }
+          const sub = [first]; let fc = fenceClose(first);
+          const track = x => { if (fc) { if (fc.test(x)) fc = null; } else fc = fenceClose(x); };
+          i++;
+          while (i < lines.length) {
+            const x = lines[i];
+            if (fc) { const y = cut(x, off); sub.push(y); track(y); i++; continue; }
+            if (!x.trim()) { let j = i; while (j < lines.length && !lines[j].trim()) j++; if (j < lines.length && ind(lines[j]) > base) { while (i < j) { sub.push(''); i++; } continue; } break; }
+            const w = ind(x);
+            if (w > base) { const y = cut(x, Math.min(w, off)); sub.push(y); track(y); i++; continue; }
+            if (mk(x) || HR.test(x) || FENCE.test(x) || /^\s*#{1,6}\s/.test(x) || /^\s{0,3}>/.test(x) || !sub[sub.length - 1].trim() || tbl(lines, i)) break;
+            sub.push(x.trimStart()); i++;
+          }
+          items += `<li${task ? ' class="task"' : ''}>${task ? '<span class="tk">' + task + '</span>' : ''}${blocks(sub)}</li>`;
+          let j = i; while (j < lines.length && !lines[j].trim()) j++;
+          const nm = j < lines.length && mk(lines[j]);
+          if (nm && /\d/.test(nm[2][0]) === ord) i = j; else break;
+        }
+        h += ord ? `<ol start="${parseInt(m[2], 10)}">${items}</ol>` : `<ul>${items}</ul>`;
+        continue;
+      }
+      para.push(l); i++;
+    }
+    flush();
+    return h;
+  };
+  const md = text => blocks(String(text).replace(/\r\n?/g, '\n').split('\n'));
   // 圖片要帶通行碼才能讀,所以用 fetch 取回後轉成 blob 網址;同一張只抓一次
   const imgCache = new Map();
   function hydrate(el) {

@@ -3,16 +3,16 @@ import {
   BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
 import { HoverCard } from './Hover';
-import { ObservedRows, ObservePanel } from './Observe';
+import { ObservedRows } from './Observe';
 import { VoicePanel } from './Voice';
 import { OldSessions } from './OldSessions';
 import { PersonaEditor } from './PersonaEditor';
-import { RemotePanel } from './Remote';
+import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
 import { BoardScene } from './board';
-import { chime, enqueueSpeech, initSpeech, isMuted, isSpeakOn, setMuted, setSpeakOn, stopSpeaking } from './sound';
+import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
 import { BACKEND_COLOR, STATE_COLOR, hex } from './theme';
 
 const MAX_EVENTS = 80;
@@ -40,14 +40,14 @@ export function App() {
   const [showOld, setShowOld] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
-  const [showObserve, setShowObserve] = useState(false);
+  const [showView, setShowView] = useState(false);
+  const [showLimitHelp, setShowLimitHelp] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
   const [observed, setObserved] = useState<Record<string, ObservedSession>>({});
   const [hover, setHover] = useState<{ id: string; x: number; y: number; side: 'right' | 'left' } | null>(null);
   const [muted, setMutedState] = useState(isMuted());
   // 主面板的節點在六角形裡顯示角色的 Q 版頭像(角色資料夾裡有 avatar 圖檔時);預設開啟,設定會記住
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
-  const [speakOn, setSpeakOnState] = useState(isSpeakOn());
   const [speaking, setSpeaking] = useState(false);
   // 語音播報播之前要用最新的節點狀態確認:授權或提問還在等、故障還沒恢復
   const agentsRef = useRef(agents);
@@ -181,22 +181,23 @@ export function App() {
         <div className="spacer" />
         <span className="stat">節點 <b>{list.filter(a => !a.parentId).length}</b></span>
         <span className={`stat ${needYou ? 'warn' : ''}`}>需要你 <b>{needYou}</b></span>
-        <label className="limit need-full" title="同時執行中的節點數上限;超過時新的指令不會送出">
-          同時上限
-          <input type="number" min={1} max={32} value={maxActive} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 32) void window.nexus.setMaxActive(n); }} />
-        </label>
-        <label className="limit need-full" title="某家後台的額度用到這個百分比,就不再送出新指令;0 表示不限制">
-          額度上限
-          <input type="number" min={0} max={100} value={quotaStop} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 0 && n <= 100) void window.nexus.setQuotaStop(n); }} />%
-        </label>
-        <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="讓手機透過 Tailscale 連進來操作">手機</button>
-        <button className={`ghost mute need-full ${showObserve ? 'on' : ''}`} onClick={() => setShowObserve(v => !v)} title="觀察在主控台以外執行的 Claude Code(hooks)">外部觀察</button>
-        <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音模式(實驗性):按住說話,轉成文字填進輸入框">語音</button>
+        <div className="limits need-full">
+          <label className="limit" title="同時執行中的節點數上限(1 到 32)。計入規劃中、執行中、等待授權的頂層節點;子代理不計。已達上限時,新送出的指令會排進節點的佇列,有名額時自動送出。按右邊的「?」看完整說明。">
+            同時上限
+            <input type="number" min={1} max={32} value={maxActive} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 32) void window.nexus.setMaxActive(n); }} />
+          </label>
+          <label className="limit" title="某家後台的額度用到這個百分比,就不再對它的節點送出新指令,排隊中的指令會暫停(0 表示不限制)。按右邊的「?」看完整說明。">
+            額度上限
+            <input type="number" min={0} max={100} value={quotaStop} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 0 && n <= 100) void window.nexus.setQuotaStop(n); }} />%
+          </label>
+          <button className={`ghost help ${showLimitHelp ? 'on' : ''}`} onClick={() => setShowLimitHelp(v => !v)} title="說明:同時上限與額度上限" aria-label="說明:同時上限與額度上限">?</button>
+        </div>
+        <span className="topbar-sep" aria-hidden />
+        <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音:朗讀(語音播報)開關,以及語音輸入(實驗性)的設定">語音</button>
+        <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="遠端:讓手機或另一台電腦的瀏覽器連進來操作,以及觀察在主控台以外執行的 Claude Code">遠端</button>
         <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
-        <button className={`ghost mute ${avatarsOn ? 'on' : ''}`} onClick={() => { localStorage.setItem('nexus.avatars', avatarsOn ? '0' : '1'); setAvatarsOn(!avatarsOn); }} title="在節點的六角形裡顯示角色的 Q 版頭像(角色資料夾裡的 avatar.png);關閉時顯示原本的六角形">{avatarsOn ? '頭像 開' : '頭像 關'}</button>
-        <button className={`ghost mute ${muted ? '' : 'on'}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }} title="待授權與異常時的提示音">{muted ? '提示音 關' : '提示音 開'}</button>
-        <button className={`ghost mute ${speakOn ? 'on' : ''}`} onClick={() => { setSpeakOn(!speakOn); setSpeakOnState(!speakOn); if (speakOn) setSpeaking(false); }} title="念出語音播報:你從桌面交辦的回合完成時念一句重點,節點等你授權、有問題要問你或出錯時提醒你">{speakOn ? '朗讀 開' : '朗讀 關'}</button>
-        {speaking && <button className="ghost mute" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀">停止朗讀</button>}
+        <button className={`ghost mute ${showView ? 'on' : ''}`} onClick={() => setShowView(v => !v)} title="顯示與提示:節點頭像、提示音">顯示</button>
+        {speaking && <button className="ghost mute stop-speak" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀(並清空還沒念的)">停止朗讀</button>}
         {caps.some(c => c.simulated) && (
           <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
             <input type="checkbox" checked={autopilot} onChange={e => void window.nexus.setAutopilot(e.target.checked)} />
@@ -205,9 +206,41 @@ export function App() {
         )}
       </header>
 
-      {showRemote && <RemotePanel onClose={() => setShowRemote(false)} />}
-      {showObserve && <ObservePanel onClose={() => setShowObserve(false)} />}
+      {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
+      {showView && (
+        <div className="topbar-pop view-pop">
+          <div className="remote-head"><b>顯示與提示</b><span className="spacer" /><button className="ghost" onClick={() => setShowView(false)} aria-label="關閉">✕</button></div>
+          <div className="pop-row">
+            <button className={`ghost mute ${avatarsOn ? 'on' : ''}`} onClick={() => { localStorage.setItem('nexus.avatars', avatarsOn ? '0' : '1'); setAvatarsOn(!avatarsOn); }} title="在節點的六角形裡顯示角色的 Q 版頭像(角色資料夾裡的 avatar.png);關閉時顯示原本的六角形">{avatarsOn ? '頭像 開' : '頭像 關'}</button>
+            <span className="remote-note">節點的六角形裡顯示角色的 Q 版頭像;關閉時顯示原本的六角形。</span>
+          </div>
+          <div className="pop-row">
+            <button className={`ghost mute ${muted ? '' : 'on'}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }} title="待授權與異常時的提示音">{muted ? '提示音 關' : '提示音 開'}</button>
+            <span className="remote-note">節點進入待授權或異常時響一聲,其他狀態保持安靜。</span>
+          </div>
+          <p className="remote-note">朗讀(語音播報)的開關在「語音」面板。</p>
+        </div>
+      )}
+      {showLimitHelp && (
+        <div className="topbar-pop limit-pop">
+          <div className="remote-head"><b>同時上限與額度上限</b><span className="spacer" /><button className="ghost" onClick={() => setShowLimitHelp(false)} aria-label="關閉">✕</button></div>
+          <div className="remote-sub first">同時上限(目前 {maxActive})</div>
+          <p className="remote-note">同時「執行中」的節點最多幾個(1 到 32,預設 4),用來避免一次開太多節點把訂閱額度用完。</p>
+          <ul className="help-list">
+            <li>計入:規劃中、執行中、等待你授權的頂層節點,以及正在送出第一句的節點。子代理不計;待命、休眠、失聯、出錯的節點不計。</li>
+            <li>已達上限時,你再對待命的節點送指令,不會送出,而是排進那個節點的佇列(對話裡會出現「已達同時執行上限」),等有節點停下來空出名額時,依排入時間先後自動送出。</li>
+            <li>已在執行的節點中途插話不受影響。模擬自動運作的指令達上限時直接略過,不排隊。</li>
+          </ul>
+          <div className="remote-sub">額度上限(目前 {quotaStop === 0 ? '不限制' : `${quotaStop}%`})</div>
+          <p className="remote-note">某家後台的額度用到這個百分比,主控台就不再對那家後台的節點送出新指令。0 表示不限制(範圍 0 到 100)。</p>
+          <ul className="help-list">
+            <li>看的是該後台各額度視窗(例如每五小時、每週)裡用量最高的一個;依模型分組的額度只看節點使用的模型所屬的那一組;還沒有額度資料的後台不受限制。</li>
+            <li>已達上限時:你直接送出的指令不會送出,對話裡顯示錯誤;排隊中的指令留在佇列並暫停,調高上限或等額度重置後,按佇列的「繼續」才會恢復。</li>
+            <li>只擋新指令,已經在執行的回合不會被中斷;其他後台不受影響。</li>
+          </ul>
+        </div>
+      )}
       {showKeys && (
         <div className="keys">
           <b>快捷鍵</b>

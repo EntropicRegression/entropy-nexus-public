@@ -131,7 +131,10 @@
     // ---------- 朗讀回覆
     const voices = speechSynthesis.getVoices().map(v => `${v.name}(${v.lang})`);
     log('可用語音', voices.length, voices.slice(0, 6).join('、'));
-    const toggle = () => [...document.querySelectorAll('button.mute')].find(b => b.textContent.startsWith('朗讀'));
+    // 朗讀開關在頂部「語音」面板裡
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '語音').click();
+    await wait(300);
+    const toggle = () => document.querySelector('.voice button.speak-switch');
     expect('朗讀預設關閉', toggle()?.textContent === '朗讀 關');
     toggle().click();
     await wait(100);
@@ -140,7 +143,8 @@
     await until('程式碼回合結束', async () => (await window.nexus.getSnapshot()).agents.find(x => x.id === a.id && x.state === 'idle') && window.__nexusSpoken, 20000);
     const spoken = window.__nexusSpoken;
     log('送去朗讀的文字', JSON.stringify(spoken));
-    expect('朗讀略過程式碼區塊', !!spoken && !spoken.text.includes('function hello') && spoken.text.includes('程式碼略過') && spoken.text.includes('粗體'));
+    // 語音播報(Phase 2a)念的是規則摘要:程式碼區塊整段拿掉、Markdown 標記去掉,前面加上節點名稱
+    expect('朗讀略過程式碼區塊', !!spoken && !spoken.text.includes('function hello') && !spoken.text.includes('```') && spoken.text.includes('粗體') && spoken.text.startsWith('Pixel:'));
     const stopBtn = await until('出現停止朗讀', () => [...document.querySelectorAll('button.mute')].find(b => b.textContent === '停止朗讀'), 5000).catch(() => null);
     expect('朗讀中顯示停止鈕', !!stopBtn, speechSynthesis.speaking ? '正在朗讀' : '沒有在朗讀');
     await shot('4-speaking');

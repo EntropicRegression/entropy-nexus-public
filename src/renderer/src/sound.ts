@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react';
 import type { SpeechNotice } from '../../shared/types';
 import { speechUnits } from '../../shared/speech-summary';
 
@@ -39,7 +40,15 @@ export function chime(kind: 'ask' | 'fault'): void {
 const SPEAK_KEY = 'nexus.speak';
 
 export const isSpeakOn = (): boolean => localStorage.getItem(SPEAK_KEY) === '1';
-export const setSpeakOn = (on: boolean): void => { localStorage.setItem(SPEAK_KEY, on ? '1' : '0'); if (!on) stopSpeaking(); };
+const speakListeners = new Set<() => void>();
+export const setSpeakOn = (on: boolean): void => {
+  localStorage.setItem(SPEAK_KEY, on ? '1' : '0');
+  if (!on) stopSpeaking();
+  speakListeners.forEach(f => f());
+};
+/** 朗讀開關的訂閱:語音面板與其他地方的畫面透過它保持同步。 */
+export const subscribeSpeakOn = (f: () => void): (() => void) => { speakListeners.add(f); return () => { speakListeners.delete(f); }; };
+export const useSpeakOn = (): boolean => useSyncExternalStore(subscribeSpeakOn, isSpeakOn);
 
 /** 拿掉程式碼區塊與 Markdown 符號,只留適合念出來的文字。 */
 export function speakable(text: string): string {

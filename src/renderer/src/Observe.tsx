@@ -13,7 +13,7 @@ function elapsed(ms: number): string {
 }
 
 /** 外部觀察的設定面板:接收端狀態、會加入哪些 hooks、安裝與移除。設定檔只在按下按鈕時才修改。 */
-export function ObservePanel({ onClose }: { onClose: () => void }) {
+export function ObservePanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }) {
   const [st, setSt] = useState<ObserveStatus | null>(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -26,8 +26,8 @@ export function ObservePanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="remote observe">
-      <div className="remote-head"><b>外部觀察</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
+    <div className={embedded ? 'remote-section observe' : 'remote observe'}>
+      {!embedded && <div className="remote-head"><b>外部觀察</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>}
       {!st ? <div className="empty">讀取中…</div> : <>
         <p className="remote-note">在主控台以外(例如 VS Code 或 Windows Terminal)執行的 Claude Code,裝上 hooks 後會即時回報狀態,顯示在右側節點清單的「外部」區塊。只能觀看,不能授權或下指令;要操作請按「接手」。</p>
         {st.listening

@@ -27,7 +27,9 @@
     await window.nexus.sleep(b.id); await wait(2500);
     await shot('sleep-4-swapped');
     // 關掉再打開頭像
-    const btn = () => [...document.querySelectorAll('.topbar button')].find(x => x.textContent.startsWith('頭像'));
+    // 頭像開關在頂部「顯示」的小面板裡
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '顯示').click(); await wait(300);
+    const btn = () => [...document.querySelectorAll('.view-pop button')].find(x => x.textContent.startsWith('頭像'));
     btn().click(); await wait(1000); btn().click(); await wait(1500);
     await shot('sleep-5-toggled');
     // 節點被移除(子代理結束、終止節點)之後,其他節點的頭像不能壞掉
