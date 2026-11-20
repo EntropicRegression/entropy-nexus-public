@@ -377,9 +377,32 @@ button.mute { font-size: 12px; }
 /* 變更檢視與舊 session 清單用不透明底,避免後面的對話視窗透出來 */
 .review { background: #070d16; }
 
-/* 階段 8:對話視窗開啟時面板縮到上方,不再被蓋住 */
-.stage.dim .board { opacity: 1; bottom: calc(56% + 24px); }
-.dialog { height: 56%; }
+/* 階段 8:對話視窗開啟時面板縮到上方,不再被蓋住。
+   對話視窗的高度:一般是主面板區的 56%(至少 320px);視窗很矮時讓出上方至少 144px 給主面板(精簡成一列),
+   所以最小高度改成「320px 與(總高度 − 160px)取小的」。主面板的底邊就是對話視窗的頂邊,兩者用同一個變數,不會重疊。 */
+.stage { --dlg-h: max(56%, min(320px, calc(100% - 160px))); }
+.stage.dim .board { opacity: 1; bottom: calc(var(--dlg-h) + 16px); }
+.dialog { height: var(--dlg-h); min-height: 0; }
+.dlg-portrait { min-height: 0; overflow: hidden; }
+/* 對話視窗很窄時,標題列的按鈕換到下一行,不要凸出視窗蓋到右側欄;路徑只用剩下的空間,不會因為它而換行 */
+.dlg-id { flex-wrap: wrap; row-gap: 4px; }
+.dlg-id > .path { flex: 1000 1 0; }
+
+/* 主面板:區塊排不下時「另外 N 個」的清單 */
+.board-more { position: absolute; z-index: 25; display: flex; flex-direction: column; background: rgba(6, 12, 20, 0.97); border: 1px solid var(--line); border-top: 2px solid var(--accent); box-shadow: 0 6px 28px rgba(0, 0, 0, 0.6), 0 0 18px rgba(63, 216, 230, 0.14); }
+.bm-head { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 6px 6px 5px 10px; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.bm-head b { color: var(--accent); letter-spacing: 1px; }
+.bm-head span { flex: 1; color: var(--dim); }
+.bm-head button { font-size: 14px; line-height: 1; padding: 2px 8px; }
+.bm-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; }
+.bm-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; background: transparent; border: 1px solid transparent; border-left: 2px solid var(--line-soft); text-align: left; font-size: 12px; }
+.bm-row:hover { background: rgba(63, 216, 230, 0.1); border-color: var(--line); }
+.bm-row.s-awaiting { border-left-color: var(--warn); }
+.bm-row.s-error, .bm-row.s-lost { border-left-color: var(--bad); }
+.bm-row.s-sleeping { opacity: 0.6; }
+.bm-row i { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.bm-name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bm-state { flex: none; max-width: 45%; color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 對話視窗向上展開到佔滿面板;輸入框展開成多行編輯 */
 .dialog.full { top: 16px; height: auto; background: rgba(8, 16, 26, 0.97); }
 .dlg-input.tall { align-items: flex-end; }

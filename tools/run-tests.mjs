@@ -26,6 +26,7 @@ const bash = file => ({ cmd: 'bash', args: [file] });
 const SUITES = [
   // ---- 單元測試
   { name: 'markdown', group: 'unit', min: 0.1, ...node('tests/markdown.test.mjs') },
+  { name: 'board-layout', group: 'unit', min: 0.1, ...node('tests/board-layout.test.mjs') },
   { name: 'voice-summary', group: 'unit', min: 0.1, ...node('tests/voice-summary.test.mjs') },
   { name: 'speech-clips-unit', group: 'unit', min: 0.1, ...node('tests/speech-clips.test.mjs') },
   { name: 'window-size', group: 'unit', min: 0.1, ...node('tests/window-size.test.mjs') },

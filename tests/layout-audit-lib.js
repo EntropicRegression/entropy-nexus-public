@@ -69,22 +69,50 @@ window.__layoutAudit = function layoutAudit() {
   return [...new Set(issues)];
 };
 
-// 主面板的節點:整個節點(六角形加上名字和狀態文字)要在某個區塊裡,而且在畫面上沒被其他東西蓋住
+// 主面板的節點:整個節點(六角形加上名字和狀態文字)要在某個區塊裡,而且在畫面上沒被其他東西蓋住。
+// 區塊本身要在面板裡、互不重疊;排不下時的「另外 N 個」標記也要在自己的區塊裡、點得到,
+// 而且「畫出來的節點 + 收起來的節點」要等於全部節點(沒有節點憑空消失)。
 window.__boardIssues = function boardIssues() {
   const b = window.__nexusBoard;
   const canvas = document.querySelector('.board canvas');
   if (!b || !canvas) return ['找不到主面板'];
   const c = canvas.getBoundingClientRect();
-  const rects = ['planning', 'active', 'chief', 'standby', 'auth', 'fault'].map(z => b.rect(z));
+  const zones = ['planning', 'active', 'chief', 'standby', 'auth', 'fault'];
+  const rects = zones.map(z => b.rect(z));
   const out = [];
+  const size = b.size();
+  if (Math.abs(size.w - c.width) > 1 || Math.abs(size.h - c.height) > 1) out.push(`面板回報的大小 ${size.w}×${size.h} 和畫布 ${Math.round(c.width)}×${Math.round(c.height)} 不一致`);
+  rects.forEach((r, i) => {
+    if (!r) { out.push(`沒有 ${zones[i]} 區塊`); return; }
+    if (r.x < 0 || r.y < 0 || r.x + r.w > size.w + 1 || r.y + r.h > size.h + 1) out.push(`區塊 ${zones[i]} 超出面板(${r.x},${r.y} ${r.w}×${r.h} / ${size.w}×${size.h})`);
+    if (r.w < 80 || r.h < 60) out.push(`區塊 ${zones[i]} 太小(${r.w}×${r.h})`);
+    rects.slice(0, i).forEach((q, j) => { if (q && r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h) out.push(`區塊 ${zones[i]} 和 ${zones[j]} 重疊`); });
+  });
+  if (b.more) {
+    for (const m of b.more()) {
+      const r = b.rect(m.zone), s = m.scale;
+      if (!(m.x - 56 * s >= r.x - 2 && m.x + 56 * s <= r.x + r.w + 2 && m.y - 34 * s >= r.y + 32 && m.y + 64 * s <= r.y + r.h + 2)) out.push(`「另外 ${m.count} 個」超出區塊 ${m.zone}(中心 ${Math.round(m.x)},${Math.round(m.y)},縮放 ${s.toFixed(2)})`);
+      const hit = document.elementFromPoint(c.left + m.x, c.top + m.y);
+      if (hit && hit !== canvas && !hit.closest('.board-more')) out.push(`「另外 ${m.count} 個」被蓋住 ← ${hit.tagName.toLowerCase()}.${String(hit.className).split(' ')[0]}`);
+    }
+    const hidden = b.hidden();
+    const gone = hidden.reduce((n, h) => n + h.count, 0);
+    if (b.positions().length + gone !== b.total()) out.push(`節點數對不上:畫出來 ${b.positions().length} + 收起來 ${gone} ≠ 全部 ${b.total()}`);
+    for (const h of hidden) if (!b.more().some(m => m.zone === h.zone && m.count === h.count)) out.push(`區塊 ${h.zone} 收起 ${h.count} 個節點,卻沒有「另外 N 個」標記`);
+  }
   for (const p of b.positions()) {
     const s = p.scale;
     const box = { l: p.x - 56 * s, r: p.x + 56 * s, t: p.y - 34 * s, b: p.y + 64 * s };
     const inZone = rects.some(r => r && box.l >= r.x - 2 && box.r <= r.x + r.w + 2 && box.t >= r.y + 32 && box.b <= r.y + r.h + 2);
     if (!inZone) out.push(`節點超出區塊(中心 ${Math.round(p.x)},${Math.round(p.y)},縮放 ${s.toFixed(2)})`);
     const hit = document.elementFromPoint(c.left + p.x, c.top + p.y);
-    if (hit && hit !== canvas) out.push(`節點被蓋住(中心 ${Math.round(p.x)},${Math.round(p.y)})← ${hit.tagName.toLowerCase()}.${String(hit.className).split(' ')[0]}`);
+    if (hit && hit !== canvas && !hit.closest('.board-more')) out.push(`節點被蓋住(中心 ${Math.round(p.x)},${Math.round(p.y)})← ${hit.tagName.toLowerCase()}.${String(hit.className).split(' ')[0]}`);
   }
+  // 節點之間不能互相重疊(六角形與文字的範圍)
+  const ps = b.positions();
+  let overlaps = 0;
+  ps.forEach((p, i) => ps.slice(0, i).forEach(q => { const s = Math.min(p.scale, q.scale); if (Math.abs(p.x - q.x) < 100 * s && Math.abs(p.y - q.y) < 90 * s) overlaps++; }));
+  if (overlaps) out.push(`有 ${overlaps} 組節點互相重疊`);
   const tiny = b.positions().filter(p => p.scale < 0.6).length;
   if (tiny) out.push(`有 ${tiny} 個節點縮到 60% 以下(字太小)`);
   return out;

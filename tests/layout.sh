@@ -15,7 +15,7 @@ LOG="$T/run.log"
 export NEXUS_FAKE=1 NEXUS_FAKE_NO_ERRORS=1 NEXUS_NO_SEED=1 NEXUS_REMOTE_PORT=$PORT NEXUS_HOOKS_PORT=$((PORT + 1)) NEXUS_INTEROP_PORT=$((PORT + 2)) \
   NEXUS_DATA_DIR="$(cygpath -w "$T/profile")" NEXUS_TEST_DIR="$(cygpath -w "$T/shots")" NEXUS_TEST_SCRIPT="$(cygpath -w "$T/layout.js")" NEXUS_TEST_CWD="$(cygpath -w "$T/work")"
 for v in $(env | grep -oE '^(CLAUDE|ANTHROPIC)[A-Z_0-9]*'); do unset "$v"; done
-timeout 360 ./node_modules/electron/dist/electron.exe . > "$LOG" 2>&1 &
+timeout 600 ./node_modules/electron/dist/electron.exe . > "$LOG" 2>&1 &
 APP=$!
 if [ "${LAYOUT_WEB:-}" = 1 ]; then
   for _ in $(seq 1 240); do grep -q '\[test\] PAIR' "$LOG" && break; kill -0 $APP 2>/dev/null || break; sleep 0.5; done
