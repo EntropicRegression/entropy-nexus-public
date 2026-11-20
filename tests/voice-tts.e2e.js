@@ -47,7 +47,7 @@
 
     await window.nexus.send(voiced.id, '圖片測試\n語音合成的測試完成了。');
     const v1 = await until(() => { const i = spoken().findIndex(t => t.startsWith('Voiced:')); return i >= 0 ? via()[i] ?? 'unknown' : null; }, 60000);
-    ok(v1 === 'tts', '有聲音的節點:完成播報用合成語音', `${v1} ${JSON.stringify(spoken())} ${JSON.stringify(via())}`);
+    ok(v1 === 'local', '有聲音的節點:完成播報用本機語音合成', `${v1} ${JSON.stringify(spoken())} ${JSON.stringify(via())}`);
     await wait(8000);
 
     await window.nexus.send(plain.id, '圖片測試\n沒有聲音的節點完成了。');

@@ -167,7 +167,7 @@ function stopAudio(): void {
   audio = null;
 }
 
-/** 先試節點自己的聲音(語音服務的語音合成),沒有啟用、這個角色沒有參考錄音、或失敗時改用系統語音。 */
+/** 依語音引擎的順序產生聲音(固定語音、本機語音合成……,見 src/main/speech.ts);都沒有聲音或失敗時改用系統語音。 */
 function play(item: Item): void {
   playing = item;
   const mine = ++token;
@@ -175,10 +175,10 @@ function play(item: Item): void {
   clearWatchdog();
   // 合成本身也要有上限,太久就改用系統語音
   const tooSlow = new Promise<null>(r => { watchdog = window.setTimeout(() => r(null), 15000); });
-  void Promise.race([window.nexus.voiceTts(item.n.agentId, item.text).catch(() => null), tooSlow]).then(buf => {
+  void Promise.race([window.nexus.speechRender(item.n, item.text).catch(() => null), tooSlow]).then(r => {
     if (mine !== token) return;
     clearWatchdog();
-    if (buf) playAudio(item, buf, mine); else playSystem(item, mine);
+    if (r) playAudio(item, r, mine); else playSystem(item, mine);
   });
 }
 
@@ -192,9 +192,9 @@ function finisher(mine: number): () => void {
   };
 }
 
-function playAudio(item: Item, buf: ArrayBuffer, mine: number): void {
+function playAudio(item: Item, r: { audio: ArrayBuffer; mime: string; engine: string }, mine: number): void {
   const finish = finisher(mine);
-  const url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  const url = URL.createObjectURL(new Blob([r.audio], { type: r.mime || 'audio/wav' }));
   const el = new Audio(url);
   audio = { el, url };
   el.onended = finish;
@@ -204,9 +204,9 @@ function playAudio(item: Item, buf: ArrayBuffer, mine: number): void {
     if (Number.isFinite(el.duration)) watchdog = window.setTimeout(finish, el.duration * 1000 + 3000);
   };
   watchdog = window.setTimeout(finish, 30000);
-  // 自我檢查用:真的開始播放才記成 tts(被安全政策擋下或格式不支援時,會改用系統語音並記成 system)
+  // 自我檢查用:真的開始播放才記下用的引擎(clips、local;被安全政策擋下或格式不支援時,會改用系統語音並記成 system)
   const dbg = window as unknown as { __nexusSpokenLog?: string[]; __nexusSpokenVia?: string[] };
-  el.onplaying = () => { if (mine !== token) return; (dbg.__nexusSpokenLog ??= []).push(item.text); (dbg.__nexusSpokenVia ??= []).push('tts'); };
+  el.onplaying = () => { if (mine !== token) return; (dbg.__nexusSpokenLog ??= []).push(item.text); (dbg.__nexusSpokenVia ??= []).push(r.engine); };
   void el.play().catch(() => { if (mine !== token) return; stopAudio(); playSystem(item, mine); });
 }
 

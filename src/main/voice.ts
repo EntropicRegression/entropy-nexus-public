@@ -145,10 +145,10 @@ function poll(gen: number): void {
     if (gen !== generation || !child) return;
     try {
       const r = await fetch(`http://127.0.0.1:${port}/health`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000) });
-      const h = await r.json() as { status?: string; error?: string; device?: string; tts?: { status?: string; error?: string } };
+      const h = await r.json() as { status?: string; error?: string; device?: string; tts?: { status?: string; error?: string; vramMB?: number } };
       if (gen !== generation) return;
-      const t: VoiceStatus['tts'] = !h.tts || h.tts.status === 'off' ? { state: 'off', detail: '' } : h.tts.status === 'ready' ? { state: 'ready', detail: '' } : h.tts.status === 'error' ? { state: 'error', detail: h.tts.error ?? '' } : { state: 'warming', detail: '載入中' };
-      if (t.state !== tts.state || t.detail !== tts.detail) { tts = t; onStatus(voiceStatus()); }
+      const t = ttsFromHealth(h.tts);
+      if (t.state !== tts.state || t.detail !== tts.detail || t.vramMB !== tts.vramMB) { tts = t; onStatus(voiceStatus()); }
       if (h.status === 'ready') { if (state !== 'ready') update({ state: 'ready', detail: '', device: h.device ?? '' }); }
       else if (h.status === 'error') { update({ state: 'error', detail: h.error || '模型載入失敗' }); return; }
       else if (state !== 'warming') update({ state: 'warming', detail: '模型載入中' });
@@ -158,6 +158,34 @@ function poll(gen: number): void {
     }
     if (gen === generation && child) poll(gen);
   }, state === 'ready' && tts.state !== 'warming' ? 15000 : 1000);
+}
+
+function ttsFromHealth(h: { status?: string; error?: string; vramMB?: number } | undefined): VoiceStatus['tts'] {
+  const vramMB = typeof h?.vramMB === 'number' ? h.vramMB : undefined;
+  if (!h || h.status === 'off') return { state: 'off', detail: '' };
+  if (h.status === 'ready') return { state: 'ready', detail: '', vramMB };
+  if (h.status === 'unloaded') return { state: 'unloaded', detail: '已卸載,顯示卡記憶體已釋放', vramMB };
+  if (h.status === 'error') return { state: 'error', detail: h.error ?? '', vramMB };
+  return { state: 'warming', detail: '載入中', vramMB };
+}
+
+/** 手動卸載(load=false)或重新載入(load=true)本機語音合成;語音辨識照常。 */
+export async function voiceTtsPower(load: boolean): Promise<VoiceStatus> {
+  if (!child || (state !== 'ready' && state !== 'warming')) throw new Error('語音服務沒有在執行');
+  if (tts.state === 'off') throw new Error('沒有設定語音合成');
+  const r = await fetch(`http://127.0.0.1:${port}/tts/${load ? 'load' : 'unload'}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    // 卸載要等正在合成的那一句做完
+    signal: AbortSignal.timeout(60000),
+  });
+  const body = await r.json().catch(() => ({})) as { tts?: { status?: string; error?: string; vramMB?: number }; error?: string };
+  if (!r.ok) throw new Error(body.error || `語音服務回應錯誤(${r.status})`);
+  tts = ttsFromHealth(body.tts);
+  onStatus(voiceStatus());
+  // 載入在背景進行,改成每秒查一次狀態
+  if (load) poll(generation);
+  return voiceStatus();
 }
 
 /** 結束語音服務(連同啟動指令開出的整個行程樹)。 */
@@ -213,9 +241,23 @@ export async function voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript
 
 /** 用角色的參考錄音合成一段話;沒有啟用語音合成、或角色沒有 voice.wav 時回傳 null(呼叫端改用系統語音)。 */
 export async function voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null> {
-  if (state !== 'ready' || tts.state !== 'ready' || !child) return null;
   const character = typeof target === 'string' ? characterOf(target) : typeof target?.character === 'string' ? target.character : null;
-  const voice = character ? voiceOf(character) : null;
+  return character ? localTts(character, text) : null;
+}
+
+/** 本機語音合成(語音播報的 local 引擎)現在能不能用。 */
+export function localTtsState(): { ready: boolean; detail: string } {
+  if (state !== 'ready' || !child) return { ready: false, detail: settings.enabled ? '語音服務還沒準備好' : '語音模式沒有啟用' };
+  if (tts.state === 'off') return { ready: false, detail: '沒有設定語音合成的資料夾' };
+  if (tts.state === 'unloaded') return { ready: false, detail: '已手動卸載(顯示卡記憶體已釋放)' };
+  if (tts.state !== 'ready') return { ready: false, detail: tts.state === 'error' ? `語音合成異常:${tts.detail}` : '語音合成載入中' };
+  return { ready: true, detail: '' };
+}
+
+/** 用角色的參考錄音合成一段話(本機語音服務);不能用、或角色沒有 voice.wav 時回傳 null。 */
+export async function localTts(character: string, text: string): Promise<ArrayBuffer | null> {
+  if (!localTtsState().ready) return null;
+  const voice = voiceOf(character);
   const say = String(text ?? '').trim().slice(0, 500);
   if (!voice || !say) return null;
   const r = await fetch(`http://127.0.0.1:${port}/tts`, {

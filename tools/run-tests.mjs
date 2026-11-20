@@ -27,6 +27,7 @@ const SUITES = [
   // ---- 單元測試
   { name: 'markdown', group: 'unit', min: 0.1, ...node('tests/markdown.test.mjs') },
   { name: 'voice-summary', group: 'unit', min: 0.1, ...node('tests/voice-summary.test.mjs') },
+  { name: 'speech-clips-unit', group: 'unit', min: 0.1, ...node('tests/speech-clips.test.mjs') },
   { name: 'review-prompt', group: 'unit', min: 0.1, ...node('tests/review-prompt.test.mjs') },
   { name: 'claude-content', group: 'unit', min: 0.1, fixtures: true, ...node('tests/claude-content.test.mjs') },
   { name: 'acp', group: 'unit', min: 0.5, ...node('tests/acp.test.js') },
@@ -37,6 +38,7 @@ const SUITES = [
   { name: 'chief', group: 'e2e', core: true, min: 1, ...bash('tests/chief.sh') },
   { name: 'voice-speech', group: 'e2e', core: true, min: 1.5, ...bash('tests/voice-speech.sh') },
   { name: 'queue-fake', group: 'e2e', core: true, min: 1.5, ...bash('tests/queue-fake.sh') },
+  { name: 'speech-clips', group: 'e2e', core: true, min: 1, ...bash('tests/speech-clips.sh') },
   { name: 'access', group: 'e2e', min: 2, ...bash('tests/access.sh') },
   { name: 'access-ui', group: 'e2e', min: 2, ...bash('tests/access-ui.sh') },
   { name: 'attachments', group: 'e2e', min: 2, ...bash('tests/attachments.sh') },
@@ -52,6 +54,7 @@ const SUITES = [
   // ---- 需要本機語音環境
   { name: 'voice', group: 'local', min: 2, ...bash('tests/voice.sh') },
   { name: 'voice-tts', group: 'local', min: 3, ...bash('tests/voice-tts.sh') },
+  { name: 'voice-offload', group: 'local', min: 4, timeout: 25, ...node('tests/voice-offload.mjs') },
   // ---- 需要真正的 CLI(會花額度)
   { name: 'interop-real', group: 'real', min: 5, ...bash('tests/interop-real.sh') },
   { name: 'meeting-real', group: 'real', min: 8, ...bash('tests/meeting-real.sh') },

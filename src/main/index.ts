@@ -13,7 +13,8 @@ import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, r
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
-import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts } from './voice';
+import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
+import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
 app.setPath('userData', process.env.NEXUS_DATA_DIR || join(app.getPath('appData'), 'entropy-nexus'));
@@ -147,6 +148,11 @@ function registerIpc(methods: Methods): void {
   ipcMain.handle('nexus:voiceTranscribe', (_e, wav: ArrayBuffer) => voiceTranscribe(wav));
   ipcMain.handle('nexus:voiceTts', (_e, target: string | { character: string }, text: string) => voiceTts(target, String(text ?? '')));
   ipcMain.handle('nexus:voiceCharacters', () => voiceCharacters());
+  ipcMain.handle('nexus:voiceTtsPower', (_e, load: boolean) => voiceTtsPower(load === true));
+  ipcMain.handle('nexus:speechRender', (_e, notice, text: string) => speechRender(notice, String(text ?? '')));
+  ipcMain.handle('nexus:speechSettings', () => speechSettings());
+  ipcMain.handle('nexus:speechSet', (_e, patch) => speechSet(patch && typeof patch === 'object' ? patch : {}));
+  ipcMain.handle('nexus:speechClip', (_e, character: string, kind) => speechClip(String(character ?? ''), kind));
   // 角色的聲音:檔案都在主行程讀寫,畫面只送錄好的內容;選檔用主行程的對話框,畫面不能指定任意路徑
   ipcMain.handle('nexus:voiceProfile', (_e, character: string) => voiceProfile(String(character ?? '')));
   ipcMain.handle('nexus:voiceProfileSave', (_e, character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }) => {
@@ -314,6 +320,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       const names = core?.snapshot().agents.filter(a => !a.parentId).map(a => a.name) ?? [];
       return names.length ? `節點名稱:${names.join('、')}。` : '';
     }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
+    initSpeechEngines(store, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);

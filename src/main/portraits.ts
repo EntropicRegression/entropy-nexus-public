@@ -59,7 +59,7 @@ export function portraitsDir(): string {
 export function listCharacters(): string[] {
   try {
     return readdirSync(root, { withFileTypes: true })
-      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav'))))
+      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav')) || existsSync(join(root, d.name, 'clips'))))
       .map(d => d.name)
       .sort((a, b) => a.localeCompare(b));
   } catch {

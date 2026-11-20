@@ -557,6 +557,12 @@ button.mute { font-size: 12px; }
 .remote-sub.first { margin-top: 4px; }
 .speak-row { display: flex; align-items: center; gap: 10px; }
 .speak-row .remote-note { margin: 0; }
+.speech-engine { margin: 4px 0 8px; }
+.speech-engine-row { display: flex; align-items: center; gap: 10px; }
+.speech-engine-row em { font-style: normal; font-size: 11px; }
+.speech-engine-row button { padding: 0 8px; }
+.tts-power { margin-left: 8px; padding: 0 8px; font-size: 12px; }
+.speech-engine .remote-note { margin: 2px 0 0 22px; }
 button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px solid var(--line); }
 .hub-tabs { display: flex; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
 .hub-tabs button { padding: 4px 10px; font-size: 12px; border-bottom: 2px solid transparent; }
