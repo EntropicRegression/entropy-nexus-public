@@ -1,0 +1,44 @@
+# 每次 PR 與推送到 main:型別檢查、建置、單元測試,以及核心的假資料驗收腳本。
+# 完整的假資料驗收腳本在 weekly.yml(每週一次)。測試入口與分組見 tools/run-tests.mjs。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 型別檢查
+        run: npm run typecheck
+      - name: 單元測試
+        run: npm test
+        env:
+          NEXUS_TEST_LOGS: ${{ runner.temp }}/nexus-test-runs
+      - name: 核心驗收腳本(假資料模式,會先建置)
+        run: npm run test:core
+        env:
+          NEXUS_TEST_LOGS: ${{ runner.temp }}/nexus-test-runs
+      - name: 上傳測試紀錄
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-core
+          path: ${{ runner.temp }}/nexus-test-runs/
+          if-no-files-found: ignore

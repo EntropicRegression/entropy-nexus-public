@@ -3,6 +3,9 @@
 // 截圖「1-task-started」出現後,外層腳本會直接修改測試版本庫的檔案,當作這個任務做的修改。
 (async () => {
   const log = (...a) => console.log('[test]', ...a);
+  let bad = 0;
+  const ok = (cond, what, extra = '') => { if (!cond) bad++; log(cond ? '通過' : '不符', what, extra); };
+  const errText = e => String(e.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const shot = async name => { document.title = `SHOT:${name}`; await wait(900); };
   const snap = () => window.nexus.getSnapshot();
@@ -51,22 +54,25 @@
     await shot('1-task-started');
     const live = await until('外層腳本修改的檔案出現在差異裡', async () => { const s = await window.nexus.getTaskChanges(task.id); return s.files.length >= 4 ? s : null; }, 30000);
     log('執行中的差異', JSON.stringify(live.files.map(f => `${f.status} ${f.path} +${f.added} -${f.removed}${f.binary ? ' 二進位' : ''}`)));
+    ok(live.files.find(f => f.path === 'logo.png')?.binary && live.files.find(f => f.path === 'NEW.md')?.status === 'A', '執行中的差異認得二進位檔與新增檔');
     const q = (await agentOf(a.id)).pendingQuestion;
     await window.nexus.answerQuestion(a.id, q.requestId, { q1: ['紅色'] });
     const done = await until('A 的任務結束且結束快照算完', async () => { const t = (await snap()).tasks.find(x => x.id === task.id); return t.endedAt && t.changes?.end ? t : null; });
-    log('任務結束', done.status, JSON.stringify({ files: done.changes.files, added: done.changes.added, removed: done.changes.removed }));
+    ok(done.changes.files === 4 && done.changes.added === 5 && done.changes.removed === 6, '結束快照:4 個檔案 +5 -6', JSON.stringify({ files: done.changes.files, added: done.changes.added, removed: done.changes.removed }));
 
     // 開啟變更檢視
     await wait(500);
     const chip = [...document.querySelectorAll('.task')].find(t => t.textContent.includes('Author-A'))?.querySelector('.task-changes');
     chip.click();
     await until('變更檢視', async () => document.querySelector('.rv-file'));
-    log('檔案列', JSON.stringify([...document.querySelectorAll('.rv-file')].map(f => f.textContent)));
+    const fileRows = [...document.querySelectorAll('.rv-file')].map(f => f.textContent);
+    ok(fileRows.length === 4 && fileRows.some(t => t.includes('logo.png') && t.includes('二進位')), '變更檢視列出 4 個檔案,logo.png 標成二進位', JSON.stringify(fileRows));
     [...document.querySelectorAll('.rv-file')].find(f => f.textContent.includes('app.js')).click();
     await wait(300);
     const lines = [...document.querySelectorAll('.rv-diff .ln')];
     log('app.js 的差異行(舊號|新號|內容)', JSON.stringify(lines.map(l => [...l.querySelectorAll('.ln-no')].map(n => n.textContent).join('|') + '|' + l.textContent.replace(/^\d*\d*/, '').slice(0, 40))));
-    log('可評論的行數', document.querySelectorAll('.rv-diff .ln.can').length, '/', lines.length, '| hunk 標頭可評論?', document.querySelector('.rv-diff .ln.hunk')?.classList.contains('can'));
+    const canCount = document.querySelectorAll('.rv-diff .ln.can').length;
+    ok(lines.length > 0 && canCount >= lines.length - 2 && !document.querySelector('.rv-diff .ln.hunk')?.classList.contains('can'), 'app.js 的差異行可評論,hunk 標頭不可評論', `${canCount}/${lines.length}`);
 
     const ins = lines.find(l => l.classList.contains('ins') && l.textContent.includes('`hi ${name}`'));
     const rm = lines.find(l => l.classList.contains('rm') && l.textContent.includes('"hi " + name'));
@@ -76,7 +82,8 @@
     await comment(tailRm, '這個函式還有人呼叫,不能刪');
     // 再加一則,之後刪掉
     await comment(lines.find(l => l.classList.contains('can') && !l.classList.contains('ins') && !l.classList.contains('rm')), '要刪掉的評論');
-    log('評論方塊', JSON.stringify([...document.querySelectorAll('.rv-diff .rv-cmt')].map(x => x.querySelector('.rv-cmt-at').textContent + ' :: ' + x.querySelector('.rv-cmt-text').textContent)));
+    const boxes = [...document.querySelectorAll('.rv-diff .rv-cmt')].map(x => x.querySelector('.rv-cmt-at').textContent + ' :: ' + x.querySelector('.rv-cmt-text').textContent);
+    ok(boxes.length === 4 && boxes.some(t => t.startsWith('舊檔第 2 行(被刪除的行)')) && boxes.some(t => t.startsWith('第 3 行')) && boxes.some(t => t.startsWith('舊檔第 8 行')), '四則行內評論標在正確的行(新檔與舊檔行號)', JSON.stringify(boxes));
     // 編輯第一則
     const first = [...document.querySelectorAll('.rv-diff .rv-cmt')].find(x => x.textContent.includes('預設值'));
     button('編輯', first).click();
@@ -93,14 +100,17 @@
     setValue(document.querySelector('.rv-general textarea'), '整體來說請補上單元測試');
     button('新增評論').click();
     await wait(200);
-    log('底部', document.querySelector('.rv-foot .rv-count').textContent, '| 檔案列的評論數', JSON.stringify([...document.querySelectorAll('.rv-cnt')].map(x => x.textContent)), '| 送回按鈕可按', !button('送回此節點修改').disabled);
+    const footCount = document.querySelector('.rv-foot .rv-count').textContent;
+    ok(footCount.includes('4 則評論') && !button('送回此節點修改').disabled, '編輯、刪除後剩 4 則評論(3 則行內加 1 則整體),送回按鈕可按', footCount);
     await shot('2-comments');
 
     // 送回此節點修改
     button('送回此節點修改').click();
     const prompt = await until('A 收到評論指令', async () => { const t = await lastUser(a.id); return t.includes('審查意見') ? t : null; }, 15000);
     await wait(300);
-    log('送出後的提示', document.querySelector('.rv-note.ok')?.textContent, '| 剩下評論', document.querySelector('.rv-foot .rv-count').textContent);
+    ok(document.querySelector('.rv-note.ok')?.textContent.includes('已把 4 則評論送回'), '送回後的提示', document.querySelector('.rv-note.ok')?.textContent);
+    ok(!document.querySelector('.rv-foot .rv-count').textContent.includes('則評論'), '送回後評論清空', document.querySelector('.rv-foot .rv-count').textContent);
+    ok(prompt.includes('"訪客"') && prompt.includes('原本的寫法為什麼要刪') && prompt.includes('這個函式還有人呼叫') && prompt.includes('整體來說請補上單元測試') && !prompt.includes('要刪掉的評論'), 'A 收到的指令有編輯後的評論與整體意見,沒有已刪除的評論');
     log('A 收到的指令全文 >>>');
     for (const l of prompt.split('\n')) log('  |', l);
     log('<<<');
@@ -108,25 +118,32 @@
 
     // 送交其他節點審查
     const select = document.querySelector('.rv-reviewer');
-    log('審查下拉選單', JSON.stringify([...select.options].map(o => o.textContent)));
+    const opts = [...select.options].map(o => o.textContent);
+    ok(opts.some(t => t.includes('Codex-B')) && opts.some(t => t.includes('Agy-C')) && !opts.some(t => t.includes('Author-A') || t.includes('Sleepy-D')), '審查下拉選單不含作者自己與休眠節點', JSON.stringify(opts));
     // 直接呼叫的防呆
     for (const [label, id] of [['自己', a.id], ['休眠節點', d.id]]) {
-      try { await window.nexus.requestReview(task.id, id); log(label, '沒有被擋下(不應該)'); } catch (e) { log(`送給${label}審查被擋下:`, String(e.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+      let blocked = '';
+      try { await window.nexus.requestReview(task.id, id); } catch (e) { blocked = errText(e); }
+      ok(!!blocked, `直接呼叫送給${label}審查會被擋下`, blocked);
     }
     setValue(select, c.id);
     const reviewPrompt = await until('C 收到審查請求', async () => { const t = await lastUser(c.id); return t.includes('審查請求') ? t : null; }, 15000);
     await wait(500);
-    log('送審後的提示', document.querySelector('.rv-note.ok')?.textContent);
+    ok(document.querySelector('.rv-note.ok')?.textContent.includes('送交 Agy-C 審查'), '送審後的提示', document.querySelector('.rv-note.ok')?.textContent);
     log('C 收到的審查請求 >>>');
     for (const l of reviewPrompt.split('\n')) log('  |', l);
     log('<<< 全長', reviewPrompt.length);
-    log('審查請求包含:不要修改', reviewPrompt.includes('不要修改任何檔案'), '| 完整 diff', reviewPrompt.includes('## 完整 diff'), '| 二進位只列檔名', reviewPrompt.includes('logo.png(二進位檔,只列檔名)') && !reviewPrompt.includes('### logo.png'), '| 工作目錄不同的說明', reviewPrompt.includes('這不是你目前的工作目錄'));
-    log('C 的對話備註', JSON.stringify(await notes(c.id)));
-    log('A 的對話備註', JSON.stringify(await notes(a.id)));
+    ok(reviewPrompt.includes('不要修改任何檔案'), '審查請求要求不要修改檔案');
+    ok(reviewPrompt.includes('## 完整 diff') && reviewPrompt.includes('`hi ${name}`'), '審查請求附上完整 diff');
+    ok(reviewPrompt.includes('logo.png(二進位檔,只列檔名)') && !reviewPrompt.includes('### logo.png'), '二進位檔只列檔名');
+    ok(reviewPrompt.includes('這不是你目前的工作目錄'), 'C 的工作目錄不同,有說明');
+    const cNotes = await notes(c.id), aNotes = await notes(a.id);
+    ok(cNotes.some(t => t.includes('審查請求') && t.includes('Author-A')), 'C 的對話有審查請求備註', JSON.stringify(cNotes));
+    ok(aNotes.some(t => t.includes('送交 Agy-C 審查')), 'A 的對話有送審備註', JSON.stringify(aNotes));
     // B 跟 A 在同一個工作目錄
     setValue(document.querySelector('.rv-reviewer'), b.id);
     const bPrompt = await until('B 收到審查請求', async () => { const t = await lastUser(b.id); return t.includes('審查請求') ? t : null; }, 15000);
-    log('B 的審查請求說明工作目錄相同', bPrompt.includes('就是你目前的工作目錄'));
+    ok(bPrompt.includes('就是你目前的工作目錄'), 'B 的工作目錄相同,有說明');
     // 開 C 的對話視窗截圖
     document.querySelector('.review .ghost').click();
     await wait(300);
@@ -149,11 +166,13 @@
       setValue(document.querySelector('.rv-cmt.edit textarea'), '節點不在了');
       button('新增評論').click();
       await wait(300);
-      log('節點移除後:送回按鈕停用', button('送回此節點修改').disabled, '| 說明', document.querySelector('.rv-why')?.textContent);
-      try { await window.nexus.sendReviewComments(task.id, [{ path: null, row: null, side: null, line: null, text: 'x' }]); log('直接呼叫沒有被擋下(不應該)'); } catch (e) { log('直接呼叫被擋下:', String(e.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); }
+      ok(button('送回此節點修改').disabled && document.querySelector('.rv-why')?.textContent.includes('已不存在'), '作者節點移除後送回按鈕停用並說明', document.querySelector('.rv-why')?.textContent);
+      let blocked = '';
+      try { await window.nexus.sendReviewComments(task.id, [{ path: null, row: null, side: null, line: null, text: 'x' }]); } catch (e) { blocked = errText(e); }
+      ok(!!blocked, '作者節點移除後直接呼叫送回會被擋下', blocked);
       await shot('5-author-removed');
-    } else log('移除節點後任務面板找不到這個任務', JSON.stringify([...document.querySelectorAll('.task')].map(t => t.textContent.slice(0, 60))));
-    log('全部步驟完成');
+    } else ok(false, '移除節點後任務面板還找得到這個任務', JSON.stringify([...document.querySelectorAll('.task')].map(t => t.textContent.slice(0, 60))));
+    log(bad ? `有 ${bad} 項不符` : '全部通過');
   } catch (err) {
     log('失敗', err.message);
     await shot('9-failed');

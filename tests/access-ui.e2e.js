@@ -25,7 +25,15 @@
     while (Date.now() - t0 < 60000 && (await window.nexus.remoteStatus()).devices.length === 0) await wait(500);
     await wait(14000);
     // 裝置清單與操作紀錄
-    [...document.querySelectorAll('.remote-log-head button')][0].click();
+    // 偶爾在這裡找不到按鈕(約五次一次,原因未明):等一下再找,找不到就留下畫面狀態與截圖以便追查
+    let logBtn = null;
+    for (let i = 0; i < 50 && !logBtn; i++) { logBtn = document.querySelector('.remote-log-head button'); if (!logBtn) await wait(200); }
+    if (!logBtn) {
+      log('不符', '遠端面板的操作紀錄按鈕不見了', JSON.stringify({ hub: !!document.querySelector('.remote.hub'), tab: document.querySelector('.hub-tabs .on')?.textContent, remoteBtnOn: [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '遠端')?.className, body: document.body.innerText.slice(0, 300) }));
+      await shot('panel-missing');
+      throw new Error('找不到操作紀錄按鈕');
+    }
+    logBtn.click();
     await wait(1500);
     const dev = document.querySelector('.remote-dev')?.textContent ?? '';
     const rows = [...document.querySelectorAll('.remote-log-row')].map(r => r.textContent);
