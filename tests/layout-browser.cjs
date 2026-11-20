@@ -36,7 +36,7 @@ app.whenReady().then(async () => {
     await js(lib + '\n0');
 
     // 完整介面(電腦的瀏覽器)
-    for (const [cw, ch, label] of [[1440, 900, '大螢幕'], [1280, 650, '1080p-150%'], [1090, 540, '768p-125%'], [900, 600, '窄視窗']]) {
+    for (const [cw, ch, label] of [[1440, 900, '大螢幕'], [1280, 650, '1080p-150%'], [1090, 540, '768p-125%'], [900, 600, '窄視窗'], [760, 560, '最窄視窗']]) {
       w.setContentSize(cw, ch);
       await wait(1800);
       const size = `瀏覽器 ${label} ${cw}×${ch}`;

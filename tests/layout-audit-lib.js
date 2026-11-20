@@ -114,9 +114,21 @@ window.__layoutScene = async function layoutScene(name) {
   if (name === 'help') { document.querySelector('.topbar button.help')?.click(); await wait(600); return window.__layoutAudit(); }
   const b = btn(name, document.querySelector('.topbar'));
   if (!b) return [`頂部找不到「${name}」按鈕(可能被擠出畫面或被隱藏)`];
+  // 視窗窄的時候「快捷鍵、顯示」收在「更多」選單裡:先打開選單,確認選單裡的按鈕點得到,再點它
+  const pre = [];
+  if (b.offsetParent === null) {
+    const more = document.querySelector('.topbar button.more-btn');
+    if (!more || more.offsetParent === null) return [`頂部的「${name}」按鈕被隱藏,也沒有「更多」選單`];
+    more.click();
+    await wait(300);
+    const r = b.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (b.offsetParent === null || r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || r.left < -1 || !hit || !b.contains(hit)) pre.push(`「更多」選單裡的「${name}」點不到`);
+  }
   b.click();
   await wait(900);
-  return window.__layoutAudit();
+  if (document.querySelector('.topbar-more.open')) pre.push('點了選單項目後「更多」選單沒有收起來');
+  return [...pre, ...window.__layoutAudit()];
 };
 
 window.__layoutClose = async function layoutClose() {

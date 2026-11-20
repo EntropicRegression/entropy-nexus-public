@@ -43,6 +43,9 @@ export function App() {
   const [showView, setShowView] = useState(false);
   const [showLimitHelp, setShowLimitHelp] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
+  // 頂部列的「更多」選單:視窗窄的時候,較少用的按鈕收進這裡(寬度夠時這些按鈕直接排在頂部列,見 styles.css)
+  const [showMore, setShowMore] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
   const [observed, setObserved] = useState<Record<string, ObservedSession>>({});
   const [hover, setHover] = useState<{ id: string; x: number; y: number; side: 'right' | 'left' } | null>(null);
   const [muted, setMutedState] = useState(isMuted());
@@ -120,6 +123,14 @@ export function App() {
     return () => { alive = false; off(); };
   }, []);
 
+  // 「更多」選單打開時,點選單以外的地方就收起來
+  useEffect(() => {
+    if (!showMore) return;
+    const close = (e: PointerEvent) => { if (!moreRef.current?.contains(e.target as Node)) setShowMore(false); };
+    window.addEventListener('pointerdown', close, true);
+    return () => window.removeEventListener('pointerdown', close, true);
+  }, [showMore]);
+
   const list = useMemo(() => Object.values(agents), [agents]);
   // 節點清單:需要你的排最上面;子節點緊跟在呼叫它的節點後面
   const roster = useMemo(() => {
@@ -137,7 +148,7 @@ export function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'n') { e.preventDefault(); if (fullAccess) setAdding(true); return; }
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); if (fullAccess) setShowOld(true); return; }
       if (e.key === 'Escape' && !reviewId && !showOld) {
-        if (showKeys) setShowKeys(false); else if (selectedId) setSelectedId(null);
+        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (selectedId) setSelectedId(null);
         return;
       }
       if (!e.altKey || e.ctrlKey) return;
@@ -159,7 +170,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agents, roster, selectedId, reviewId, showOld, showKeys]);
+  }, [agents, roster, selectedId, reviewId, showOld, showKeys, showMore]);
   const reviewTask = reviewId ? tasks.find(t => t.id === reviewId) ?? null : null;
   // 對話視窗的「變更」按鈕:這個節點最近一個有變更資料的任務
   const latestTask = (agentId: string) => tasks.filter(t => t.agentId === agentId && t.changes).sort((a, b) => b.startedAt - a.startedAt)[0]?.id ?? null;
@@ -170,24 +181,29 @@ export function App() {
       <header className="topbar">
         <div className="brand">ENTROPY NEXUS</div>
         <div className="caps">
-          {caps.map(c => (
-            <span key={c.backend} className="chip" title={c.note}>
-              <i style={{ background: hex(BACKEND_COLOR[c.backend]) }} />
-              {BACKEND_LABEL[c.backend]}
-              <em>{c.simulated ? '模擬' : c.available ? c.version ?? '已連線' : '未安裝'}</em>
-            </span>
-          ))}
+          {caps.map(c => {
+            const status = c.simulated ? '模擬' : c.available ? c.version ?? '已連線' : '未安裝';
+            // 視窗窄的時候標籤縮成圓點,名稱與狀態改從提示文字看
+            return (
+              <span key={c.backend} className={`chip ${c.simulated || c.available ? '' : 'off'}`} title={`${BACKEND_LABEL[c.backend]}:${status}${c.note ? `
+${c.note}` : ''}`}>
+                <i style={{ background: hex(BACKEND_COLOR[c.backend]) }} />
+                <span className="chip-text">{BACKEND_LABEL[c.backend]}</span>
+                <em>{status}</em>
+              </span>
+            );
+          })}
         </div>
         <div className="spacer" />
         <span className="stat">節點 <b>{list.filter(a => !a.parentId).length}</b></span>
         <span className={`stat ${needYou ? 'warn' : ''}`}>需要你 <b>{needYou}</b></span>
         <div className="limits need-full">
           <label className="limit" title="同時執行中的節點數上限(1 到 32)。計入規劃中、執行中、等待授權的頂層節點;子代理不計。已達上限時,新送出的指令會排進節點的佇列,有名額時自動送出。按右邊的「?」看完整說明。">
-            同時上限
+            <span>同時<span className="tb-long">上限</span></span>
             <input type="number" min={1} max={32} value={maxActive} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 32) void window.nexus.setMaxActive(n); }} />
           </label>
           <label className="limit" title="某家後台的額度用到這個百分比,就不再對它的節點送出新指令,排隊中的指令會暫停(0 表示不限制)。按右邊的「?」看完整說明。">
-            額度上限
+            <span>額度<span className="tb-long">上限</span></span>
             <input type="number" min={0} max={100} value={quotaStop} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 0 && n <= 100) void window.nexus.setQuotaStop(n); }} />%
           </label>
           <button className={`ghost help ${showLimitHelp ? 'on' : ''}`} onClick={() => setShowLimitHelp(v => !v)} title="說明:同時上限與額度上限" aria-label="說明:同時上限與額度上限">?</button>
@@ -195,15 +211,21 @@ export function App() {
         <span className="topbar-sep" aria-hidden />
         <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音:朗讀(語音播報)開關,以及語音輸入(實驗性)的設定">語音</button>
         <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="遠端:讓手機或另一台電腦的瀏覽器連進來操作,以及觀察在主控台以外執行的 Claude Code">遠端</button>
-        <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
-        <button className={`ghost mute ${showView ? 'on' : ''}`} onClick={() => setShowView(v => !v)} title="顯示與提示:節點頭像、提示音">顯示</button>
         {speaking && <button className="ghost mute stop-speak" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀(並清空還沒念的)">停止朗讀</button>}
-        {caps.some(c => c.simulated) && (
-          <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
-            <input type="checkbox" checked={autopilot} onChange={e => void window.nexus.setAutopilot(e.target.checked)} />
-            模擬自動運作
-          </label>
-        )}
+        {/* 較少用的按鈕:寬度夠時直接排在頂部列;視窗窄的時候收進「更多」選單(同一組按鈕,只是換位置) */}
+        <div className={`topbar-more ${showMore ? 'open' : ''}`} ref={moreRef}>
+          <button className={`ghost mute more-btn ${showMore || showKeys || showView ? 'on' : ''}`} onClick={() => setShowMore(v => !v)} title="更多:快捷鍵、顯示與提示" aria-label="更多" aria-haspopup="menu" aria-expanded={showMore}>⋯</button>
+          <div className="more-items" role="group" aria-label="更多" onClick={e => { if ((e.target as HTMLElement).closest('button')) setShowMore(false); }}>
+            <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
+            <button className={`ghost mute ${showView ? 'on' : ''}`} onClick={() => setShowView(v => !v)} title="顯示與提示:節點頭像、提示音">顯示</button>
+            {caps.some(c => c.simulated) && (
+              <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
+                <input type="checkbox" checked={autopilot} onChange={e => void window.nexus.setAutopilot(e.target.checked)} />
+                模擬自動運作
+              </label>
+            )}
+          </div>
+        </div>
       </header>
 
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
