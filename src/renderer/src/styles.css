@@ -573,3 +573,41 @@ button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px
 .hub-tabs button { padding: 4px 10px; font-size: 12px; border-bottom: 2px solid transparent; }
 .hub-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
 .remote-section { }
+
+/* 頂部列:視窗窄的時候逐步精簡,維持一列、不撐出整頁的水平捲動。
+   1. 1340 以下:後台標籤不顯示狀態(模擬、版本);1220 以下縮成圓點(名稱與狀態看提示文字)
+   2. 980 以下:快捷鍵、顯示、模擬自動運作收進「更多」(⋯)選單
+   3. 860 以下:縮小間距與品牌字距,「同時上限、額度上限」縮成「同時、額度」 */
+.topbar { min-width: 0; }
+/* 還是放不下時(例如版本字串很長)由後台標籤讓位,不把右邊的按鈕擠出畫面 */
+.topbar > .caps { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.topbar-more, .more-items { display: contents; }
+.topbar .more-items > * { flex: none; white-space: nowrap; }
+.topbar button.more-btn { display: none; padding: 2px 6px; font-size: 14px; line-height: 18px; }
+@media (max-width: 1340px) {
+  .chip em { display: none; }
+  .chip.off { opacity: 0.55; }
+}
+@media (max-width: 1220px) {
+  .caps { gap: 4px; }
+  .chip { padding: 5px; gap: 0; }
+  .chip .chip-text { display: none; }
+  .chip.off { opacity: 1; }
+  .chip i { width: 8px; height: 8px; }
+  .chip.off i { background: none !important; border: 1px solid var(--dim); box-shadow: none; }
+}
+@media (max-width: 980px) {
+  .topbar-more { display: block; position: relative; }
+  .topbar button.more-btn { display: inline-block; }
+  .more-items { display: none; position: absolute; right: -6px; top: calc(100% + 12px); z-index: 45; flex-direction: column; align-items: stretch; gap: 2px; min-width: 150px; padding: 6px; background: #070d16; border: 1px solid var(--line); border-top: 2px solid var(--accent); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6); }
+  .topbar-more.open .more-items { display: flex; }
+  .topbar .more-items button.mute { padding: 5px 10px; text-align: left; }
+  .topbar .more-items button.mute:hover { background: rgba(63, 216, 230, 0.1); }
+  .more-items .toggle { padding: 5px 10px; }
+}
+@media (max-width: 860px) {
+  .topbar { gap: 7px; padding: 0 10px; }
+  .brand { letter-spacing: 1px; }
+  .topbar .limits { gap: 7px; }
+  .topbar .tb-long { display: none; }
+}
