@@ -8,7 +8,7 @@
   const log = (...a) => console.log('[test]', ...a);
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const shot = async name => { document.title = `SHOT:${name}`; await wait(700); };
-  const SIZES = [[1440, 900, '大螢幕'], [1100, 700, '最小視窗'], [1280, 650, '1080p-150%'], [1090, 540, '768p-125%']];
+  const SIZES = [[1440, 900, '大螢幕'], [1100, 700, '最小視窗'], [1280, 650, '1080p-150%'], [1090, 540, '768p-125%'], [960, 540, '最小視窗-小螢幕']];
   let total = 0;
   try {
     await window.nexus.setAutopilot(false);

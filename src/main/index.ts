@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApprovalDecision, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
@@ -9,6 +9,7 @@ import { FILE_SCHEME, handleFileRequests, initMedia } from './media';
 import { Interop } from './interop';
 import { initProcs, reapStale } from './procs';
 import { resolveLocal, revealLocal } from './reveal';
+import { windowSizes } from './window-size';
 import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, remotePushFull, remoteRevoke, remoteSet, remoteSetDevice, remoteStatus, stopRemote } from './remote';
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
@@ -37,11 +38,11 @@ let quitting = false;
 let interopRef: Interop | null = null;
 
 function createWindow(): void {
+  // 初始大小與最小尺寸不超過螢幕的可用範圍(1366×768 開 125% 縮放時只有約 1093×580),視窗才不會比螢幕大。
+  // 測試模式不看螢幕:驗收腳本需要固定的 1440×900,大小由 SIZE: 自己調整。
+  const size = windowSizes(testMode ? null : screen.getPrimaryDisplay().workAreaSize);
   win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1100,
-    minHeight: 700,
+    ...size,
     backgroundColor: '#060a12',
     autoHideMenuBar: true,
     title: 'Entropy Nexus',

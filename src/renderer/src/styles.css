@@ -76,17 +76,20 @@ button.danger { border-color: rgba(255, 77, 94, 0.5); color: var(--bad); backgro
 button.ghost { border: none; background: none; padding: 2px 6px; color: var(--dim); }
 .add { margin: 10px 12px 14px; padding: 9px; border-color: var(--accent); color: var(--accent); font-weight: 600; letter-spacing: 1px; box-shadow: 0 0 14px rgba(63, 216, 230, 0.15) inset; }
 
-.addform { border-top: 1px solid var(--line); padding-bottom: 12px; }
+/* 新增節點表單:自己是直向的彈性容器,高度不超過所在的容器;欄位在 .addform-body 裡捲動,「取消、新增」固定在底部 */
+.addform { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 100%; border-top: 1px solid var(--line); padding-bottom: 12px; }
+.addform > .panel-title, .addform > .form-error, .addform-actions { flex: none; }
+.addform-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .addform label { display: flex; flex-direction: column; gap: 4px; margin: 0 16px 10px; font-size: 12px; color: var(--dim); }
 .addform.chief .panel-title { color: #3ee68a; }
-.addform > .note { display: block; margin: 0 16px 10px; font-size: 12px; color: var(--dim); }
+.addform-body > .note { display: block; margin: 0 16px 10px; font-size: 12px; color: var(--dim); }
 .chief-pick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 16px 12px; }
 .chief-pick .note { width: 100%; font-size: 12px; color: var(--dim); }
 .chief-pick button { border-color: rgba(62, 230, 138, 0.5); }
 .addform input, .addform select { font: inherit; color: var(--text); background: rgba(6, 10, 18, 0.8); border: 1px solid var(--line); border-radius: 2px; padding: 5px 8px; min-width: 0; user-select: text; }
 .pick { display: flex; gap: 6px; }
 .pick input { flex: 1; }
-.addform-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 4px 16px 0; }
+.addform-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 8px 16px 0; border-top: 1px solid var(--line-soft); }
 
 /* 簡易操作面板 */
 .inspector { position: absolute; left: 16px; right: 16px; bottom: 16px; padding: 12px 16px; background: rgba(8, 16, 26, 0.92); border: 1px solid var(--line); border-top: 2px solid var(--accent); backdrop-filter: blur(6px); box-shadow: 0 0 30px rgba(63, 216, 230, 0.12); }
@@ -204,6 +207,8 @@ button.mute { font-size: 12px; }
 /* 任務面板:右側欄下半部 */
 .shell { grid-template-columns: 1fr 312px; }
 .roster-list { flex: 1 1 38%; min-height: 96px; }
+/* 新增節點表單打開時,節點清單只拿剩下的空間(最少 96px),表單放得下就不必捲動 */
+.roster-list:has(~ .addform) { flex-basis: 0; }
 .tasks { flex: 1 1 62%; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
 .tasks-title { display: flex; align-items: center; gap: 8px; }
 .tasks-count { font: 11px var(--font); letter-spacing: 0; color: var(--dim); }

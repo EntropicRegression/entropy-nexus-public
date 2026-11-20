@@ -396,6 +396,8 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
   return (
     <div className={`addform ${chief ? 'chief' : ''}`}>
       <div className="panel-title">{chief ? '指定總管節點' : '新增節點'}</div>
+      {/* 欄位放在自己的捲動區;標題、錯誤訊息和「取消、新增」固定在外面,視窗再矮也按得到 */}
+      <div className="addform-body">
       {chief && <>
         <p className="note">總管負責接收你交代的事(可以在它的對話視窗用語音說),判斷交給哪個節點,再用節點互相呼叫分派出去。建議用「每次詢問」模式:每次分派前會先問你。</p>
         {candidates.length > 0 && <div className="chief-pick">
@@ -453,6 +455,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
             {mode === 'auto' && <span className="note warn">修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。節點上會標示 AUTO。</span>}
           </label>
         )}
+      </div>
       {error && <div className="form-error">{error}</div>}
       <div className="addform-actions">
         <button onClick={onDone}>取消</button>
