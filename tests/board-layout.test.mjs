@@ -14,7 +14,7 @@ function check(w, h, c, label) {
   for (const [z, p] of zs) {
     const r = p.rect;
     assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= w + 0.5 && r.y + r.h <= h + 0.5, `${label}:${z} 區塊超出面板 ${JSON.stringify(r)}`);
-    assert.ok(r.w >= 85 && r.h >= p.header + 8, `${label}:${z} 區塊太小 ${JSON.stringify(r)}`);
+    assert.ok(r.w >= (w < 700 ? 52 : 85) && r.h >= p.header + 8, `${label}:${z} 區塊太小 ${JSON.stringify(r)}`);
     for (const [z2, p2] of zs) {
       if (z2 === z) continue;
       const q = p2.rect;
@@ -22,8 +22,9 @@ function check(w, h, c, label) {
     }
     const n = z === 'chief' ? 1 : c[z];
     assert.equal(p.shown + p.hidden, n, `${label}:${z} 顯示加收起來的數量不等於節點數`);
-    if (z === 'chief') assert.equal(p.hidden, 0, `${label}:總管不能被收起來`);
+    if (z === 'chief' && w >= 460) assert.equal(p.hidden, 0, `${label}:總管不能被收起來`);
     assert.ok(p.zoom >= MIN_ZOOM - 1e-9, `${label}:${z} 縮放 ${p.zoom} 低於下限`);
+    if (p.collapsed) { assert.equal(p.shown, 0, `${label}:${z} 收合時不該畫節點`); continue; }
     const total = p.shown + (p.hidden ? 1 : 0);
     const cells = [];
     for (let i = 0; i < total; i++) cells.push(z === 'chief' || p.shown === 0 ? centerOf(p) : slotAt(p, i, total));
@@ -83,7 +84,7 @@ test('隨機的節點數與面板大小:版面永遠合法', () => {
   let seed = 12345;
   const rnd = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
   for (let i = 0; i < 4000; i++) {
-    const w = 680 + rnd(1400), h = 130 + rnd(900);
+    const w = 440 + rnd(1640), h = 130 + rnd(900);
     const c = counts({ standby: rnd(40), active: rnd(4) ? rnd(8) : rnd(40), planning: rnd(6), auth: rnd(3) ? 0 : rnd(12), fault: rnd(3) ? 0 : rnd(12) });
     check(w, h, c, `隨機 ${w}×${h} ${JSON.stringify(c)}`);
   }
@@ -96,6 +97,18 @@ test('節點變多時縮放只會變小或不變', () => {
     assert.ok(p.zones.standby.zoom <= last + 1e-9, `待命 ${n} 個時縮放反而變大`);
     last = p.zones.standby.zoom;
   }
+});
+
+test('很窄的面板(瀏覽器 760 寬):主畫面仍然畫得出節點;對話視窗打開時區塊收合成窄條,總管仍然看得到', () => {
+  const c = counts({ standby: 13 });
+  const main = check(480, 404, c, '480×404');
+  assert.ok(main.zones.standby.shown >= 2 && main.zones.standby.zoom >= MIN_ZOOM, JSON.stringify(main.zones.standby));
+  const dlg = check(480, 144, c, '480×144');
+  assert.equal(dlg.mode, 'strip');
+  assert.equal(dlg.zones.chief.hidden, 0);
+  assert.ok(dlg.zones.chief.zoom >= MIN_ZOOM);
+  for (const z of ZONES) assert.ok(dlg.zones[z].rect.w >= 52, `${z} 寬度 ${dlg.zones[z].rect.w}`);
+  assert.equal(dlg.zones.standby.shown + dlg.zones.standby.hidden, 13);
 });
 
 console.log(`通過:${passed} 項`);

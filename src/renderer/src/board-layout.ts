@@ -7,6 +7,8 @@
 //   剩下的空間依原本的比例分給其他區塊;全部排得下時就維持原本的比例,畫面不會無故變動。
 // - 縮到 MIN_ZOOM 還排不下:區塊最後一格改放「另外 N 個」,其餘節點收起來,不會溢出區塊。
 // - 每個區塊最後各自取「排得下的最大縮放」,所以節點少的區塊不會跟著縮小。
+// - 面板窄到橫排連最小寬度都放不下(瀏覽器視窗很窄又開著對話視窗):區塊收合成只有標題的窄條,
+//   裡面的節點全部收進「+N」小標記;有空間的話優先把總管、再把節點最多的區塊展開。
 import type { Zone } from '../../shared/types';
 
 export interface Rect { x: number; y: number; w: number; h: number }
@@ -39,7 +41,12 @@ export interface ZonePlan {
   /** 顯示幾個節點;其餘 hidden 個收進「另外 N 個」。 */
   shown: number;
   hidden: number;
+  /** 收合成只有標題的窄條:節點全部收起來,只顯示「+N」小標記。 */
+  collapsed?: boolean;
 }
+
+/** 收合的區塊寬度(放得下三個字的標題)。 */
+export const COLLAPSED_W = 54;
 
 export interface BoardPlan {
   mode: 'grid' | 'strip';
@@ -162,10 +169,14 @@ function rowRects(widths: number[], x0: number, y: number, h: number, gap: numbe
 
 interface Candidate { plan: BoardPlan; hidden: number; zoom: number }
 
-function build(mode: 'grid' | 'strip', compact: boolean, rows: { spec: RowSpec; rects: Rect[] }[], counts: Counts, header: number, zoom: number): Candidate {
+function build(mode: 'grid' | 'strip', compact: boolean, rows: { spec: RowSpec; rects: Rect[] }[], counts: Counts, header: number, zoom: number, collapsed: Zone[] = []): Candidate {
   const zones = {} as Record<Zone, ZonePlan>;
   let hidden = 0;
-  for (const { spec, rects } of rows) spec.zones.forEach((z, i) => { zones[z] = packZone(rects[i], header, slotsOf(z, counts)); hidden += zones[z].hidden; });
+  for (const { spec, rects } of rows) spec.zones.forEach((z, i) => {
+    const n = slotsOf(z, counts);
+    zones[z] = collapsed.includes(z) ? { rect: rects[i], header, zoom: 1, cols: 1, rows: 1, shown: 0, hidden: n, collapsed: true } : packZone(rects[i], header, n);
+    hidden += zones[z].hidden;
+  });
   return { plan: { mode, compact, zones }, hidden, zoom };
 }
 
@@ -179,6 +190,7 @@ function planStrip(w: number, h: number, counts: Counts, compact: boolean): Cand
   const avail = w - padX * 2 - gap * 5;
   const zh = Math.max(h - padTop - padBottom, header + 8);
   const rects = (widths: number[]) => rowRects(widths, padX, padTop, zh, gap, w - padX);
+  if (spec.min.reduce((s, v) => s + v, 0) > avail) return planNarrowStrip(w, zh, padTop, counts, compact, header);
   for (let k = ZOOM_STEPS; k >= MIN_STEP; k--) {
     const a = allocRow(spec, counts, avail, zh, header, k / ZOOM_STEPS);
     if (a.ok) return build('strip', compact, [{ spec, rects: rects(a.widths) }], counts, header, k / ZOOM_STEPS);
@@ -186,12 +198,48 @@ function planStrip(w: number, h: number, counts: Counts, compact: boolean): Cand
   return build('strip', compact, [{ spec, rects: rects(allocRow(spec, counts, avail, zh, header, MIN_ZOOM).widths) }], counts, header, MIN_ZOOM);
 }
 
+/**
+ * 面板太窄,橫排連最小寬度都放不下:邊距縮小,區塊先全部收合成窄條(只有標題,節點收進「+N」),
+ * 再依序把總管、節點最多的區塊展開成放得下節點的寬度;還有空間就一欄一欄加給最擠的區塊。
+ */
+function planNarrowStrip(w: number, zh: number, padTop: number, counts: Counts, compact: boolean, header: number): Candidate {
+  const zones: Zone[] = ['planning', 'active', 'chief', 'standby', 'auth', 'fault'];
+  const padX = 12, gap = 6;
+  const avail = w - padX * 2 - gap * 5;
+  const cw = CELL_W * MIN_ZOOM;
+  const open = Math.ceil(cw) + SIDE * 2 + 2;
+  const perCol = Math.max(1, Math.floor(roomOf(zh, header) / (CELL_H * MIN_ZOOM)));
+  const widths = zones.map(() => COLLAPSED_W);
+  const cols = zones.map(() => 0);
+  let free = avail - COLLAPSED_W * 6;
+  const order = zones.map((z, i) => i).filter(i => slotsOf(zones[i], counts) > 0).sort((a, b) => Number(zones[b] === 'chief') - Number(zones[a] === 'chief') || slotsOf(zones[b], counts) - slotsOf(zones[a], counts));
+  for (const i of order) if (free >= open - COLLAPSED_W) { widths[i] = open; cols[i] = 1; free -= open - COLLAPSED_W; }
+  for (;;) {
+    let pick = -1, worst = 0;
+    zones.forEach((z, i) => { const lack = slotsOf(z, counts) - cols[i] * perCol; if (cols[i] > 0 && lack > worst && cw <= free) { pick = i; worst = lack; } });
+    if (pick < 0) break;
+    widths[pick] += cw;
+    cols[pick]++;
+    free -= cw;
+  }
+  // 零頭:連收合的寬度都放不下時等比例縮小,否則平分給展開的區塊(沒有就平分給全部)
+  const grow = cols.some(c => c > 0) ? cols.map(c => (c > 0 ? 1 : 0)) : cols.map(() => 1);
+  const growSum = grow.reduce((s, v) => s + v, 0);
+  const total = widths.reduce((s, v) => s + v, 0);
+  const final = free < 0 ? widths.map(v => (v / total) * avail) : widths.map((v, i) => v + (free * grow[i]) / growSum);
+  const collapsed = zones.filter((z, i) => cols[i] === 0 && slotsOf(z, counts) > 0);
+  const spec: RowSpec = { zones, base: final, min: final };
+  return build('strip', compact, [{ spec, rects: rowRects(final, padX, padTop, zh, gap, w - padX) }], counts, header, MIN_ZOOM, collapsed);
+}
+
 /** a 是否比 b 好:收起來的節點比較少,或一樣多但節點明顯比較大。 */
 const better = (a: Candidate, b: Candidate) => a.hidden < b.hidden || (a.hidden === b.hidden && a.zoom >= b.zoom + 0.1);
 
 /** 格狀:上列是規劃、執行、總管,下列是待命、待授權、異常;兩列的高度與各區塊的寬度都依節點數調整。 */
 function planGrid(w: number, h: number, counts: Counts): Candidate | null {
-  const pad = 16, gap = 14, header = HEADER, minW = 132;
+  const pad = 16, gap = 14, header = HEADER;
+  // 最小寬度:空的區塊放得下中文標題與數量;有節點的區塊放得下一個節點加上完整標題
+  const minOf = (z: Zone) => (slotsOf(z, counts) ? 132 : 100);
   const innerH = h - pad * 2 - gap;
   const minRow = header + TOP_GAP + BOTTOM_GAP + Math.ceil(CELL_H * MIN_ZOOM);
   if (innerH < minRow * 2) return null;
@@ -201,8 +249,9 @@ function planGrid(w: number, h: number, counts: Counts): Candidate | null {
   const restW = inner - gap - leftW;
   const chiefW = Math.max(170, Math.round(restW * 0.2));
   const authW = Math.round((restW - gap) * 0.5);
-  const top: RowSpec = { zones: ['planning', 'active', 'chief'], base: [leftW, restW - gap - chiefW, chiefW], min: [minW, minW, minW] };
-  const bottom: RowSpec = { zones: ['standby', 'auth', 'fault'], base: [leftW, authW, restW - gap - authW], min: [minW, minW, minW] };
+  const top: RowSpec = { zones: ['planning', 'active', 'chief'], base: [leftW, restW - gap - chiefW, chiefW], min: [minOf('planning'), minOf('active'), minOf('chief')] };
+  const bottom: RowSpec = { zones: ['standby', 'auth', 'fault'], base: [leftW, authW, restW - gap - authW], min: [minOf('standby'), minOf('auth'), minOf('fault')] };
+  if (inner - gap * 2 < Math.max(top.min.reduce((s, v) => s + v, 0), bottom.min.reduce((s, v) => s + v, 0))) return null;
   const avail = inner - gap * 2;
   const defTop = Math.round(innerH * 0.48);
   // 上列高度的候選值,從原本的比例往兩邊找

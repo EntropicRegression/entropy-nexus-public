@@ -155,6 +155,10 @@ class MoreView {
   private key = '';
   count = 0;
   zoom = 1;
+  /** 小標記:只有六角形和「+N」(區塊收合、或唯一的格子讓給選取中的節點時)。 */
+  badge = false;
+  /** 檢查用:標記佔的範圍換算成節點的縮放(節點的範圍是左右各 56、上 34、下 64 乘上縮放)。 */
+  get boxScale(): number { return this.badge ? 0.3 : this.zoom; }
 
   constructor(private color: number, onTap: () => void) {
     this.num.anchor.set(0.5, 0.5);
@@ -173,16 +177,20 @@ class MoreView {
     this.hex.alpha = 0.8;
   }
 
-  set(count: number, x: number, y: number, zoom: number, open: boolean): void {
+  set(count: number, x: number, y: number, zoom: number, open: boolean, badge = false): void {
     this.count = count;
     this.zoom = zoom;
+    this.badge = badge;
     this.root.visible = count > 0;
     if (!count) return;
     this.root.position.set(x, y);
-    this.root.scale.set(zoom);
-    const key = `${count}|${open}`;
+    this.root.scale.set(badge ? 0.62 : zoom);
+    const key = `${count}|${open}|${badge}`;
     if (key === this.key) return;
     this.key = key;
+    this.label.visible = this.hint.visible = !badge;
+    this.num.style.fontSize = badge ? 19 : 15;
+    this.root.hitArea = badge ? new Circle(0, 0, 30) : new Circle(0, 8, 44);
     // 疊起來的兩個六角形,表示後面還有節點
     this.hex.clear()
       .poly(hexPoints(24).map((v, i) => v + (i % 2 ? -4 : 5))).fill({ color: this.color, alpha: 0.05 }).stroke({ width: 1.25, color: this.color, alpha: 0.4 })
@@ -302,7 +310,7 @@ export class BoardScene {
       mode: () => ({ mode: this.plan?.mode ?? null, compact: this.plan?.compact ?? false }),
       header: (z: Zone) => this.plan?.zones[z].header ?? 0,
       hidden: () => ZONES.map(z => ({ zone: z, count: this.hiddenIds.get(z)?.length ?? 0, ids: this.hiddenIds.get(z) ?? [] })).filter(x => x.count > 0),
-      more: () => [...this.mores].filter(([, m]) => m.root.visible).map(([z, m]) => ({ zone: z, x: m.root.x, y: m.root.y, scale: m.root.scale.x, count: m.count })),
+      more: () => [...this.mores].filter(([, m]) => m.root.visible).map(([z, m]) => ({ zone: z, x: m.root.x, y: m.root.y, scale: m.boxScale, count: m.count, badge: m.badge })),
       total: () => this.nodes.size,
       // 節點都滑到定位了嗎(還在移動時,位置和區塊範圍對不起來是正常的)
       settled: () => [...this.nodes.values()].every(n => n.hidden || (n.placed && Math.abs(n.root.x - n.tx) < 0.5 && Math.abs(n.root.y - n.ty) < 0.5 && Math.abs(n.root.scale.x - n.scale) < 0.005)),
@@ -433,8 +441,9 @@ export class BoardScene {
       const r = this.drawn.get(z)!;
       const c = ZONE_COLOR[z];
       const compact = this.plan!.zones[z].header === HEADER_COMPACT;
+      const narrow = r.w < 80;
       const cut = compact ? 9 : 12;
-      const inset = compact ? 10 : 14;
+      const inset = narrow ? 6 : compact ? 10 : 14;
       // 切角外框,右上與左下各切一角
       this.frames.poly([
         r.x, r.y, r.x + r.w - cut, r.y, r.x + r.w, r.y + cut,
@@ -442,8 +451,10 @@ export class BoardScene {
       ]).fill({ color: c, alpha: z === 'auth' || z === 'fault' || z === 'chief' ? 0.06 : 0.03 }).stroke({ width: z === 'chief' ? 1.5 : 1.25, color: c, alpha: z === 'chief' ? 0.75 : 0.55 });
       const lineY = compact ? 27 : 36;
       this.frames.moveTo(r.x + inset, r.y + lineY).lineTo(r.x + r.w - inset, r.y + lineY).stroke({ width: 1, color: c, alpha: 0.25 });
-      this.frames.rect(r.x + inset, r.y + (compact ? 8 : 15), 3, 13).fill({ color: c, alpha: 0.9 });
-      this.titles.get(z)!.position.set(r.x + inset + 10, r.y + (compact ? 5 : 12));
+      // 收合成窄條的區塊只放標題(沒有左邊的色條與右邊的數量)
+      if (!narrow) this.frames.rect(r.x + inset, r.y + (compact ? 8 : 15), 3, 13).fill({ color: c, alpha: 0.9 });
+      this.titles.get(z)!.position.set(r.x + inset + (narrow ? 1 : 10), r.y + (compact ? 5 : 12));
+      this.counts.get(z)!.visible = !narrow;
       this.counts.get(z)!.position.set(r.x + r.w - inset - 2, r.y + (compact ? 6 : 13));
     }
   }
@@ -484,20 +495,43 @@ export class BoardScene {
       this.rects.set(z, p.rect);
       this.counts.get(z)!.text = String(list.length);
       // 區塊太窄放不下完整標題時只留中文(「規劃 PLANNING」→「規劃」)
-      this.titles.get(z)!.text = this.titleWidth(z) + 58 > p.rect.w ? ZONE_TITLE[z].split(' ')[0] : ZONE_TITLE[z];
+      this.titles.get(z)!.text = this.titleWidth(z) + (list.length ? 58 : 50) > p.rect.w ? ZONE_TITLE[z].split(' ')[0] : ZONE_TITLE[z];
       if (z === 'chief') {
         // 總管只有一個:放在區塊正中間(和「+」同一個位置);沒有總管時顯示「+」六角形
         const c = centerOf(p);
         this.addChief.visible = !chief;
         this.addChief.position.set(c.x, c.y);
+        // 連總管區塊都只剩窄條時(視窗窄到不合理),把總管縮到放得進去
+        if (p.collapsed) p.zoom = Math.max(0.4, Math.min(1, (p.rect.w - 4) / 112));
         this.addChiefZoom = p.zoom;
         this.addChief.scale.set(p.zoom * (this.addChiefHover ? 1.06 : 1));
         const view = list[0] && this.nodes.get(list[0].id);
         if (view) { view.hidden = false; view.zoom = p.zoom; view.tx = c.x; view.ty = c.y; }
         continue;
       }
-      // 選取中的節點如果排在會被收起來的位置,把它換到最後一個看得到的格子
       const sel = list.findIndex(a => a.id === this.selectedId);
+      const more = this.mores.get(z)!;
+      if (p.collapsed) {
+        // 收合的區塊:節點全部收起來,標題下方放「+N」小標記
+        for (const a of list) { const view = this.nodes.get(a.id); if (view) view.hidden = true; }
+        this.hiddenIds.set(z, list.map(a => a.id));
+        more.set(list.length, p.rect.x + p.rect.w / 2, p.rect.y + p.header + 22, 1, this.moreZone === z, true);
+        continue;
+      }
+      if (p.hidden && p.shown === 0 && sel >= 0) {
+        // 只有一格、而選取中的節點在這個區塊:這一格給它,其他節點的「+N」縮成小標記放在它的右上角
+        const c = centerOf(p);
+        list.forEach((a, i) => {
+          const view = this.nodes.get(a.id);
+          if (!view) return;
+          view.hidden = i !== sel;
+          if (i === sel) { view.zoom = p.zoom; view.tx = c.x; view.ty = c.y; }
+        });
+        this.hiddenIds.set(z, list.filter((_, i) => i !== sel).map(a => a.id));
+        more.set(list.length - 1, c.x + 38 * p.zoom, c.y - 16 * p.zoom, p.zoom, this.moreZone === z, true);
+        continue;
+      }
+      // 選取中的節點如果排在會被收起來的位置,把它換到最後一個看得到的格子
       if (p.hidden && p.shown > 0 && sel >= p.shown) list.splice(p.shown - 1, 0, ...list.splice(sel, 1));
       const total = p.shown + (p.hidden ? 1 : 0);
       list.forEach((a, i) => {
@@ -512,7 +546,7 @@ export class BoardScene {
       });
       this.hiddenIds.set(z, list.slice(p.shown).map(a => a.id));
       const at = p.shown > 0 ? slotAt(p, p.shown, total) : centerOf(p);
-      this.mores.get(z)!.set(p.hidden, at.x, at.y, p.zoom, this.moreZone === z);
+      more.set(p.hidden, at.x, at.y, p.zoom, this.moreZone === z);
     }
     this.emitMore();
   }

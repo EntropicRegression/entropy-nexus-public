@@ -85,7 +85,7 @@ window.__boardIssues = function boardIssues() {
   rects.forEach((r, i) => {
     if (!r) { out.push(`沒有 ${zones[i]} 區塊`); return; }
     if (r.x < 0 || r.y < 0 || r.x + r.w > size.w + 1 || r.y + r.h > size.h + 1) out.push(`區塊 ${zones[i]} 超出面板(${r.x},${r.y} ${r.w}×${r.h} / ${size.w}×${size.h})`);
-    if (r.w < 80 || r.h < 60) out.push(`區塊 ${zones[i]} 太小(${r.w}×${r.h})`);
+    if (r.w < 50 || r.h < 60) out.push(`區塊 ${zones[i]} 太小(${r.w}×${r.h})`);
     rects.slice(0, i).forEach((q, j) => { if (q && r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h) out.push(`區塊 ${zones[i]} 和 ${zones[j]} 重疊`); });
   });
   if (b.more) {
