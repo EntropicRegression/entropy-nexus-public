@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { BACKEND_LABEL, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
@@ -21,6 +21,8 @@ import { CASE_DAILY_CAP, detectCandidate } from '../shared/case-candidates';
 import { attachArchive, findArchive } from './memory-archive';
 import { flushHeat } from './vault-sidecar';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
+import { atomicWriteJson, buildVaultStats, StatsWriter, STATS_FILE } from './vault-stats';
+import { findWakeUrl, parseWakeUrl, WAKE_PROTOCOL } from './wake';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
@@ -44,6 +46,40 @@ let vault: MemoryVault | null = null;
 let cases: CaseService | null = null;
 let quitting = false;
 let interopRef: Interop | null = null;
+let statsWriter: StatsWriter | null = null;
+/** 視窗與核心還沒準備好時收到的喚醒網址,準備好後再處理。 */
+let pendingWake: string | null = null;
+
+/**
+ * 跨 app 喚醒(entropy-nexus://wake?node=<節點ID>):把視窗帶到前面,一定先跳確認,同意後走「開啟舊 session」接回原本的節點。
+ * 節點已經在面板上就只提示;找不到或網址不正確也提示,不做任何事。
+ */
+async function handleWake(raw: string): Promise<void> {
+  if (!core || !win) { pendingWake = raw; return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  const parsed = parseWakeUrl(raw);
+  const notice = (message: string, type: 'info' | 'error' = 'info') => dialog.showMessageBox(win!, { type, title: '喚醒節點', message, buttons: ['確定'], noLink: true });
+  if (!parsed.ok) { await notice(`無法處理這個喚醒網址:${parsed.reason}。`, 'error'); return; }
+  const target = core.wakeTarget(parsed.node);
+  if (!target) { await notice('找不到這個節點,或它已經沒有可以接回的對話。', 'error'); return; }
+  if (target.kind === 'board') { await notice(`「${target.name}」已經在面板上了。`); return; }
+  const r = await dialog.showMessageBox(win, { type: 'question', title: '喚醒節點', message: `要接回 ${target.name} 的舊對話嗎?`, detail: '會把這個已封存的節點放回面板,繼續原本的對話。', buttons: ['接回', '取消'], defaultId: 1, cancelId: 1, noLink: true });
+  if (r.response !== 0) return;
+  try { await core.openOldSession(target.input); }
+  catch (e) { await notice(`接回失敗:${String((e as Error)?.message ?? e)}`, 'error'); }
+}
+
+/**
+ * 註冊自訂網址。測試模式與指定了 NEXUS_DATA_DIR 的獨立資料夾不註冊;開發模式(未打包)預設也不註冊,
+ * 否則會把系統的 entropy-nexus:// 指到 electron.exe 開發版,蓋掉安裝版的註冊。要在開發模式測試時設 NEXUS_REGISTER_PROTOCOL=1。
+ */
+function registerProtocol(): void {
+  if (testMode || process.env.NEXUS_DATA_DIR) return;
+  if (app.isPackaged) { app.setAsDefaultProtocolClient(WAKE_PROTOCOL); return; }
+  if (process.env.NEXUS_REGISTER_PROTOCOL === '1' && process.argv[1]) app.setAsDefaultProtocolClient(WAKE_PROTOCOL, process.execPath, [resolve(process.argv[1])]);
+}
 
 function createWindow(): void {
   // 初始大小與最小尺寸不超過螢幕的可用範圍(1366×768 開 125% 縮放時只有約 1093×580),視窗才不會比螢幕大。
@@ -310,7 +346,15 @@ function scheduleScreenshot(): void {
 if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  registerProtocol();
+  pendingWake = findWakeUrl(process.argv);
+  app.on('second-instance', (_e, argv) => {
+    const url = findWakeUrl(argv);
+    if (url) void handleWake(url);
+    else if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+  });
+  // macOS:網址由系統事件傳入(要在 ready 之前註冊)
+  app.on('open-url', (e, url) => { e.preventDefault(); void handleWake(url); });
 
   void app.whenReady().then(async () => {
     const dir = app.getPath('userData');
@@ -328,11 +372,11 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     // 記憶庫:啟動時完整掃描一次建立索引,之後監看資料夾,外部修改會自動重新讀取
     vault = new MemoryVault(join(dir, 'memory-vault'), store);
     vault.init();
-    vault.watch();
+    vault.watch(() => statsWriter?.request());
     // 節點互相呼叫:主控台提供給各家 CLI 的工具服務;要在節點的 session 啟動之前設定好
     const interop = new Interop(dir);
     interopRef = interop;
-    core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); });
+    core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); if (u.agent || u.removedId || u.task || u.tasks || u.dispatches) statsWriter?.request(); });
     core.setMemoryVault(vault);
     core.setInterop(id => interop.optionsFor(id));
     interop.attach(core);
@@ -357,6 +401,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       backendLabel: b => BACKEND_LABEL[b],
       // 測試用:NEXUS_CASE_MIN_MINUTES 可把「耗時超過幾分鐘」縮短(可以是小數)
       ...(Number(process.env.NEXUS_CASE_MIN_MINUTES) > 0 ? { minMinutes: Number(process.env.NEXUS_CASE_MIN_MINUTES) } : {}),
+      participants: t => c.caseParticipants(t),
       dailyCap: Number(process.env.NEXUS_CASE_DAILY_CAP) >= 0 && process.env.NEXUS_CASE_DAILY_CAP ? Number(process.env.NEXUS_CASE_DAILY_CAP) : CASE_DAILY_CAP,
     });
     const caseSvc = cases;
@@ -364,6 +409,11 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     interop.caseSubmit = (callerId, args) => caseSvc.submit(callerId, args);
     handleFileRequests(id => core?.agentCwd(id) ?? null);
     await core.init();
+    // 記憶庫統計(.nexus-stats.json,給管理 app 讀):啟動時寫一次,之後有變動最多每 5 秒寫一次
+    const statsFile = join(v.dir, STATS_FILE);
+    statsWriter = new StatsWriter(() => { const i = c.statsInput(); return i ? buildVaultStats(i) : null; }, data => (data ? atomicWriteJson(statsFile, data) : Promise.resolve(true)));
+    c.onStatsDirty = () => statsWriter?.request();
+    void statsWriter.flush();
     if (core.isEmpty() && process.env.NEXUS_NO_SEED !== '1') core.seedDemo(app.getPath('home'));
     registerIpc(apiMethods(core, 'desktop'));
     initRemote(core, store, dir, apiMethods(core, 'remote'));
@@ -393,6 +443,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);
     createWindow();
+    if (pendingWake) { const w = pendingWake; pendingWake = null; win?.webContents.once('did-finish-load', () => { void handleWake(w); }); }
     win?.on('focus', () => win?.flashFrame(false));
     scheduleScreenshot();
   });
@@ -406,6 +457,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     quitting = true;
     stopRemote();
     vault?.unwatch();
+    statsWriter?.stop();
     stopObserver();
     interopRef?.stop();
     flushHeat();

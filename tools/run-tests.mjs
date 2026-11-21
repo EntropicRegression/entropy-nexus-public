@@ -42,6 +42,7 @@ const SUITES = [
   { name: 'memory-read', group: 'unit', min: 0.2, ...node('tests/memory-read.test.mjs') },
   { name: 'memory-tools', group: 'unit', min: 0.2, ...node('tests/memory-tools.test.mjs') },
   { name: 'memory-archive-unit', group: 'unit', min: 0.1, ...node('tests/memory-archive.test.mjs') },
+  { name: 'vault-integration', group: 'unit', min: 0.2, ...node('tests/vault-integration.test.mjs') },
   { name: 'project', group: 'unit', min: 0.3, ...node('tests/project.test.mjs') },
   { name: 'collab-unit', group: 'unit', min: 0.1, ...node('tests/collab.test.mjs') },
   { name: 'acp', group: 'unit', min: 0.5, ...node('tests/acp.test.js') },

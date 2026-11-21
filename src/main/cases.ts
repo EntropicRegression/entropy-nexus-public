@@ -175,6 +175,8 @@ export interface CaseDeps {
   safeName: typeof SafeName;
   /** 後台的顯示名稱(Claude Code、Codex、Antigravity)。 */
   backendLabel(backend: AgentInfo['backend']): string;
+  /** 參與這個任務的節點 id(承辦、交辦者、同一場會議的參與者);沒提供時只有承辦節點。 */
+  participants?(task: TaskInfo): string[];
   /** 覆寫耗時門檻(分鐘),測試用。 */
   minMinutes?: number;
   dailyCap: number;
@@ -308,6 +310,7 @@ export class CaseService {
       專案: project,
       承辦節點: node,
       節點ID: task.agentId,
+      參與節點ID: this.d.participants?.(task) ?? [task.agentId],
       任務: task.id,
       來源: pending.source,
       耗時分鐘: minutes,

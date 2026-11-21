@@ -32,6 +32,9 @@ const README = `記憶庫資料夾
   knowledge    專案知識,每個專案一個子資料夾
   preferences  使用者偏好
 
+以底線 _ 開頭的資料夾(例如 nodes/封存/_圖像/)是附屬資料(圖像快照等),不是記憶:不會被索引,記憶庫管理 app 也應忽略。
+記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。
+
 主控台只負責讀取與建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。
 目前 agent 還不會寫入這裡(之後的版本才會),但放進來的檔案已經會被索引。
 這個資料夾可以用任何文字編輯器開啟;請保留檔案開頭的 --- 屬性區塊。
@@ -171,7 +174,7 @@ export class MemoryVault {
       try { names = readdirSync(abs, { withFileTypes: true }); } catch { return; }
       for (const e of names) {
         const r = `${rel}/${e.name}`;
-        if (e.isDirectory()) walk(join(abs, e.name), r);
+        if (e.isDirectory()) { if (!e.name.startsWith('_')) walk(join(abs, e.name), r); }
         else if (e.isFile() && /\.md$/i.test(e.name)) out.push(r);
       }
     };

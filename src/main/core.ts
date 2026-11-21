@@ -19,6 +19,8 @@ import { closeAllTerminals, closeTerminal, hasTerminal, openTerminal, resizeTerm
 import { createWorktree, mergeBack, openPullRequest, removeWorktree, worktreeStatus } from './worktree';
 import { formatCommentsPrompt, formatReviewPrompt } from '../shared/review';
 import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } from './portraits';
+import { characterImages } from './vault-images';
+import { readArchives, type MeetingRecord, type StatsInput } from './vault-stats';
 import { removeMedia } from './media';
 import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
@@ -87,6 +89,14 @@ export class Core {
   /** Antigravity 的工具白名單(見 shared/agy-allow.ts)。 */
   private agyAllow: string[] = [];
   private chiefNotes: string[] = [];
+  /** 記憶庫統計(.nexus-stats.json)需要重寫時通知;由 index.ts 接上限頻寫出。 */
+  onStatsDirty: (() => void) | null = null;
+  /** CLI 自己紀錄裡的 session(`<後台>:<sessionId>`)快取,最多每 5 分鐘重查一次。 */
+  private cliSessions: Set<string> | null = null;
+  private cliSessionsAt = 0;
+  private cliSessionsBusy = false;
+  /** 會議紀錄(只留 30 天、最多 200 筆),給 .nexus-stats.json 的同席與判例的參與節點用。 */
+  private meetingLog: MeetingRecord[] | null = null;
   private interrupted = new Set<string>();
   /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
   private turnText = new Map<string, string[]>();
@@ -576,8 +586,9 @@ export class Core {
     }
     const cases = vault.list().filter(e => e.kind === 'case' && e.nodeId === agent.id).map(caseNumber);
     const r = writeArchive(vault.dir, {
-      node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt },
+      node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt, sessionId: agent.sessionId, cwd: agent.cwd },
       stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, now: new Date(),
+      images: agent.character ? characterImages(portraitsDir(), agent.character) : undefined,
     });
     // 馬上更新索引:不等資料夾監看(有去抖動),緊接著的查詢(例如新增同名節點時找封存)才讀得到
     vault.rescan();
@@ -1206,6 +1217,92 @@ ${text}
   attachCases(svc: { onTaskEnded(task: TaskInfo): unknown }): void { this.cases = svc; }
 
   taskById(id: string): TaskInfo | undefined { return this.tasks.get(id); }
+
+  private meetings(): MeetingRecord[] {
+    if (!this.meetingLog) {
+      try { this.meetingLog = JSON.parse(this.store.getSetting('meetingLog') ?? '[]') as MeetingRecord[]; } catch { this.meetingLog = []; }
+      if (!Array.isArray(this.meetingLog)) this.meetingLog = [];
+    }
+    return this.meetingLog;
+  }
+
+  /** interop 會議結束時記下:主持人與參與者的節點 id(只留 30 天、200 筆)。 */
+  recordMeeting(m: MeetingRecord): void {
+    const keep = Date.now() - DISPATCH_KEEP_MS;
+    this.meetingLog = [...this.meetings().filter(x => x.startedAt >= keep && x.id !== m.id), m].slice(-200);
+    this.store.setSetting('meetingLog', JSON.stringify(this.meetingLog));
+    this.onStatsDirty?.();
+  }
+
+  /**
+   * 判例的「參與節點ID」:承辦節點、交辦它的節點(task.from);從會議交辦的再加上同一場會議(時間涵蓋這個任務、承辦與主持人都在)的所有參與者。
+   * 沒有會議紀錄(舊資料、重開機前)時只有前兩者。
+   */
+  caseParticipants(task: TaskInfo): string[] {
+    const ids = new Set<string>([task.agentId]);
+    if (task.from?.id) ids.add(task.from.id);
+    if (task.from?.meeting) {
+      const m = this.meetings().find(x => x.ids.includes(task.agentId) && x.ids.includes(task.from!.id) && task.startedAt >= x.startedAt - 1000 && task.startedAt <= x.endedAt + 1000);
+      for (const id of m?.ids ?? []) ids.add(id);
+    }
+    return [...ids];
+  }
+
+  /** CLI 紀錄的 session 快取:回傳目前的內容(可能是 null),過期了就在背景重查,查完通知統計重寫。 */
+  private cliSessionKeys(): Set<string> | null {
+    if (!this.cliSessionsBusy && Date.now() - this.cliSessionsAt > 5 * 60 * 1000) {
+      this.cliSessionsBusy = true;
+      void (async () => {
+        try {
+          const keys = new Set<string>();
+          await Promise.all((Object.keys(this.adapters) as Backend[]).map(async b => {
+            const cap = this.capabilities.get(b);
+            if (!cap?.available || cap.simulated) return;
+            try { for (const s of await this.adapters[b].listSessions?.() ?? []) keys.add(`${b}:${s.sessionId}`); } catch { /* 這家查不到就當作沒有 */ }
+          }));
+          this.cliSessions = keys;
+        } finally {
+          this.cliSessionsAt = Date.now();
+          this.cliSessionsBusy = false;
+          this.onStatsDirty?.();
+        }
+      })();
+    }
+    return this.cliSessions;
+  }
+
+  /** .nexus-stats.json 的原料(純資料);組成內容由 vault-stats.ts 的 buildVaultStats 負責。 */
+  statsInput(): StatsInput | null {
+    const vault = this.vault;
+    if (!vault) return null;
+    const entries = vault.list();
+    const lite = (a: AgentInfo) => ({ id: a.id, name: a.name, character: a.character, backend: a.backend, sessionId: a.sessionId, cwd: a.cwd });
+    const live = [...this.agents.values()].filter(a => !a.parentId);
+    const liveIds = new Set(live.map(a => a.id));
+    return {
+      now: Date.now(), portraitsDir: portraitsDir(),
+      live: live.map(a => ({ ...lite(a), state: a.state })),
+      removed: this.store.loadRemovedAgents().map(r => r.agent).filter(a => !liveIds.has(a.id)).map(lite),
+      archives: readArchives(vault.dir, entries),
+      tasks: this.store.loadTasksForStats(0, 100000),
+      cases: entries.filter(e => e.kind === 'case'),
+      dispatches: this.store.loadDispatches(100000),
+      meetings: this.meetings(),
+      cliSessions: this.cliSessionKeys(),
+      dirExists: p => existsSync(p),
+      images: c => (c ? characterImages(portraitsDir(), c) : { avatar: null, portrait: null }),
+    };
+  }
+
+  /** wake 網址用:節點在面板上、或是已終止還能接回(回傳要接回的 session 資料);都不是就是 null。 */
+  wakeTarget(id: string): { kind: 'board'; name: string } | { kind: 'removed'; name: string; input: OpenOldSessionInput } | null {
+    const on = this.agents.get(id);
+    if (on && !on.parentId) return { kind: 'board', name: on.name };
+    const r = this.store.loadRemovedAgents().find(x => x.agent.id === id);
+    if (!r || !r.agent.sessionId) return null;
+    const a = r.agent;
+    return { kind: 'removed', name: a.name, input: { backend: a.backend, sessionId: a.sessionId!, cwd: a.cwd, agentId: a.id, name: a.name, character: a.character, model: a.model } };
+  }
   agentById(id: string): AgentInfo | undefined { return this.agents.get(id); }
 
   /** 記錄任務寫成了哪份判例、或正在等節點撰寫。 */
@@ -1254,7 +1351,7 @@ ${text}
       vaultDir: vault.dir,
       list: () => vault.list(),
       rescan: () => { vault.rescan(); },
-      nodes: () => [...this.agents.values()].filter(a => !a.parentId).map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model })),
+      nodes: () => [...this.agents.values()].filter(a => !a.parentId).map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model, character: a.character })),
       project: cwd => projectOf(cwd),
       head: gitHead,
       commitsAhead: gitCommitsAhead,

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MemoryEntry, TaskInfo } from '../shared/types';
 import { formatDuration, type NodeStats } from '../shared/node-stats.ts';
+import { snapshotImages, type CharacterImages } from './vault-images.ts';
 import { safeName, writeMemory, type MetaValue, type WriteResult } from './memory-write.ts';
 
 /**
@@ -31,7 +32,7 @@ export const dateOf = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth(
 const timeOf = (ms: number): string => { const d = new Date(ms); return `${dateOf(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const pct = (r: number | null, n: number, d: number) => (r === null ? '尚無' : `${Math.round(r * 100)}%(${n}/${d})`);
 
-export interface ArchiveNode { id: string; name: string; backend: string; backendLabel: string; model: string; character: string; createdAt: number }
+export interface ArchiveNode { id: string; name: string; backend: string; backendLabel: string; model: string; character: string; createdAt: number; sessionId?: string | null; cwd?: string }
 export interface ArchiveInput {
   node: ArchiveNode;
   stats: NodeStats | undefined;
@@ -47,6 +48,8 @@ export interface ArchiveInput {
   /** 判例編號(索引裡節點ID相同的判例)。 */
   cases: string[];
   now: Date;
+  /** 角色的頭像與立繪原檔(絕對路徑);封存時複製進 nodes/封存/_圖像/<節點ID>/。沒有就不寫 頭像、立繪 屬性。 */
+  images?: CharacterImages;
 }
 
 /** 組出封存檔的屬性與內文。 */
@@ -56,6 +59,10 @@ export function buildArchive(i: ArchiveInput): { meta: Record<string, MetaValue>
   const meta: Record<string, MetaValue> = {
     種類: 'node', 狀態: '封存', 節點ID: n.id, 節點: n.name, 後台: n.backendLabel, 模型: n.model || '(預設)', 角色: n.character || '(無)',
     封存時間: stamp, 總結來源: i.summarySource,
+    // 給記憶庫管理 app 讀的數字與接回用的資訊(後台 是顯示名稱,後台ID 是後台代號)
+    後台ID: n.backend, sessionId: n.sessionId || undefined, 工作目錄: n.cwd || undefined,
+    任務數: s?.tasks ?? 0, 完成數: s?.done ?? 0, 完成率: s?.completionRate == null ? undefined : Math.round(s.completionRate * 100) / 100,
+    驗收數: s?.accepted ?? 0, 退回數: s?.rejected ?? 0, 判例數: i.cases.length,
   };
   const sections: string[] = [];
   const projects = (s?.projects ?? []).map(p => `${p.name}(${p.tasks} 個任務)`).join('、');
@@ -96,6 +103,13 @@ export function archivePath(vault: string, name: string, now: Date): string {
 /** 寫入封存檔,回傳寫入結果(路徑相對於記憶庫)。 */
 export function writeArchive(vault: string, input: ArchiveInput): WriteResult {
   const { meta, body } = buildArchive(input);
+  if (input.images && (input.images.avatar || input.images.portrait)) {
+    // 圖像快照:屬性裡的路徑相對於封存檔(封存檔在 nodes/封存/,圖像在 nodes/封存/_圖像/)
+    const snap = snapshotImages(vault, input.node.id, input.images);
+    const rel = (p: string | null) => (p ? p.slice(`${ARCHIVE_DIR}/`.length) : undefined);
+    meta.頭像 = rel(snap.avatar);
+    meta.立繪 = rel(snap.portrait);
+  }
   return writeMemory(vault, archivePath(vault, input.node.name, input.now), meta, body, 'replace', input.now);
 }
 
