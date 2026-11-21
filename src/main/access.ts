@@ -55,6 +55,8 @@ const RPC: Record<string, Rule> = {
   history: read('agent'),
   worktreeStatus: read('agent'),
   taskChanges: read('task'),
+  // 驗收:操作以上的角色、只限看得到的節點(依任務 id 找節點)
+  taskVerdict: operate('task'),
   send: operate('agent'),
   enqueue: operate('agent'),
   cancelQueued: operate('agent'),
@@ -173,6 +175,7 @@ export function auditDetail(action: string, input: Record<string, any>): string 
     case 'setPersona': return cut(input.character);
     case 'settings': return cut([Number.isInteger(input.maxActive) && `同時上限 ${input.maxActive}`, Number.isInteger(input.quotaStop) && `額度上限 ${input.quotaStop}%`].filter(Boolean).join(','));
     case 'commitTask': return cut(input.message);
+    case 'taskVerdict': return input.verdict === 'accepted' ? '驗收' : input.verdict === 'rejected' ? '退回' : '清除驗收';
     case 'setDailyBudget': return cut(`${input.backend ?? ''} 每日預算 ${input.percent === null || input.percent === undefined ? '預設' : `${input.percent}%`}`);
     default: return '';
   }

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
+import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, TaskVerdict, Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -14,6 +14,7 @@ import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, r
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
+import { MemoryVault } from './memory-vault';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
@@ -34,6 +35,7 @@ const devUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
 let win: BrowserWindow | null = null;
 let core: Core | null = null;
 let store: Store | null = null;
+let vault: MemoryVault | null = null;
 let quitting = false;
 let interopRef: Interop | null = null;
 
@@ -97,6 +99,8 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     autopilot: (on: boolean) => c.setAutopilot(on),
     maxActive: (n: number) => c.setMaxActive(n),
     clearTasks: () => c.clearFinishedTasks(),
+    taskVerdict: (taskId: string, verdict: TaskVerdict) => c.setTaskVerdict(String(taskId), verdict ?? null),
+    memoryVault: () => ({ dir: vault?.dir ?? '', entries: vault?.list() ?? [] }),
     taskChanges: (taskId: string) => c.taskChanges(taskId),
     oldSessions: () => c.listOldSessions(),
     inspectDir: (cwd: string) => inspectDir(cwd),
@@ -302,6 +306,10 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     handlePortraitRequests();
     initMedia(dir);
     store = new Store(join(dir, 'nexus.db'));
+    // 記憶庫:啟動時完整掃描一次建立索引,之後監看資料夾,外部修改會自動重新讀取
+    vault = new MemoryVault(join(dir, 'memory-vault'), store);
+    vault.init();
+    vault.watch();
     // 節點互相呼叫:主控台提供給各家 CLI 的工具服務;要在節點的 session 啟動之前設定好
     const interop = new Interop(dir);
     interopRef = interop;
@@ -352,6 +360,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     e.preventDefault();
     quitting = true;
     stopRemote();
+    vault?.unwatch();
     stopObserver();
     interopRef?.stop();
     void Promise.allSettled([stopVoice(), core.shutdown()]).finally(() => { store?.close(); app.quit(); });
