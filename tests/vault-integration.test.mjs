@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildArchive, writeArchive } from '../src/main/memory-archive.ts';
 import { computeNodeStats } from '../src/shared/node-stats.ts';
-import { MemoryVault, entryFromFile, parseFrontMatter } from '../src/main/memory-vault.ts';
+import { MemoryVault, README, entryFromFile, parseFrontMatter, readmeUpdate } from '../src/main/memory-vault.ts';
 import { characterImages, snapshotDir } from '../src/main/vault-images.ts';
 import { atomicWriteJson, buildVaultStats, readArchives, StatsWriter } from '../src/main/vault-stats.ts';
 import { findWakeUrl, parseWakeUrl } from '../src/main/wake.ts';
@@ -149,6 +149,34 @@ await test('統計:專案ID 和專案名稱同序同長度,同名不同專案的
   assert.deepEqual([out.節點.m2.專案, out.節點.m2.專案ID], [[], []]);
   // 舊欄位都還在(向下相容)
   for (const k of ['名稱', '角色', '狀態', '任務數', '完成數', '完成率', '驗收數', '退回數', '判例數', '專案', '頭像路徑', '立繪路徑', 'session']) assert.ok(k in m, k);
+});
+
+await test('說明檔:新版提到熱度檔與 .vault-awards.json;主控台寫過的舊版會換新,使用者改過的不動', () => {
+  assert.ok(README.includes('.vault-awards.json 是記憶寶庫管理 App 專屬檔,用來記錄手動頒發的光暈;主控台不讀不寫,請勿手動刪除。'));
+  assert.ok(README.includes('.nexus-heat.json') && README.includes('.nexus-stats.json') && !README.includes('還不會寫入'));
+  assert.equal(readmeUpdate(null), README, '沒有檔案就寫新版');
+  assert.equal(readmeUpdate(README), null, '已經是新版不動');
+  assert.equal(readmeUpdate(README.replace(/\n/g, '\r\n')), null, '換行不同也算新版');
+  assert.equal(readmeUpdate(`${README}\n我自己加的筆記\n`), null, '使用者改過不動');
+  assert.equal(readmeUpdate(''), null, '讀不到內容不動');
+  // 實際資料夾:舊版說明檔(第二版,有 .nexus-stats.json 那行)啟動時換成新版;改過的保留
+  const v2 = README
+    .replace(/記憶庫根目錄的 \.nexus-stats\.json\(節點統計\)[^\n]*\n\.vault-awards\.json[^\n]*\n/, '記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n')
+    .replace(/主控台負責建立索引;[^\n]*\n節點會透過記憶工具寫入[^\n]*\n/, '主控台只負責讀取與建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n目前 agent 還不會寫入這裡(之後的版本才會),但放進來的檔案已經會被索引。\n');
+  assert.notEqual(v2, README);
+  assert.equal(readmeUpdate(v2), README, '第二版會換新');
+  const v1 = v2.replace('以底線 _ 開頭的資料夾(例如 nodes/封存/_圖像/)是附屬資料(圖像快照等),不是記憶:不會被索引,記憶庫管理 app 也應忽略。\n記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n\n', '');
+  assert.notEqual(v1, v2);
+  assert.equal(readmeUpdate(`\uFEFF${v1.replace(/\n/g, '\r\n')}`), README, '第一版(含 BOM、CRLF)會換新');
+  const store = { memoryAll: () => [], memoryPut() {}, memoryDelete() {} };
+  const d1 = tmp();
+  writeFileSync(join(d1, '說明.md'), v2);
+  new MemoryVault(d1, store).init();
+  assert.equal(readFileSync(join(d1, '說明.md'), 'utf8'), README);
+  const d2 = tmp();
+  writeFileSync(join(d2, '說明.md'), `${v2}\n我的註記\n`);
+  new MemoryVault(d2, store).init();
+  assert.equal(readFileSync(join(d2, '說明.md'), 'utf8'), `${v2}\n我的註記\n`);
 });
 
 await test('喚醒網址:解析與驗證', () => {

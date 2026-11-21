@@ -12,7 +12,7 @@ const KIND: Record<(typeof VAULT_DIRS)[number], MemoryEntry['kind']> = { nodes: 
 /** 只讀檔案開頭這麼多位元組來找屬性;一筆記憶不該大到哪裡去。 */
 const READ_MAX = 256 * 1024;
 
-const README = `記憶庫資料夾
+const README_V2 = `記憶庫資料夾
 
 這裡存放主控台的長期記憶,每筆記憶是一個 .md 檔,開頭用 YAML 屬性記下種類、範圍、專案、節點、狀態等欄位:
 
@@ -39,6 +39,25 @@ const README = `記憶庫資料夾
 目前 agent 還不會寫入這裡(之後的版本才會),但放進來的檔案已經會被索引。
 這個資料夾可以用任何文字編輯器開啟;請保留檔案開頭的 --- 屬性區塊。
 `;
+/** 第一版說明檔(還沒有附屬資料的兩行)。 */
+const README_V1 = README_V2.replace('以底線 _ 開頭的資料夾(例如 nodes/封存/_圖像/)是附屬資料(圖像快照等),不是記憶:不會被索引,記憶庫管理 app 也應忽略。\n記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n\n', '');
+/** 目前的說明檔:補上熱度檔與管理 App 專屬的 .vault-awards.json,agent 已經會寫入。 */
+export const README = README_V2
+  .replace('記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n',
+    '記憶庫根目錄的 .nexus-stats.json(節點統計)與 .nexus-heat.json(召回熱度)是主控台寫出的附屬檔(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n'
+    + '.vault-awards.json 是記憶寶庫管理 App 專屬檔,用來記錄手動頒發的光暈;主控台不讀不寫,請勿手動刪除。\n')
+  .replace('主控台只負責讀取與建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n目前 agent 還不會寫入這裡(之後的版本才會),但放進來的檔案已經會被索引。\n',
+    '主控台負責建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n'
+    + '節點會透過記憶工具寫入(草稿與判例先標成「未確認」,在管理 app 確認後 agent 才查得到);你自己放進來的檔案也會被索引。\n');
+/** 主控台寫過的舊版說明檔;內容和其中一版完全相同(使用者沒改過)才換成新版。 */
+const OLD_READMES = [README_V1, README_V2];
+
+/** 說明檔要寫成什麼:沒有檔案就寫新版;內容是主控台寫過的舊版(使用者沒改過)就換成新版;改過或已是新版回傳 null(不動)。 */
+export function readmeUpdate(existing: string | null): string | null {
+  if (existing === null) return README;
+  const t = existing.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+  return t !== README && OLD_READMES.includes(t) ? README : null;
+}
 
 export type FrontValue = string | string[];
 export interface FrontMatter { meta: Map<string, FrontValue>; body: string; hasBlock: boolean }
@@ -170,7 +189,10 @@ export class MemoryVault {
     mkdirSync(this.dir, { recursive: true });
     for (const d of VAULT_DIRS) mkdirSync(join(this.dir, d), { recursive: true });
     const readme = join(this.dir, '說明.md');
-    if (!existsSync(readme)) writeFileSync(readme, README);
+    let cur: string | null = null;
+    try { cur = existsSync(readme) ? readFileSync(readme, 'utf8') : null; } catch { cur = ''; }
+    const next = readmeUpdate(cur);
+    if (next !== null) { try { writeFileSync(readme, next); } catch { /* 寫不進去不影響索引 */ } }
     this.rescan();
   }
 
