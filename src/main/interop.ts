@@ -13,6 +13,7 @@ import type { Core } from './core';
  *   wait_reply  ask_node 等太久先返回時,用它繼續等
  *   start_meeting 召開會議:主控台主持,參與的節點輪流發言幾輪,最後把完整紀錄交回召開者
  *   meeting_say 會議中輪到主持人時,主持人用它發言(交給所有參與者,接著進行下一輪)或結束會議
+ *   case_submit 主控台請節點撰寫判例時,節點用它提交敘述的章節(只有任務自己的節點能提交;見 cases.ts)
  *
  * 設計:
  * - 每個節點有自己的網址(路徑裡帶一組亂數權杖),伺服器由權杖得知是誰在呼叫;只聽 127.0.0.1。
@@ -35,7 +36,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'case_submit'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -159,6 +160,27 @@ const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'case_submit',
+    description: '只在主控台請你「撰寫判例」時使用:把你剛完成的任務的解法,依固定格式提交成一份判例(寫進記憶庫,狀態先是「未確認」)。task_id 是主控台請求裡給的任務編號;只有承辦該任務的節點能提交,一個任務只能提交一次。耗時、失敗次數、改過的檔案等客觀欄位由主控台自動填,你只寫敘述的部分。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '任務編號(主控台請求裡給的)。' },
+        案由: { type: 'string', description: '一句話描述問題。' },
+        關鍵字: { type: 'array', items: { type: 'string' }, description: '3 到 6 個關鍵字。' },
+        事實經過: { type: 'string', description: '遇到什麼狀況、錯誤訊息或症狀。' },
+        爭點: { type: 'string', description: '真正要解決的問題是什麼。' },
+        處理經過: { type: 'string', description: '試過哪些方法,哪些沒用、為什麼(走過的彎路)。' },
+        結論: { type: 'string', description: '最後有效的解法:改了哪些檔案、哪些設定、哪些指令。' },
+        理由: { type: 'string', description: '為什麼這樣能解決(根本原因)。' },
+        適用範圍: { type: 'string', description: '適用條件,什麼情況下不適用。' },
+        參照先例: { type: 'string', description: '相關的既有案號,用 [[案號]] 表示;沒有就寫「無」。' },
+      },
+      required: ['task_id', '案由', '關鍵字', '事實經過', '結論'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export class Interop {
@@ -171,6 +193,8 @@ export class Interop {
   private meetings = new Map<string, Meeting>();
   private enabled = process.env.NEXUS_INTEROP !== '0';
   error = '';
+  /** 判例提交(case_submit);由 index.ts 接上判例服務。callerId 是權杖對應的節點,判例服務據此檢查是不是任務自己的節點。 */
+  caseSubmit: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, 'interop');
@@ -332,6 +356,10 @@ export class Interop {
           const end = args.end === true || args.end === 'true';
           if (!rid || (!say && !end)) throw new Error(`meeting_say 需要 request_id(start_meeting 回傳的 m 開頭識別碼),以及 text(你的發言)或 end: true(結束會議)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。`);
           return text(await this.meetingSay(callerId, rid, say, end));
+        }
+        if (params?.name === 'case_submit') {
+          if (!this.caseSubmit) throw new Error('判例功能沒有啟用。');
+          return text(await this.caseSubmit(callerId, args));
         }
         return text(`沒有這個工具:${String(params?.name)}`, true);
       } catch (err) {

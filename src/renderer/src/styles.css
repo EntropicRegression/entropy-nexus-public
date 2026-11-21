@@ -644,6 +644,10 @@ button.mute { font-size: 12px; }
 .task-verdict-btn:hover { color: var(--text); border-color: var(--dim); }
 .task-verdict-btn.v-accepted.on { color: var(--ok, #6fe08d); border-color: var(--ok, #6fe08d); }
 .task-verdict-btn.v-rejected.on { color: var(--bad); border-color: var(--bad); }
+.task-verdict { flex-wrap: wrap; align-items: center; }
+.task-case { font: 11px var(--mono); color: var(--accent, #7aa2f7); border: 1px solid var(--line); padding: 0 7px; }
+.task-case.pending { color: var(--dim); border-style: dashed; }
+.task-case-err { font-size: 11px; color: var(--bad); }
 .task-cancel { font-size: 11px; color: var(--dim); padding: 0 4px; cursor: pointer; }
 .task-cancel:hover { color: var(--bad); }
 

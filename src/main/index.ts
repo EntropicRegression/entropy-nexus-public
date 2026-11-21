@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { BACKEND_LABEL } from '../shared/types';
 import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, TaskVerdict, Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
@@ -15,6 +16,9 @@ import { initObserver, observedList, observeInstall, observeNewToken, observerSa
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
 import { MemoryVault } from './memory-vault';
+import { safeName, writeMemory } from './memory-write';
+import { CaseService } from './cases';
+import { CASE_DAILY_CAP, detectCandidate } from '../shared/case-candidates';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
@@ -36,6 +40,7 @@ let win: BrowserWindow | null = null;
 let core: Core | null = null;
 let store: Store | null = null;
 let vault: MemoryVault | null = null;
+let cases: CaseService | null = null;
 let quitting = false;
 let interopRef: Interop | null = null;
 
@@ -100,6 +105,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     maxActive: (n: number) => c.setMaxActive(n),
     clearTasks: () => c.clearFinishedTasks(),
     taskVerdict: (taskId: string, verdict: TaskVerdict) => c.setTaskVerdict(String(taskId), verdict ?? null),
+    markCase: async (taskId: string) => { if (!cases) throw new Error('判例功能沒有啟用'); return cases.mark(String(taskId)); },
     memoryVault: () => ({ dir: vault?.dir ?? '', entries: vault?.list() ?? [] }),
     taskChanges: (taskId: string) => c.taskChanges(taskId),
     oldSessions: () => c.listOldSessions(),
@@ -317,6 +323,31 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     core.setInterop(id => interop.optionsFor(id));
     interop.attach(core);
     if (interop.error) console.error(interop.error);
+    // 判例庫:困難任務完成時請承辦節點寫判例(客觀欄位由主控台填),節點用 case_submit 提交
+    const c = core, v = vault, s = store;
+    cases = new CaseService({
+      vaultDir: v.dir,
+      getSetting: k => s.getSetting(k),
+      setSetting: (k, val) => s.setSetting(k, val),
+      entries: () => v.list(),
+      rescan: () => { v.rescan(); },
+      task: id => c.taskById(id),
+      agent: id => c.agentById(id),
+      changedFiles: async id => (await c.taskChanges(id)).files.map(f => f.path),
+      facts: t => c.caseFacts(t),
+      request: (agentId, text) => c.enqueue(agentId, text, [], 'case'),
+      patchTask: (id, patch) => c.patchTaskCase(id, patch),
+      detect: detectCandidate,
+      write: writeMemory,
+      safeName,
+      backendLabel: b => BACKEND_LABEL[b],
+      // 測試用:NEXUS_CASE_MIN_MINUTES 可把「耗時超過幾分鐘」縮短(可以是小數)
+      ...(Number(process.env.NEXUS_CASE_MIN_MINUTES) > 0 ? { minMinutes: Number(process.env.NEXUS_CASE_MIN_MINUTES) } : {}),
+      dailyCap: Number(process.env.NEXUS_CASE_DAILY_CAP) >= 0 && process.env.NEXUS_CASE_DAILY_CAP ? Number(process.env.NEXUS_CASE_DAILY_CAP) : CASE_DAILY_CAP,
+    });
+    const caseSvc = cases;
+    core.attachCases(caseSvc);
+    interop.caseSubmit = (callerId, args) => caseSvc.submit(callerId, args);
     handleFileRequests(id => core?.agentCwd(id) ?? null);
     await core.init();
     if (core.isEmpty() && process.env.NEXUS_NO_SEED !== '1') core.seedDemo(app.getPath('home'));

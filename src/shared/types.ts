@@ -104,7 +104,7 @@ export interface AgentInfo {
  * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
  * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
  */
-export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'case';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
 export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
@@ -191,6 +191,10 @@ export interface TaskInfo {
    * status 只代表回合有沒有正常結束,驗收才代表結果對不對。使用者按任務卡的按鈕、或把審查評論送回節點時(自動退回)會設定。
    */
   verdict?: TaskVerdict;
+  /** 這個任務寫成的判例案號(例如 2026-0003);有值就不會再請節點撰寫。 */
+  caseId?: string;
+  /** 已請承辦節點撰寫判例、還在等它提交。 */
+  casePending?: boolean;
 }
 export type TaskVerdict = 'accepted' | 'rejected' | null;
 
@@ -628,6 +632,8 @@ export interface NexusApi {
   clearFinishedTasks(): Promise<void>;
   /** 使用者驗收或退回一個已結束的任務(再按一次同樣的結果即取消);null 表示清除判斷。 */
   setTaskVerdict(taskId: string, verdict: TaskVerdict): Promise<void>;
+  /** 「記下這個解法」:請承辦節點把這個已結束的任務寫成判例(狀態先是未確認)。回傳給使用者看的說明。 */
+  markCase(taskId: string): Promise<string>;
   /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
   getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
   /** 取得一個任務期間的檔案變更;任務還在執行時回傳到目前為止的變更。 */

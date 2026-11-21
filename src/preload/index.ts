@@ -37,6 +37,7 @@ const api: NexusApi = {
   setChief: id => ipcRenderer.invoke('nexus:setChief', id),
   clearFinishedTasks: () => ipcRenderer.invoke('nexus:clearTasks'),
   setTaskVerdict: (taskId, verdict) => ipcRenderer.invoke('nexus:taskVerdict', taskId, verdict),
+  markCase: taskId => ipcRenderer.invoke('nexus:markCase', taskId),
   getMemoryVault: () => ipcRenderer.invoke('nexus:memoryVault'),
   getTaskChanges: taskId => ipcRenderer.invoke('nexus:taskChanges', taskId),
   listOldSessions: () => ipcRenderer.invoke('nexus:oldSessions'),

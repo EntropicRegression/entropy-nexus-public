@@ -36,6 +36,7 @@ const SUITES = [
   { name: 'claude-content', group: 'unit', min: 0.1, fixtures: true, ...node('tests/claude-content.test.mjs') },
   { name: 'node-stats', group: 'unit', min: 0.1, ...node('tests/node-stats.test.mjs') },
   { name: 'memory-vault', group: 'unit', min: 0.2, ...node('tests/memory-vault.test.mjs') },
+  { name: 'case-library', group: 'unit', min: 0.2, ...node('tests/case-library.test.mjs') },
   { name: 'project', group: 'unit', min: 0.3, ...node('tests/project.test.mjs') },
   { name: 'acp', group: 'unit', min: 0.5, ...node('tests/acp.test.js') },
   { name: 'worktree-setup-unit', group: 'unit', min: 0.5, ...node('tests/worktree-setup.test.js') },

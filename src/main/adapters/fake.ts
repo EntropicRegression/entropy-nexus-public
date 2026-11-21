@@ -174,6 +174,45 @@ class FakeSession implements AdapterSession {
       this.emit({ type: 'state', state: 'idle', detail: '' });
       return;
     }
+    // 【只給驗收測試用】判例(長期記憶階段 3):
+    //   NEXUS_FAKE_CASE=1 時,收到主控台的「判例撰寫請求」就照格式呼叫 case_submit 提交一份固定內容的判例
+    //   (處理經過裡放了一組假金鑰,測試遮罩;參照先例取請求裡列出的第一個 [[案號]],沒有就寫「無」);
+    //   請求裡的任務標題含〔測試重複提交〕時再提交一次,看主控台是否擋下。結果以 [case] 開頭的 note 事件回報。
+    //   〔測試中途出錯〕:回合中途出現一次錯誤事件,之後仍正常完成(模擬失敗後才成功)。
+    if (process.env.NEXUS_FAKE_CASE === '1' && _text.includes('(主控台:判例撰寫請求。')) {
+      this.emit({ type: 'state', state: 'working', detail: '撰寫判例' });
+      await this.wait(400);
+      const url = this.opts.interop?.url;
+      const taskId = /任務編號:([0-9a-f-]{36})/.exec(_text)?.[1] ?? '';
+      const precedent = /^- \[\[(\d{4}-\d{4,})\]\]/m.exec(_text)?.[1];
+      const args = {
+        task_id: taskId, 案由: `測試判例 ${taskId.slice(0, 8)}`, 關鍵字: ['測試', '判例'], 事實經過: '假資料節點遇到測試指定的狀況。', 爭點: '驗證判例的撰寫與提交流程。',
+        處理經過: '先試了第一種做法沒用;設定 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 之後改走第二種。\n## 不該出現的二級標題\n內容', 結論: '改用第二種做法。', 理由: '第一種做法的前提不成立。',
+        適用範圍: '只適用於假資料測試。', 參照先例: precedent ? `參考 [[${precedent}]]` : '無',
+      };
+      const submit = async (): Promise<string> => {
+        if (!url) return 'no-interop-url';
+        try {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'case_submit', arguments: args } }) });
+          const j = await r.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+          return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+        } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+      };
+      this.emit({ type: 'note', text: `[case] ${await submit()}` });
+      if (_text.includes('〔測試重複提交〕')) this.emit({ type: 'note', text: `[case] ${await submit()}` });
+      this.emit({ type: 'message', role: 'agent', text: '判例已提交。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    if (_text.includes('〔測試中途出錯〕')) {
+      this.emit({ type: 'state', state: 'working', detail: '測試執行' });
+      await this.wait(300);
+      this.emit({ type: 'error', message: '模擬錯誤:中途失敗後重試' });
+      await this.wait(300);
+      this.emit({ type: 'message', role: 'agent', text: '完成。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
     // 〔測試執行:毫秒〕:停在「執行中」這麼久再完成(不回報用量);〔測試出錯〕:這個回合直接出錯
     const runMark = /〔測試執行:(\d+)〕/.exec(_text);
     if (runMark) {

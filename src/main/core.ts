@@ -69,6 +69,7 @@ export class Core {
   private current = new Map<string, string>();
   /** 上一次送給總管的節點統計段落與時間;用來判斷下一則指令前要不要再通知。 */
   private chiefStatsSent = { text: '', at: 0 };
+  private cases: { onTaskEnded(task: TaskInfo): unknown } | null = null;
   private interrupted = new Set<string>();
   /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
   private turnText = new Map<string, string[]>();
@@ -1073,6 +1074,31 @@ ${text}
     this.pushTask(task);
   }
 
+  /** 判例服務(長期記憶階段 3):任務完成時由它判斷要不要請節點寫判例。啟動時由 index.ts 接上。 */
+  attachCases(svc: { onTaskEnded(task: TaskInfo): unknown }): void { this.cases = svc; }
+
+  taskById(id: string): TaskInfo | undefined { return this.tasks.get(id); }
+  agentById(id: string): AgentInfo | undefined { return this.agents.get(id); }
+
+  /** 記錄任務寫成了哪份判例、或正在等節點撰寫。 */
+  patchTaskCase(taskId: string, patch: { caseId?: string; casePending?: boolean }): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    if (patch.caseId !== undefined) task.caseId = patch.caseId;
+    if (patch.casePending !== undefined) { if (patch.casePending) task.casePending = true; else delete task.casePending; }
+    this.pushTask(task);
+  }
+
+  /** 判例的偵測與填欄位用:任務期間節點說了幾則話、失敗幾次(錯誤事件,加上這次是重試上一次失敗的同一句指令)。 */
+  caseFacts(task: TaskInfo): { agentMessages: number; failures: number } {
+    const events = this.store.agentEventsBetween(task.agentId, task.startedAt, task.endedAt ?? Date.now());
+    const prev = [...this.tasks.values()].filter(t => t.agentId === task.agentId && t.startedAt < task.startedAt).sort((a, b) => b.startedAt - a.startedAt)[0];
+    return {
+      agentMessages: events.filter(e => e.type === 'message' && e.role === 'agent').length,
+      failures: events.filter(e => e.type === 'error').length + (prev && prev.status === 'failed' && prev.title === task.title ? 1 : 0),
+    };
+  }
+
   /** 使用者驗收或退回一個已結束的任務;null 清除判斷。還在執行的任務不能驗收。 */
   setTaskVerdict(taskId: string, verdict: TaskVerdict): void {
     const task = this.tasks.get(taskId);
@@ -1286,7 +1312,10 @@ ${section}
           this.pushTask(task);
         } else if (e.state === 'idle') {
           // 後台自己取消的回合(Codex、ACP)也會回到待命,由轉接器以 outcome 標明
-          this.speakEnd(agent, this.finishTask(agent.id, this.interrupted.has(agent.id) || e.outcome === 'interrupted' ? 'interrupted' : 'done'));
+          const ended = this.finishTask(agent.id, this.interrupted.has(agent.id) || e.outcome === 'interrupted' ? 'interrupted' : 'done');
+          this.speakEnd(agent, ended);
+          // 判例:正常完成的任務是不是困難任務,是的話請承辦節點把解法寫下來
+          if (ended?.status === 'done') this.cases?.onTaskEnded(ended);
         } else if (e.state === 'error') {
           this.speakEnd(agent, this.finishTask(agent.id, 'failed', e.detail ?? ''), 'error');
         } else if (e.state === 'lost') {
