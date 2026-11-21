@@ -636,8 +636,8 @@ export interface NexusApi {
    * 後台能內嵌的類型直接交給模型看,其他的由轉接器把路徑寫進指令並以 note 事件說明。
    */
   send(id: string, text: string, images?: string[]): Promise<void>;
-  /** 修改節點的名稱、角色或模型。換模型會重新啟動 session(對話內容保留)。 */
-  updateAgent(id: string, patch: { name?: string; character?: string; model?: string }): Promise<AgentInfo>;
+  /** 修改節點的名稱、角色、模型或權限模式。換模型或權限模式會重新啟動 session(對話內容保留)。 */
+  updateAgent(id: string, patch: { name?: string; character?: string; model?: string; permissionMode?: PermissionMode }): Promise<AgentInfo>;
   pickFiles(): Promise<string[]>;
   /** 把剪貼簿貼上的圖片存成暫存檔(只收圖片、有大小上限),回傳檔案路徑。 */
   savePastedImage(mime: string, data: ArrayBuffer): Promise<string>;

@@ -869,13 +869,17 @@ ${text}
     this.startSession(agent);
   }
 
-  /** 修改節點的名稱、角色或模型。換模型要重新啟動 session,對話內容由 CLI 的續接功能保留。 */
-  async updateAgent(id: string, patch: { name?: string; character?: string; model?: string }): Promise<AgentInfo> {
+  /** 修改節點的名稱、角色、模型或權限模式。換模型或權限模式要重新啟動 session,對話內容由 CLI 的續接功能保留。 */
+  async updateAgent(id: string, patch: { name?: string; character?: string; model?: string; permissionMode?: PermissionMode }): Promise<AgentInfo> {
     const agent = this.agents.get(id);
     if (!agent || agent.parentId) throw new Error('找不到這個節點');
     const model = patch.model !== undefined ? patch.model.trim() : agent.model;
     const modelChanged = model !== agent.model;
-    if (modelChanged && (BUSY.has(agent.state) || agent.terminal)) throw new Error('節點還在執行或在終端機模式,等它停下來再換模型。');
+    if (patch.permissionMode !== undefined && patch.permissionMode !== 'ask' && patch.permissionMode !== 'auto') throw new Error('不正確的權限模式');
+    const mode = patch.permissionMode ?? agent.permissionMode;
+    const modeChanged = mode !== agent.permissionMode;
+    if (modeChanged && this.capabilities.get(agent.backend)?.approvals === false) throw new Error(`${BACKEND_LABEL[agent.backend]} 在主控台不支援在視窗內授權,切換權限模式沒有作用。`);
+    if ((modelChanged || modeChanged) && (BUSY.has(agent.state) || agent.terminal)) throw new Error(`節點還在執行或在終端機模式,等它停下來再換${modelChanged ? '模型' : '權限模式'}。`);
     if (patch.name !== undefined && patch.name.trim() && patch.name.trim() !== agent.name) { agent.name = patch.name.trim(); this.addNotice(id, 'name'); }
     if (patch.character !== undefined && patch.character !== agent.character) {
       // 新舊角色都沒有角色卡時只是換立繪,不必通知 agent
@@ -884,15 +888,17 @@ ${text}
       if (had || this.personaCard(agent)) this.addNotice(id, 'persona');
     }
     agent.model = model;
+    agent.permissionMode = mode;
     this.store.updateAgentMeta(agent);
     // 任務面板上這個節點的任務也跟著改名
     for (const t of this.tasks.values()) {
       if (t.agentId === id && (t.agentName !== agent.name || t.model !== agent.model)) { t.agentName = agent.name; if (t.endedAt === null) t.model = agent.model; this.pushTask(t); }
     }
     this.broadcast({ agent: { ...agent } });
-    if (modelChanged && this.sessions.has(id)) {
+    if (modeChanged) this.onAdapterEvent(id, { type: 'note', text: `權限模式改為「${mode === 'auto' ? '自動執行' : '每次詢問'}」。` });
+    if ((modelChanged || modeChanged) && this.sessions.has(id)) {
       await this.stopSession(id);
-      this.onAdapterEvent(id, { type: 'note', text: `模型改為 ${agent.model || '預設'},重新啟動 session。` });
+      this.onAdapterEvent(id, { type: 'note', text: modelChanged ? `模型改為 ${agent.model || '預設'},重新啟動 session。` : '重新啟動 session 套用新的權限模式,對話內容保留。' });
       this.onAdapterEvent(id, { type: 'state', state: 'planning', detail: '續接中' });
       this.startSession(agent);
     }

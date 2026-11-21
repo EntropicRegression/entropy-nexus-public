@@ -200,7 +200,7 @@ export function auditDetail(action: string, input: Record<string, any>): string 
     case 'approval': return input.decision === 'allow' ? '允許' : input.decision === 'allow_session' ? '本次都允許' : input.decision === 'deny' ? '拒絕' : cut(input.decision, 20);
     case 'answer': return input.answers ? cut(Object.values(input.answers).flat().join('、')) : '略過';
     case 'create': return cut(`${input.backend ?? ''} ${input.name ?? ''} ${input.cwd ?? ''}${input.permissionMode === 'auto' ? '(自動)' : ''}`);
-    case 'updateAgent': return cut([input.name && `名稱 ${input.name}`, input.model !== undefined && `模型 ${input.model || '預設'}`, input.character !== undefined && `角色 ${input.character || '無'}`].filter(Boolean).join(','));
+    case 'updateAgent': return cut([input.name && `名稱 ${input.name}`, input.model !== undefined && `模型 ${input.model || '預設'}`, input.character !== undefined && `角色 ${input.character || '無'}`, input.permissionMode && `權限 ${input.permissionMode === 'auto' ? '自動' : '詢問'}`].filter(Boolean).join(','));
     case 'setPersona': return cut(input.character);
     case 'settings': return cut([Number.isInteger(input.maxActive) && `同時上限 ${input.maxActive}`, Number.isInteger(input.quotaStop) && `額度上限 ${input.quotaStop}%`].filter(Boolean).join(','));
     case 'commitTask': return cut(input.message);

@@ -178,7 +178,7 @@ export class Store {
   }
 
   updateAgentMeta(a: AgentInfo): void {
-    this.db.prepare('UPDATE agents SET name = ?, character = ?, model = ? WHERE id = ?').run(a.name, a.character, a.model, a.id);
+    this.db.prepare('UPDATE agents SET name = ?, character = ?, model = ?, permission_mode = ? WHERE id = ?').run(a.name, a.character, a.model, a.permissionMode, a.id);
   }
 
   restoreAgent(id: string, name: string): void {

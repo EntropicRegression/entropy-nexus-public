@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
-import { ATTACHMENT_LABEL, attachmentKind, BACKEND_LABEL, STATE_LABEL, type AgentInfo, type ApprovalDecision, type Capability, type NexusEvent, type WorktreeStatus } from '../../shared/types';
+import { ATTACHMENT_LABEL, attachmentKind, BACKEND_LABEL, STATE_LABEL, type AgentInfo, type ApprovalDecision, type Capability, type NexusEvent, type PermissionMode, type WorktreeStatus } from '../../shared/types';
 import { Markdown, MdImage } from './Markdown';
 import { PersonaEditor } from './PersonaEditor';
 import { Portrait } from './Portrait';
@@ -191,12 +191,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   };
   // 節點設定:名稱、角色、模型
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: a.name, character: a.character, model: a.model });
+  const [form, setForm] = useState<{ name: string; character: string; model: string; permissionMode: PermissionMode }>({ name: a.name, character: a.character, model: a.model, permissionMode: a.permissionMode });
   const [characters, setCharacters] = useState<string[]>([]);
   const [note, setNote] = useState('');
   const clean = (e: unknown) => String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
   const openSettings = () => {
-    setForm({ name: a.name, character: a.character, model: a.model });
+    setForm({ name: a.name, character: a.character, model: a.model, permissionMode: a.permissionMode });
     setNote('');
     setEditing(v => !v);
     void window.nexus.getSnapshot().then(s => setCharacters(s.characters));
@@ -304,7 +304,16 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
               <input list="dlg-models" value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} placeholder="預設" />
               <datalist id="dlg-models">{(cap?.models ?? []).map(m => <option key={m} value={m} />)}</datalist>
             </label>
-            <span className="muted">換模型會重新啟動 session,對話內容保留。工作目錄不能更換,請另外新增節點。</span>
+            {cap?.approvals !== false && (
+              <label>權限模式
+                <select value={form.permissionMode} onChange={e => setForm(f => ({ ...f, permissionMode: e.target.value as PermissionMode }))}>
+                  <option value="ask">每次詢問</option>
+                  <option value="auto">自動執行</option>
+                </select>
+              </label>
+            )}
+            {form.permissionMode === 'auto' && a.permissionMode !== 'auto' && <span className="note warn">{isChief ? '總管會在不問你的情況下,把工作交給其他節點執行。建議維持「每次詢問」,分派前先由你確認。' : '修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。'}</span>}
+            <span className="muted">換模型或權限模式會重新啟動 session,對話內容保留(節點要先停下來)。工作目錄不能更換,請另外新增節點。</span>
             <span className="spacer" />
             <button onClick={() => setEditing(false)}>取消</button>
             <button className="primary" disabled={!form.name.trim()} onClick={() => void save()}>儲存</button>

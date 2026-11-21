@@ -101,6 +101,16 @@
     await window.nexus.updateAgent(b.id, { model: 'sonnet' });
     bi = await until('換模型後待命', async () => { const a = await agentOf(b.id); return a.state === 'idle' && a; });
     check('換模型重啟也用新 id 續接', bi.detail === '已續接' && bi.sessionId === forkSession, `${bi.detail} ${bi.sessionId}`);
+    // 切換權限模式:重新啟動並續接同一個 session,模式記住
+    const before = bi.permissionMode;
+    const flipped = before === 'auto' ? 'ask' : 'auto';
+    await window.nexus.updateAgent(b.id, { permissionMode: flipped });
+    bi = await until('換權限模式後待命', async () => { const a = await agentOf(b.id); return a.state === 'idle' && a.permissionMode === flipped && a; });
+    check('切換權限模式後續接同一個 session', bi.detail === '已續接' && bi.sessionId === forkSession, `${bi.detail} ${bi.sessionId}`);
+    check('切換權限模式有留說明', (await notes(b.id)).some(n => n.includes('權限模式改為')));
+    try { await window.nexus.updateAgent(b.id, { permissionMode: 'yolo' }); check('不正確的權限模式被拒絕', false); } catch (e) { check('不正確的權限模式被拒絕', /不正確/.test(String(e))); }
+    await window.nexus.updateAgent(b.id, { permissionMode: before });
+    bi = await until('切回原模式後待命', async () => { const a = await agentOf(b.id); return a.state === 'idle' && a.permissionMode === before && a; });
 
     // ---- 4. 來源不受影響,而且忙碌時也能分支
     await ask(src.id, '甲 繼續工作');

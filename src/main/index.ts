@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { BACKEND_LABEL, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
+import { BACKEND_LABEL, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -133,7 +133,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
       return r ? r.path : null;
     },
     send: (id: string, text: string, images?: string[]) => c.send(id, text, Array.isArray(images) ? images : [], 'user', source),
-    updateAgent: (id: string, patch: { name?: string; character?: string; model?: string }) => c.updateAgent(id, patch),
+    updateAgent: (id: string, patch: { name?: string; character?: string; model?: string; permissionMode?: PermissionMode }) => c.updateAgent(id, patch),
     savePastedImage: (mime: string, data: ArrayBuffer) => savePastedImage(mime, data),
     attachmentPreview: (path: string) => attachmentPreview(path),
     openTerminal: (id: string, cols: number, rows: number) => c.openTerminal(id, cols, rows),
