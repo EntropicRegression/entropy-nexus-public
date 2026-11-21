@@ -314,6 +314,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     const interop = new Interop(dir);
     interopRef = interop;
     core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); });
+    core.setMemoryVault(vault);
     core.setInterop(id => interop.optionsFor(id));
     interop.attach(core);
     if (interop.error) console.error(interop.error);

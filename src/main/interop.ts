@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from 'node:path';
 import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type Update } from '../shared/types';
 import type { Core } from './core';
+import { memorySearch, memoryWrite } from './memory-tools';
 
 /**
  * 節點互相呼叫:主控台開一個只聽本機迴路的 MCP 伺服器(Streamable HTTP,單純的 JSON 回應),
@@ -35,7 +36,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_write'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -156,6 +157,36 @@ const TOOL_DEFS = [
         end: { type: 'boolean', description: '設為 true 結束會議。' },
       },
       required: ['request_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_search',
+    description: '搜尋主控台的長期記憶:節點側寫(各節點的特長與解決問題的流程)、使用者已確認的判例(以前遇過的問題與解法)、專案知識、使用者偏好。開始一件不熟的工作、要決定交給哪個節點、或想知道「這個專案有什麼要注意的」「使用者偏好什麼」之前先查。範圍是全域加上你目前的專案(可用 project 指定別的專案);你自己的側寫與判例排在最前面。回傳每筆的路徑、種類、標題、狀態、更新日期與一小段摘要;標「可能過時」的(很久沒更新,或專案之後已改了很多)請先對照現況再採用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '關鍵字,空白分隔(中文直接寫詞即可,不分大小寫)。' },
+        kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好。不填就全部查。' },
+        node: { type: 'string', description: '只看和這個節點(名稱或 id)有關的記憶。' },
+        project: { type: 'string', description: '指定專案(名稱或路徑);不填就是你目前的專案。' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_write',
+    description: '寫入長期記憶,只有總管節點可以用(其他節點會被拒絕)。kind 為 node:更新某個節點的特長,title 填節點名稱、content 寫它擅長什麼(簡短,第一行最重要,會顯示在總管守則裡);knowledge:寫一則專案知識(本專案踩過的坑、慣例、設定),title 是標題,同標題會取代內容;preference:寫一則使用者偏好(跨專案適用)。只寫日後真的用得到、講得清楚的事;不要寫金鑰、密碼或權杖(看起來像的會被自動遮罩)。專案知識每個專案有數量上限,超過時請整理合併。判例不能用這個工具寫,請用 case_submit。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['node', 'knowledge', 'preference'], description: 'node 節點特長、knowledge 專案知識、preference 使用者偏好。' },
+        title: { type: 'string', description: 'node 時是節點名稱;其餘是這則記憶的標題。' },
+        content: { type: 'string', description: '內容(Markdown)。' },
+        project: { type: 'string', description: 'knowledge 用:指定專案名稱;不填就是你目前的專案。' },
+      },
+      required: ['kind', 'title', 'content'],
       additionalProperties: false,
     },
   },
@@ -332,6 +363,14 @@ export class Interop {
           const end = args.end === true || args.end === 'true';
           if (!rid || (!say && !end)) throw new Error(`meeting_say 需要 request_id(start_meeting 回傳的 m 開頭識別碼),以及 text(你的發言)或 end: true(結束會議)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。`);
           return text(await this.meetingSay(callerId, rid, say, end));
+        }
+        if (params?.name === 'memory_search' || params?.name === 'memory_write') {
+          const deps = this.core?.memoryDeps();
+          const caller = this.core?.memoryCaller(callerId);
+          if (!deps || !caller) throw new Error('記憶庫現在不能用。');
+          const s = (...keys: string[]) => pick(...keys);
+          if (params.name === 'memory_search') return text(await memorySearch(deps, caller, { query: s('query', 'q', 'keywords', 'text'), kind: s('kind', 'type'), node: s('node', 'node_name'), project: s('project') }));
+          return text(await memoryWrite(deps, caller, { kind: s('kind', 'type'), title: s('title', 'name'), content: s('content', 'text', 'body'), project: s('project') }));
         }
         return text(`沒有這個工具:${String(params?.name)}`, true);
       } catch (err) {

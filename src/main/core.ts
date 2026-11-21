@@ -20,6 +20,8 @@ import { removeMedia } from './media';
 import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, type StatsNode } from '../shared/node-stats';
 import type { Store } from './store';
+import type { MemoryVault } from './memory-vault';
+import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
 
 /** 執行中超過這段時間沒有任何事件就標成失聯;NEXUS_STALL_MS 可在測試時縮短。 */
 const STALL_MS = Number(process.env.NEXUS_STALL_MS) || 10 * 60 * 1000;
@@ -69,6 +71,10 @@ export class Core {
   private current = new Map<string, string>();
   /** 上一次送給總管的節點統計段落與時間;用來判斷下一則指令前要不要再通知。 */
   private chiefStatsSent = { text: '', at: 0 };
+  /** 記憶庫(長期記憶);沒有設定時記憶工具不可用。 */
+  private vault: MemoryVault | null = null;
+  /** 要在下一則指令前告訴總管的記憶相關通知(例如專案知識超過上限)。 */
+  private chiefNotes: string[] = [];
   private interrupted = new Set<string>();
   /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
   private turnText = new Map<string, string[]>();
@@ -549,7 +555,7 @@ export class Core {
     }
     this.onAdapterEvent(id, { type: 'message', role: 'user', text });
     // 改名、換角色之後的第一則指令順便告訴 agent;紀錄裡仍只留使用者原本的文字
-    session.send(this.takeNotice(agent) + this.takeStatsNotice(agent) + text, images);
+    session.send(this.takeNotice(agent) + this.takeChiefNotes(agent) + this.takeStatsNotice(agent) + text, images);
   }
 
   /** 讓 agent 知道自己在主控台裡的身分:節點名稱,加上所選角色的角色卡(有的話)。 */
@@ -571,7 +577,8 @@ export class Core {
 - 用 ask_node 交辦。對方看不到你和使用者的對話,所以 prompt 要寫完整:背景、要做什麼、要讀的檔案(絕對路徑)、希望怎麼回覆。需要多方意見或討論時用 start_meeting。
 - 交辦之前,先用一句話說明你要交給誰、做什麼;判斷不出來、或指令聽起來不完整時,先問使用者,不要猜。
 - 除非使用者明確要你自己做,或沒有合適的節點,否則不要自己改檔案或執行指令。
-- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。${stats ? `
+- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。
+- 長期記憶:交辦前可以用 memory_search 查有沒有相關的專案知識、使用者偏好、節點側寫與已確認的判例(標「可能過時」的要先對照現況)。只有你能用 memory_write 寫入:節點的特長(kind 為 node,title 填節點名稱)、專案知識、使用者偏好;只寫日後真的用得到、一兩句講得清楚的事,不要寫金鑰或密碼。${stats ? `
 
 ${stats}` : ''}`;
   }
@@ -1084,12 +1091,47 @@ ${text}
     this.pushTask(task);
   }
 
+  setMemoryVault(v: MemoryVault): void { this.vault = v; }
+
+  /** 記憶工具用:呼叫者的身分(是不是總管、名稱、工作目錄);找不到節點回傳 null。 */
+  memoryCaller(agentId: string): MemoryCaller | null {
+    const a = this.agents.get(agentId);
+    return a ? { id: a.id, name: a.name, cwd: a.cwd, isChief: a.id === this.chiefId } : null;
+  }
+
+  /** 記憶工具用的相依項目;記憶庫還沒啟動時回傳 null。 */
+  memoryDeps(): MemoryToolsDeps | null {
+    const vault = this.vault;
+    if (!vault) return null;
+    return {
+      vaultDir: vault.dir,
+      list: () => vault.list(),
+      rescan: () => { vault.rescan(); },
+      nodes: () => [...this.agents.values()].filter(a => !a.parentId).map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model })),
+      project: cwd => projectOf(cwd),
+      head: gitHead,
+      commitsAhead: gitCommitsAhead,
+      noteChief: text => { this.chiefNotes.push(text); },
+      now: () => Date.now(),
+    };
+  }
+
+  /** 取出並清掉給總管的記憶通知。 */
+  private takeChiefNotes(agent: AgentInfo): string {
+    if (agent.id !== this.chiefId || !this.chiefNotes.length) return '';
+    const out = this.chiefNotes.join('\n\n');
+    this.chiefNotes = [];
+    return `${out}\n\n`;
+  }
+
   /** 總管守則用:每個最上層節點(不含總管自己)的統計。資料取自資料庫,包含任務面板已清除的任務。 */
   private chiefStats(): string {
     const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000));
     const nodes: StatsNode[] = [...this.agents.values()].filter(a => !a.parentId && a.id !== this.chiefId)
       .map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model }));
-    return chiefStatsSection(nodes, stats, Date.now());
+    const strengths = new Map<string, string>();
+    if (this.vault) for (const n of nodes) { const t = readNodeStrengths(this.vault.dir, n.name); if (t) strengths.set(n.id, t); }
+    return chiefStatsSection(nodes, stats, Date.now(), undefined, strengths);
   }
 
   /**

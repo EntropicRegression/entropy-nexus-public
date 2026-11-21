@@ -100,9 +100,10 @@ export function formatDuration(ms: number): string {
 export interface StatsNode { id: string; name: string; backendLabel: string; model: string }
 
 /** 一個節點在總管守則裡的一行。 */
-export function statsLine(n: StatsNode, s: NodeStats | undefined): string {
+export function statsLine(n: StatsNode, s: NodeStats | undefined, strengths = ''): string {
   const who = `${n.name}(${n.backendLabel}${n.model ? ` · ${n.model}` : ''})`;
-  if (!s || !s.tasks) return `- ${who}:尚無任務紀錄`;
+  const extra = strengthsLine(strengths);
+  if (!s || !s.tasks) return `- ${who}:尚無任務紀錄${extra}`;
   const finished = s.done + s.failed + s.interrupted;
   const parts = [
     `完成率 ${pct(s.completionRate, s.done, finished) ?? '無已結束的任務'}`,
@@ -111,7 +112,15 @@ export function statsLine(n: StatsNode, s: NodeStats | undefined): string {
   if (s.avgDoneMs !== null) parts.push(`平均耗時 ${formatDuration(s.avgDoneMs)}`);
   const proj = s.projects.slice(0, 3).map(p => p.name).join('、');
   if (proj) parts.push(`近期專案 ${proj}`);
-  return `- ${who}:${parts.join(',')}`;
+  return `- ${who}:${parts.join(',')}${extra}`;
+}
+
+export const STRENGTH_MAX = 80;
+/** 節點側寫的「特長」在總管守則裡只放第一行、截短成獨立一行(每個節點最多兩行);沒有特長時回傳空字串。 */
+export function strengthsLine(strengths: string): string {
+  const first = strengths.split(/\r?\n/).map(l => l.replace(/^\s*(?:[-*•]\s+)?/, '').trim()).find(Boolean) ?? '';
+  if (!first) return '';
+  return `\n  特長:${first.length > STRENGTH_MAX ? `${first.slice(0, STRENGTH_MAX - 1)}…` : first}`;
 }
 
 export const RECENT_DAYS = 30;
@@ -123,15 +132,15 @@ export const STATS_BUDGET = 1500;
  * 2. 字數超過 budget 時從後面開始捨去(所以先捨去沒有近期任務的節點),最後一行寫「另有 N 個節點,可用 list_nodes 查看」;
  * 3. 沒有任何節點時回傳空字串。
  */
-export function chiefStatsSection(nodes: StatsNode[], stats: Map<string, NodeStats>, now: number, budget = STATS_BUDGET): string {
+export function chiefStatsSection(nodes: StatsNode[], stats: Map<string, NodeStats>, now: number, budget = STATS_BUDGET, strengths: Map<string, string> = new Map()): string {
   if (!nodes.length) return '';
   const cutoff = now - RECENT_DAYS * 24 * 3600 * 1000;
   const recent = (n: StatsNode) => (stats.get(n.id)?.lastActive ?? 0) >= cutoff;
   const last = (n: StatsNode) => stats.get(n.id)?.lastActive ?? 0;
   const sorted = [...nodes].sort((a, b) => Number(recent(b)) - Number(recent(a)) || last(b) - last(a) || a.name.localeCompare(b.name));
-  const head = '各節點的近況(主控台統計;完成率只代表回合正常結束,驗收率是使用者按「驗收/退回」的結果,兩者分開看):';
+  const head = '各節點的近況(主控台統計;完成率只代表回合正常結束,驗收率是使用者按「驗收/退回」的結果,兩者分開看;特長來自節點側寫,詳細用 memory_search 查):';
   const footer = (n: number) => `另有 ${n} 個節點,可用 list_nodes 查看`;
-  const lines = sorted.map(n => statsLine(n, stats.get(n.id)));
+  const lines = sorted.map(n => statsLine(n, stats.get(n.id), strengths.get(n.id) ?? ''));
   let used = head.length;
   let kept = 0;
   for (let i = 0; i < lines.length; i++) {
