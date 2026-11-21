@@ -14,6 +14,12 @@ import type { writeMemory as WriteMemory, safeName as SafeName } from './memory-
 
 /** 判例敘述的章節,順序固定(和記憶設計一致)。 */
 export const CASE_SECTIONS = ['事實經過', '爭點', '處理經過', '結論', '理由', '適用範圍', '參照先例'] as const;
+/**
+ * case_submit 的參數名稱。工具參數名稱只能用英數字與 _ . -(Anthropic API 的規定,用中文的話 Claude 節點根本拿不到這個工具),
+ * 所以參數用英文,寫進判例檔時再對應回中文章節與屬性。
+ */
+export const CASE_ARGS = { title: '案由', keywords: '關鍵字', facts: '事實經過', issue: '爭點', process: '處理經過', conclusion: '結論', reasoning: '理由', scope: '適用範圍', precedents: '參照先例' } as const;
+const SECTION_ARG = Object.fromEntries(Object.entries(CASE_ARGS).map(([arg, label]) => [label, arg])) as Record<string, keyof typeof CASE_ARGS>;
 export type CaseSection = (typeof CASE_SECTIONS)[number];
 export type CaseSource = '自動偵測' | '使用者標記';
 
@@ -93,15 +99,16 @@ export function formatCasePrompt(input: { taskId: string; title: string; reasons
     `你剛完成的任務「${input.title}」(任務編號:${input.taskId}),${why}。請把這次的解法寫成一份判例,讓之後的你或其他節點遇到類似的問題時可以參考。`,
     '請依下面的固定格式,用你自己的話寫出敘述的部分,寫完後呼叫 case_submit 工具(nexus 伺服器)提交一次。耗時、失敗次數、改過的檔案、commit、專案等客觀欄位由主控台自動填,你不必寫。參數:',
     `- task_id:${input.taskId}`,
-    '- 案由:一句話描述問題',
-    '- 關鍵字:3 到 6 個關鍵字(字串陣列)',
-    '- 事實經過:遇到什麼狀況、錯誤訊息或症狀',
-    '- 爭點:真正要解決的問題是什麼',
-    '- 處理經過:試過哪些方法,哪些沒用、為什麼(走過的彎路)',
-    '- 結論:最後有效的解法:改了哪些檔案、哪些設定、哪些指令',
-    '- 理由:為什麼這樣能解決(根本原因)',
-    '- 適用範圍:適用條件,什麼情況下不適用',
-    '- 參照先例:相關的既有案號,用 [[案號]] 表示;沒有就寫「無」',
+    '- title(案由):一句話描述問題',
+    '- keywords(關鍵字):3 到 6 個關鍵字(字串陣列)',
+    '- facts(事實經過):遇到什麼狀況、錯誤訊息或症狀',
+    '- issue(爭點):真正要解決的問題是什麼',
+    '- process(處理經過):試過哪些方法,哪些沒用、為什麼(走過的彎路)',
+    '- conclusion(結論):最後有效的解法:改了哪些檔案、哪些設定、哪些指令',
+    '- reasoning(理由):為什麼這樣能解決(根本原因)',
+    '- scope(適用範圍):適用條件,什麼情況下不適用',
+    '- precedents(參照先例):相關的既有案號,用 [[案號]] 表示;沒有就寫「無」',
+    '參數名稱一律用括號前的英文;內容用中文寫。',
     '規則:只寫這個任務裡實際發生的事,不要美化成績;不要寫入金鑰、密碼、權杖等機密;每段控制在 800 字內。',
   ];
   if (input.precedents.length) lines.push(`可能相關的既有判例(參照先例可從這裡挑):\n${input.precedents.map(p => `- [[${p.caseId}]] ${p.title}`).join('\n')}`);
@@ -116,14 +123,16 @@ const text = (v: unknown): string => (typeof v === 'string' ? v : Array.isArray(
 
 /** 檢查節點提交的參數(缺少必要欄位就丟出說明,讓節點照著補)。 */
 export function parseSubmission(args: Record<string, unknown>): CaseSubmission {
-  const title = text(args['案由']).replace(/\s+/g, ' ').slice(0, TITLE_MAX);
-  const kwRaw = args['關鍵字'];
+  // 參數名稱是英文(見 CASE_ARGS);舊的中文名稱也收,避免已經照舊提示寫好的節點白寫
+  const arg = (key: keyof typeof CASE_ARGS): unknown => args[key] ?? args[CASE_ARGS[key]];
+  const title = text(arg('title')).replace(/\s+/g, ' ').slice(0, TITLE_MAX);
+  const kwRaw = arg('keywords');
   const keywords = (Array.isArray(kwRaw) ? kwRaw.map(String) : typeof kwRaw === 'string' ? kwRaw.split(/[,、,;\s]+/) : [])
     .map(s => s.trim().slice(0, 30)).filter(Boolean).slice(0, KEYWORDS_MAX);
   const sections = {} as Record<CaseSection, string>;
-  for (const k of CASE_SECTIONS) sections[k] = text(args[k]).slice(0, SECTION_MAX);
-  const missing = [!title && '案由', !sections['事實經過'] && '事實經過', !sections['結論'] && '結論'].filter(Boolean);
-  if (missing.length) throw new Error(`缺少必要的欄位:${missing.join('、')}。請補齊後再呼叫一次 case_submit(參數名稱:task_id、案由、關鍵字、${CASE_SECTIONS.join('、')})。`);
+  for (const k of CASE_SECTIONS) sections[k] = text(arg(SECTION_ARG[k])).slice(0, SECTION_MAX);
+  const missing = [!title && 'title(案由)', !sections['事實經過'] && 'facts(事實經過)', !sections['結論'] && 'conclusion(結論)'].filter(Boolean);
+  if (missing.length) throw new Error(`缺少必要的欄位:${missing.join('、')}。請補齊後再呼叫一次 case_submit(參數名稱:task_id、${Object.entries(CASE_ARGS).map(([a, l]) => `${a}(${l})`).join('、')})。`);
   if (!sections['參照先例']) sections['參照先例'] = '無';
   return { title, keywords, sections };
 }

@@ -186,9 +186,9 @@ class FakeSession implements AdapterSession {
       const taskId = /任務編號:([0-9a-f-]{36})/.exec(_text)?.[1] ?? '';
       const precedent = /^- \[\[(\d{4}-\d{4,})\]\]/m.exec(_text)?.[1];
       const args = {
-        task_id: taskId, 案由: `測試判例 ${taskId.slice(0, 8)}`, 關鍵字: ['測試', '判例'], 事實經過: '假資料節點遇到測試指定的狀況。', 爭點: '驗證判例的撰寫與提交流程。',
-        處理經過: '先試了第一種做法沒用;設定 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 之後改走第二種。\n## 不該出現的二級標題\n內容', 結論: '改用第二種做法。', 理由: '第一種做法的前提不成立。',
-        適用範圍: '只適用於假資料測試。', 參照先例: precedent ? `參考 [[${precedent}]]` : '無',
+        task_id: taskId, title: `測試判例 ${taskId.slice(0, 8)}`, keywords: ['測試', '判例'], facts: '假資料節點遇到測試指定的狀況。', issue: '驗證判例的撰寫與提交流程。',
+        process: '先試了第一種做法沒用;設定 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 之後改走第二種。\n## 不該出現的二級標題\n內容', conclusion: '改用第二種做法。', reasoning: '第一種做法的前提不成立。',
+        scope: '只適用於假資料測試。', precedents: precedent ? `參考 [[${precedent}]]` : '無',
       };
       const submit = async (): Promise<string> => {
         if (!url) return 'no-interop-url';

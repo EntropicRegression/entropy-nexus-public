@@ -23,6 +23,10 @@ odes封存<名稱>-<日期>.md`,包含基本資料、特長、任務紀錄、解
 
 - 任務面板的「清除已結束」改成只隱藏任務,節點統計仍會計入;任務紀錄保留 180 天。
 
+### 修正
+
+- `case_submit` 的參數名稱改成英文(title、keywords、facts、issue、process、conclusion、reasoning、scope、precedents)。原本用中文,不符合 Anthropic API 對工具參數名稱的規定,Claude 節點會整個看不到這個工具、無法寫判例;舊的中文名稱仍然接受。新增單元測試 `tests/mcp-schema.test.mjs`,檢查所有 MCP 工具的名稱與參數名稱。
+
 ## 0.2.0(2026-11-21)
 
 ### 新功能

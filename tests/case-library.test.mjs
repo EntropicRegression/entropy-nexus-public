@@ -116,7 +116,7 @@ function setup(opts = {}) {
   return { dir, vaultDir, vault, svc, tasks, agents, requests, settings, factsOf, files, clock, add };
 }
 const full = (id, extra = {}) => ({
-  task_id: id, 案由: '登入逾時其實是時區造成', 關鍵字: ['登入', '逾時', '時區'], 事實經過: '登入一直逾時。', 爭點: '為什麼只在晚上發生。', 處理經過: '先調大逾時沒用。', 結論: '改用 UTC 計算。', 理由: '伺服器與用戶端時區不同。', 適用範圍: '所有用本機時間算期限的地方。', 參照先例: '無', ...extra,
+  task_id: id, title: '登入逾時其實是時區造成', keywords: ['登入', '逾時', '時區'], facts: '登入一直逾時。', issue: '為什麼只在晚上發生。', process: '先調大逾時沒用。', conclusion: '改用 UTC 計算。', reasoning: '伺服器與用戶端時區不同。', scope: '所有用本機時間算期限的地方。', precedents: '無', ...extra,
 });
 
 test('自動請求:候選才請承辦節點寫,提示詞帶任務編號與固定格式', () => {
@@ -201,7 +201,7 @@ test('提交權限:只有任務自己的節點、而且必須是被請求過的�
   s.svc.onTaskEnded(t);
   await assert.rejects(s.svc.submit('n2', full(t.id)), /只有承辦這個任務的節點/);
   await assert.rejects(s.svc.submit('n1', full('不存在的任務')), /找不到這個任務/);
-  await assert.rejects(s.svc.submit('n1', { ...full(t.id), 案由: '' }), /缺少必要的欄位:案由/);
+  await assert.rejects(s.svc.submit('n1', { ...full(t.id), title: '' }), /缺少必要的欄位:title\(案由\)/);
   assert.equal(t.caseId, undefined, '被拒絕的提交沒有留下判例');
   assert.deepEqual(readdirSync(join(s.vaultDir, 'cases')), []);
   const ok = await s.svc.submit('n1', full(t.id));
@@ -218,7 +218,7 @@ test('判例檔案:路徑、屬性欄位、章節順序、客觀欄位由主控�
   s.files.set(t.id, ['src/main/index.ts', 'tests/layout.sh']);
   s.svc.onTaskEnded(t);
   await s.svc.submit('n1', full(t.id, {
-    處理經過: '試過 password: hunter2secret 沒用,也試過 sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456。\n# 不該變成一級標題\n## 也不該變成二級標題\n只有這行是正文。',
+    process: '試過 password: hunter2secret 沒用,也試過 sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456。\n# 不該變成一級標題\n## 也不該變成二級標題\n只有這行是正文。',
     // 節點想偷偷改客觀欄位:多給的參數一律忽略
     耗時分鐘: 1, 失敗次數: 0, 狀態: '已確認', 來源: '使用者標記',
   }));
@@ -280,7 +280,7 @@ test('案號:連續提交不重號、資料夾裡已有的案號不會被蓋、�
   const ts = [s.add(), s.add(), s.add()];
   for (const t of ts) s.svc.mark(t.id);
   // 同時提交也要得到不同的案號
-  await Promise.all(ts.map(t => s.svc.submit('n1', full(t.id, { 案由: `案 ${t.id}` })).then(r => ids.push(/(\d{4}-\d{4})/.exec(r)[1]))));
+  await Promise.all(ts.map(t => s.svc.submit('n1', full(t.id, { title: `案 ${t.id}` })).then(r => ids.push(/(\d{4}-\d{4})/.exec(r)[1]))));
   assert.deepEqual(ids.sort(), ['2026-0008', '2026-0009', '2026-0010']);
   // 刪掉最新的檔案後,計數器仍記得用過的號碼
   s.clock.now = new Date(2027, 0, 2, 8, 0, 0);
@@ -289,11 +289,14 @@ test('案號:連續提交不重號、資料夾裡已有的案號不會被蓋、�
   assert.match(await s.svc.submit('n1', full(t2.id)), /2027-0001/);
 });
 test('提交內容檢查:章節上限、缺欄位的說明、參照先例預設「無」', () => {
-  const p = parseSubmission({ 案由: '  很長的  案由 ', 事實經過: 'a', 結論: 'b', 理由: 'x'.repeat(20000) });
+  const p = parseSubmission({ title: '  很長的  案由 ', facts: 'a', conclusion: 'b', reasoning: 'x'.repeat(20000) });
   assert.equal(p.title, '很長的 案由');
   assert.equal(p.sections['理由'].length, 8000);
   assert.equal(p.sections['參照先例'], '無');
-  assert.throws(() => parseSubmission({}), /缺少必要的欄位:案由、事實經過、結論/);
+  assert.throws(() => parseSubmission({}), /缺少必要的欄位:title\(案由\)、facts\(事實經過\)、conclusion\(結論\)/);
+  // 舊的中文參數名稱也收(照舊提示寫好的節點不會白寫)
+  const legacy = parseSubmission({ 案由: '舊格式', 關鍵字: ['a'], 事實經過: '事實', 結論: '結論' });
+  assert.equal(legacy.title, '舊格式'); assert.equal(legacy.sections['事實經過'], '事實'); assert.equal(legacy.sections['結論'], '結論');
 });
 test('先例建議:只列「已確認」的判例,同專案優先,沒有共同字詞的不列', () => {
   const e = (path, title, status, projectId = 'p1', updatedAt = 1) => ({ path, kind: 'case', scope: '專案', projectId, nodeId: '', title, updatedAt, mtime: 1, size: 1, status });
