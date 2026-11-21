@@ -39,6 +39,7 @@ const SUITES = [
   { name: 'node-stats', group: 'unit', min: 0.1, ...node('tests/node-stats.test.mjs') },
   { name: 'memory-vault', group: 'unit', min: 0.2, ...node('tests/memory-vault.test.mjs') },
   { name: 'case-library', group: 'unit', min: 0.2, ...node('tests/case-library.test.mjs') },
+  { name: 'memory-read', group: 'unit', min: 0.2, ...node('tests/memory-read.test.mjs') },
   { name: 'memory-tools', group: 'unit', min: 0.2, ...node('tests/memory-tools.test.mjs') },
   { name: 'memory-archive-unit', group: 'unit', min: 0.1, ...node('tests/memory-archive.test.mjs') },
   { name: 'project', group: 'unit', min: 0.3, ...node('tests/project.test.mjs') },

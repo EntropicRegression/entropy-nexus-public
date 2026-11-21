@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from 'node:path';
 import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type DispatchEntry, type Update } from '../shared/types';
 import type { Core } from './core';
-import { memorySearch, memoryWrite } from './memory-tools';
+import { memoryRead, memorySearch, memoryWrite } from './memory-tools';
 import { buildLinks, dispatchTitle } from '../shared/collab';
 
 /**
@@ -38,7 +38,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_write', 'case_submit'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_read', 'memory_write', 'case_submit'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -192,7 +192,7 @@ const TOOL_DEFS = [
   },
   {
     name: 'memory_search',
-    description: '搜尋主控台的長期記憶:節點側寫(各節點的特長與解決問題的流程)、使用者已確認的判例(以前遇過的問題與解法)、專案知識、使用者偏好。開始一件不熟的工作、要決定交給哪個節點、或想知道「這個專案有什麼要注意的」「使用者偏好什麼」之前先查。範圍是全域加上你目前的專案(可用 project 指定別的專案);你自己的側寫與判例排在最前面。回傳每筆的路徑、種類、標題、狀態、更新日期與一小段摘要;標「可能過時」的(很久沒更新,或專案之後已改了很多)請先對照現況再採用。',
+    description: '搜尋主控台的長期記憶:節點側寫(各節點的特長與解決問題的流程)、使用者已確認的判例(以前遇過的問題與解法)、專案知識、使用者偏好。開始一件不熟的工作、要決定交給哪個節點、或想知道「這個專案有什麼要注意的」「使用者偏好什麼」之前先查。範圍是全域加上你目前的專案(可用 project 指定別的專案);你自己的側寫與判例排在最前面。回傳每筆的路徑、種類、標題、狀態、更新日期與一小段摘要(只是摘要,要看全文請用 memory_read);已被新記憶取代的、使用者還沒確認的草稿都不會出現;標「可能過時」的(很久沒更新,或專案之後已改了很多)請先對照現況再採用。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -200,8 +200,22 @@ const TOOL_DEFS = [
         kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好。不填就全部查。' },
         node: { type: 'string', description: '只看和這個節點(名稱或 id)有關的記憶。' },
         project: { type: 'string', description: '指定專案(名稱或路徑);不填就是你目前的專案。' },
+        subtype: { type: 'string', enum: ['decision', 'bookmark'], description: '只查專案知識的子類:decision 決策、bookmark 書籤(未完成的書籤排在前面)。不填就不限。' },
       },
       required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_read',
+    description: '讀一則長期記憶的全文。memory_search 只給摘要;搜尋到相關的記憶、要真的採用它之前,用這個讀完整內容(path 用搜尋結果裡的路徑)。預設不含檔案最後的「回顧」段(事後的檢討與觀察,通常不必讀);想知道這則記憶後來的結果或教訓時再把 include_review 設為 true。可見範圍和 memory_search 相同(全域加你目前的專案,草稿與未確認的判例讀不到)。讀取會被記為一次「召回」(常被讀的記憶使用者在管理畫面看得到),只是瀏覽不必每則都讀。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '記憶的路徑,用 memory_search 結果裡的那個,例如 knowledge/專案名/標題.md。' },
+        include_review: { type: 'boolean', description: '是否包含「## 回顧」段,預設 false。' },
+      },
+      required: ['path'],
       additionalProperties: false,
     },
   },
@@ -419,12 +433,13 @@ export class Interop {
           if (!this.caseSubmit) throw new Error('判例功能沒有啟用。');
           return text(await this.caseSubmit(callerId, args));
         }
-        if (params?.name === 'memory_search' || params?.name === 'memory_write') {
+        if (params?.name === 'memory_search' || params?.name === 'memory_read' || params?.name === 'memory_write') {
           const deps = this.core?.memoryDeps();
           const caller = this.core?.memoryCaller(callerId);
           if (!deps || !caller) throw new Error('記憶庫現在不能用。');
           const s = (...keys: string[]) => pick(...keys);
-          if (params.name === 'memory_search') return text(await memorySearch(deps, caller, { query: s('query', 'q', 'keywords', 'text'), kind: s('kind', 'type'), node: s('node', 'node_name'), project: s('project') }));
+          if (params.name === 'memory_search') return text(await memorySearch(deps, caller, { query: s('query', 'q', 'keywords', 'text'), kind: s('kind', 'type'), node: s('node', 'node_name'), project: s('project'), subtype: s('subtype', 'sub_type') }));
+          if (params.name === 'memory_read') return text(await memoryRead(deps, caller, { path: s('path', 'file', 'memory_path'), include_review: args.include_review === true || args.include_review === 'true' }));
           return text(await memoryWrite(deps, caller, { kind: s('kind', 'type'), title: s('title', 'name'), content: s('content', 'text', 'body'), project: s('project') }));
         }
         return text(`沒有這個工具:${String(params?.name)}`, true);

@@ -58,6 +58,15 @@ try {
   check('kind 篩選與專案範圍(同一個工作目錄的專案知識看得到)', k.text.includes('圖表知識') && !k.text.includes('節點側寫'), k.text);
   check('沒有符合時有說明', (await call(W, 'memory_search', { query: 'zqxjv-nomatch-7731' })).text.includes('沒有符合'));
 
+  // memory_read:用搜尋結果的路徑讀全文;未確認的判例讀不到;庫外路徑被拒
+  const rp = /路徑:(cases\/\S+0-圖表案\.md)/.exec(cs.text)?.[1];
+  const rd = rp ? await call(W, 'memory_read', { path: rp }) : { text: '', error: true };
+  check('memory_read 讀得到已確認的判例全文', !rd.error && rd.text.includes('圖表壞掉的解法0'), rd.text);
+  const rdBad = await call(W, 'memory_read', { path: rp ? rp.replace('0-圖表案', '1-圖表案') : 'x.md' });
+  check('memory_read 讀不到未確認的判例', rdBad.error, rdBad.text);
+  check('memory_read 拒絕庫外路徑', (await call(W, 'memory_read', { path: '../secret.md' })).error);
+  check('工具清單有 memory_read', tools.includes('memory_read'), tools.join());
+
   console.log(`[client] ${bad ? `有 ${bad} 項不符` : '用戶端全部通過'}`);
 } catch (err) {
   console.log('[client] 失敗', err.stack ?? err.message);

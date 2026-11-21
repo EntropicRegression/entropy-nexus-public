@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { MemoryEntry } from '../shared/types';
 import { parseFrontMatter } from './memory-vault';
+import { recordRecall } from './vault-sidecar';
 import { safeName, writeMemory, type MetaValue } from './memory-write';
 
 /**
@@ -149,7 +150,64 @@ function excerptOf(body: string, query: string): string {
   return `${from > 0 ? '…' : ''}${s}${from + EXCERPT < flat.length ? '…' : ''}`;
 }
 
-export interface SearchArgs { query?: string; kind?: string; node?: string; project?: string }
+/** 去掉 `## 回顧` 章節(從這個標題到下一個 `## ` 標題或檔尾);回傳去掉後的文字與有沒有去掉。程式碼區塊裡的 `## ` 不算標題。 */
+export function stripReview(text: string): { text: string; had: boolean } {
+  const lines = text.split(/\r?\n/);
+  const out: string[] = [];
+  let skipping = false, had = false, fence = false;
+  for (const line of lines) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    const isH2 = !fence && /^##\s/.test(line);
+    if (isH2) skipping = /^##\s+回顧\s*$/.test(line.trim());
+    if (skipping) { had = true; continue; }
+    out.push(line);
+  }
+  return { text: had ? out.join('\n').replace(/\s+$/, '') + '\n' : text, had };
+}
+
+const flat = (v: unknown): string => (Array.isArray(v) ? v.join('、') : String(v ?? '')).trim();
+const normPath = (p: string) => p.trim().replace(/\\/g, '/').replace(/^\.?\//, '').replace(/\|.*$/, '').replace(/\.md$/i, '').toLowerCase();
+/** `取代: [[路徑]]` 的目標(可多個,允許 [[a|別名]]、省略 .md)。 */
+export function supersedeTargets(meta: Map<string, string | string[]>): string[] {
+  const raw = meta.get('取代') ?? meta.get('supersedes');
+  if (raw === undefined) return [];
+  const s = flat(raw);
+  const links = [...s.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+  const items = links.length ? links : s.split(/[,,、]/).map(x => x.replace(/[\[\]]/g, '').trim()).filter(Boolean);
+  return items.map(normPath).filter(Boolean);
+}
+const isSuperseded = (path: string, targets: Set<string>) => {
+  const n = normPath(path);
+  if (targets.has(n)) return true;
+  const base = n.split('/').pop() ?? n;
+  return targets.has(base);
+};
+
+const SUBTYPE_ALIAS: Record<string, string> = { 決策: '決策', decision: '決策', 決策卡: '決策', 書籤: '書籤', bookmark: '書籤', 未完書籤: '書籤' };
+export const BOOKMARK_OPEN = '未完';
+
+/** 這個狀態的記憶 agent 看不看得到:未確認(草稿)與退回都看不到;判例要已確認才看得到。 */
+export function statusVisible(kind: MemoryEntry['kind'], status: string): boolean {
+  const st = status.trim();
+  if (st === '未確認' || st === '退回') return false;
+  if (kind === 'case') return st === CASE_VISIBLE;
+  return true;
+}
+
+/** 範圍規則:全域的都看得到;專案的記憶只看得到呼叫者目前的專案(search 可用 project 指定別的專案)。 */
+async function scopeOf(deps: MemoryToolsDeps, caller: MemoryCaller, wantProjectRaw?: string): Promise<(e: MemoryEntry) => boolean> {
+  const proj = await deps.project(caller.cwd).catch(() => null);
+  const wantProject = String(wantProjectRaw ?? '').trim().toLowerCase();
+  const folderOf = (e: MemoryEntry) => ((e.path.startsWith('cases/') || e.path.startsWith('knowledge/')) ? e.path.split('/')[1] ?? '' : '');
+  return (e: MemoryEntry): boolean => {
+    if (e.scope !== '專案') return true;
+    if (wantProject) return e.projectId.toLowerCase().includes(wantProject) || folderOf(e).toLowerCase().includes(wantProject);
+    if (!proj) return false;
+    return sameId(e.projectId, proj.id) || sameId(e.projectId, proj.name) || sameId(folderOf(e), safeName(proj.name));
+  };
+}
+
+export interface SearchArgs { query?: string; kind?: string; node?: string; project?: string; subtype?: string }
 const KINDS = ['node', 'case', 'knowledge', 'preference'] as const;
 const KIND_ALIAS: Record<string, MemoryEntry['kind']> = { node: 'node', 節點: 'node', 節點側寫: 'node', case: 'case', 判例: 'case', knowledge: 'knowledge', 知識: 'knowledge', 專案知識: 'knowledge', preference: 'preference', 偏好: 'preference' };
 const KIND_LABEL: Record<MemoryEntry['kind'], string> = { node: '節點側寫', case: '判例', knowledge: '專案知識', preference: '使用者偏好' };
@@ -162,6 +220,10 @@ export interface SearchHit {
   own: boolean;
   excerpt: string;
   stale: string;
+  /** knowledge 的子類(決策、書籤);沒有就是空字串。 */
+  subtype: string;
+  /** 書籤且狀態是未完。 */
+  openBookmark: boolean;
 }
 
 /** 搜尋的核心(回傳結構化結果,方便測試);memorySearch 再把它排成文字。 */
@@ -169,37 +231,90 @@ export async function searchMemory(deps: MemoryToolsDeps, caller: MemoryCaller, 
   const query = String(args.query ?? '').trim();
   const kindWanted = args.kind ? KIND_ALIAS[String(args.kind).trim().toLowerCase()] : undefined;
   if (args.kind && !kindWanted) throw new Error(`kind 只能是 ${KINDS.join('、')} 其中之一。`);
+  const subtypeRaw = String(args.subtype ?? '').trim();
+  const subtypeWanted = subtypeRaw ? SUBTYPE_ALIAS[subtypeRaw.toLowerCase()] : undefined;
+  if (subtypeRaw && !subtypeWanted) throw new Error('subtype 只能是 decision(決策)或 bookmark(書籤)其中之一。');
+  if (subtypeWanted && kindWanted && kindWanted !== 'knowledge') throw new Error('subtype 只適用於 kind 為 knowledge 的專案知識。');
   const proj = await deps.project(caller.cwd).catch(() => null);
-  const wantProject = String(args.project ?? '').trim().toLowerCase();
+  const inScope = await scopeOf(deps, caller, args.project);
   const nodeWanted = String(args.node ?? '').trim().toLowerCase();
-  const folderOf = (e: MemoryEntry) => ((e.path.startsWith('cases/') || e.path.startsWith('knowledge/')) ? e.path.split('/')[1] ?? '' : '');
-  const inScope = (e: MemoryEntry): boolean => {
-    if (e.scope !== '專案') return true;
-    if (wantProject) return e.projectId.toLowerCase().includes(wantProject) || folderOf(e).toLowerCase().includes(wantProject);
-    if (!proj) return false;
-    return sameId(e.projectId, proj.id) || sameId(e.projectId, proj.name) || sameId(folderOf(e), safeName(proj.name));
-  };
   const isOwn = (e: MemoryEntry) => (e.kind === 'node' || e.kind === 'case') && !!e.nodeId && (sameId(e.nodeId, caller.id) || sameId(e.nodeId, caller.name) || (e.kind === 'node' && sameId(e.title, caller.name)));
-  const hits: SearchHit[] = [];
+
+  // 第一輪:讀每個檔案,排除未確認、退回、判例未確認的;可見檔案的「取代」關係先收集起來
+  interface Scanned { e: MemoryEntry; meta: Map<string, string | string[]>; body: string }
+  const scanned: Scanned[] = [];
+  const superseded = new Set<string>();
   for (const e of deps.list()) {
-    if (kindWanted && e.kind !== kindWanted) continue;
-    if (e.kind === 'case' && e.status !== CASE_VISIBLE) continue;
-    if (!inScope(e)) continue;
-    if (nodeWanted && !(sameId(e.nodeId, nodeWanted) || e.nodeId.toLowerCase().includes(nodeWanted) || (e.kind === 'node' && e.title.toLowerCase().includes(nodeWanted)))) continue;
     let text = '';
     try { text = readFileSync(join(deps.vaultDir, ...e.path.split('/')), 'utf8').slice(0, READ_MAX); } catch { continue; }
     const { meta, body } = parseFrontMatter(text);
+    if (!statusVisible(e.kind, flat(meta.get('狀態') ?? meta.get('status')) || e.status)) continue;
+    for (const t of supersedeTargets(meta)) superseded.add(t);
+    scanned.push({ e, meta, body: stripReview(body).text });
+  }
+
+  const hits: SearchHit[] = [];
+  for (const { e, meta, body } of scanned) {
+    if (kindWanted && e.kind !== kindWanted) continue;
+    if (!inScope(e)) continue;
+    if (isSuperseded(e.path, superseded)) continue;
+    const subtype = e.kind === 'knowledge' ? (SUBTYPE_ALIAS[flat(meta.get('子類') ?? meta.get('subtype')).toLowerCase()] ?? '') : '';
+    if (subtypeWanted && subtype !== subtypeWanted) continue;
+    if (nodeWanted && !(sameId(e.nodeId, nodeWanted) || e.nodeId.toLowerCase().includes(nodeWanted) || (e.kind === 'node' && e.title.toLowerCase().includes(nodeWanted)))) continue;
     const score = scoreText(query, e.title, body);
     const own = isOwn(e);
     // 有關鍵字時只列出命中的(自己的側寫也一樣,命中時才排最前面);沒有關鍵字時全部列出
     if (query && score <= 0) continue;
-    const commit = String(Array.isArray(meta.get('commit')) ? '' : meta.get('commit') ?? '').trim();
+    const commit = flat(meta.get('commit'));
     let ahead: number | null = null;
     if (commit && e.scope === '專案' && (proj || e.projectId)) ahead = await deps.commitsAhead(proj && sameId(e.projectId, proj.id) ? proj.root : e.projectId, commit).catch(() => null);
-    hits.push({ entry: e, score, own, excerpt: excerptOf(body, query), stale: staleReason(e.updatedAt, deps.now(), ahead) });
+    const openBookmark = subtype === '書籤' && flat(meta.get('狀態') ?? meta.get('status')) === BOOKMARK_OPEN;
+    hits.push({ entry: e, score, own, excerpt: excerptOf(body, query), stale: staleReason(e.updatedAt, deps.now(), ahead), subtype, openBookmark });
   }
-  hits.sort((a, b) => Number(b.own) - Number(a.own) || b.score - a.score || b.entry.updatedAt - a.entry.updatedAt);
+  hits.sort((a, b) => Number(b.own) - Number(a.own) || Number(b.openBookmark) - Number(a.openBookmark) || b.score - a.score || b.entry.updatedAt - a.entry.updatedAt);
   return hits;
+}
+
+// ---------- 讀取 ----------
+
+export const READ_OUTPUT_MAX = 20000;
+export interface ReadArgs { path?: string; include_review?: boolean | string }
+
+/** 把 agent 給的路徑整理成記憶庫內的相對路徑;不合規格(庫外、不是 .md、`_` 或 `.` 開頭的資料夾)丟錯。 */
+export function cleanVaultPath(vaultDir: string, raw: string): string {
+  const p = String(raw ?? '').trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!p) throw new Error('memory_read 需要 path(記憶的路徑,用 memory_search 找到的那個,例如 knowledge/專案/標題.md)。');
+  if (/^([a-zA-Z]:|\/)/.test(p) || p.split('/').some(seg => seg === '..' || seg === '')) throw new Error('路徑必須是記憶庫內的相對路徑。');
+  if (!/\.md$/i.test(p)) throw new Error('只能讀 .md 的記憶檔。');
+  if (p.split('/').some(seg => seg.startsWith('_') || seg.startsWith('.'))) throw new Error('這個路徑不是記憶(以 _ 或 . 開頭的資料夾是附屬資料)。');
+  const root = resolve(vaultDir);
+  const abs = resolve(root, ...p.split('/'));
+  const rel = relative(root, abs);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error('路徑必須是記憶庫內的相對路徑。');
+  return p;
+}
+
+/**
+ * memory_read:回傳記憶的全文,預設不含 `## 回顧`(include_review 為 true 才含)。可見規則和搜尋相同。
+ * 這是唯一算「召回」的入口,成功讀到才記一次熱度。
+ */
+export async function memoryRead(deps: MemoryToolsDeps, caller: MemoryCaller, args: ReadArgs): Promise<string> {
+  const rel = cleanVaultPath(deps.vaultDir, String(args.path ?? ''));
+  const includeReview = args.include_review === true || String(args.include_review).toLowerCase() === 'true';
+  const entry = deps.list().find(e => e.path.toLowerCase() === rel.toLowerCase());
+  const gone = `找不到這則記憶:${rel}。路徑請用 memory_search 回傳的那個;判例要使用者確認後才看得到,草稿與退回的記憶也看不到。`;
+  if (!entry) throw new Error(gone);
+  let text = '';
+  try { text = readFileSync(join(deps.vaultDir, ...entry.path.split('/')), 'utf8'); } catch { throw new Error(gone); }
+  const { meta } = parseFrontMatter(text.slice(0, READ_MAX));
+  if (!statusVisible(entry.kind, flat(meta.get('狀態') ?? meta.get('status')) || entry.status)) throw new Error(gone);
+  if (!(await scopeOf(deps, caller))(entry)) throw new Error(`這則記憶屬於其他專案(${entry.projectId || '未知'}),你目前的專案看不到它。要查別的專案請用 memory_search 的 project 參數,找到後再讀。`);
+  const stripped = includeReview ? { text, had: false } : stripReview(text);
+  let out = stripped.text;
+  if (out.length > READ_OUTPUT_MAX) out = `${out.slice(0, READ_OUTPUT_MAX)}\n…(內容太長,已截斷在 ${READ_OUTPUT_MAX} 字)`;
+  if (stripped.had) out += '\n(這則記憶另有「回顧」段,預設不顯示;需要時再用 include_review: true 讀。)';
+  recordRecall(deps.vaultDir, entry.path, deps.now());
+  return out;
 }
 
 const dateOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -211,14 +326,14 @@ export async function memorySearch(deps: MemoryToolsDeps, caller: MemoryCaller, 
   let used = 0, shown = 0;
   for (const h of hits.slice(0, MAX_RESULTS)) {
     const e = h.entry;
-    const line = `${shown + 1}. [${KIND_LABEL[e.kind]}] ${e.title}${h.own ? '(你自己的)' : ''}\n   路徑:${e.path} | 更新:${dateOf(e.updatedAt)}${e.status ? ` | 狀態:${e.status}` : ''}${e.scope === '專案' ? ` | 專案:${e.projectId}` : ''}${h.stale ? ` | 可能過時(${h.stale})` : ''}\n   ${h.excerpt}`;
+    const line = `${shown + 1}. [${KIND_LABEL[e.kind]}${h.subtype ? `·${h.subtype}` : ''}] ${e.title}${h.own ? '(你自己的)' : ''}\n   路徑:${e.path} | 更新:${dateOf(e.updatedAt)}${e.status ? ` | 狀態:${e.status}` : ''}${e.scope === '專案' ? ` | 專案:${e.projectId}` : ''}${h.stale ? ` | 可能過時(${h.stale})` : ''}\n   ${h.excerpt}`;
     if (used + line.length > MAX_OUTPUT && shown > 0) break;
     out.push(line);
     used += line.length + 1;
     shown++;
   }
   const more = hits.length - shown;
-  return `找到 ${hits.length} 筆${more > 0 ? `,以下列出前 ${shown} 筆(換更精確的關鍵字或加 kind、node、project 縮小範圍)` : ''}:\n${out.join('\n')}${hits.some(h => h.stale) ? '\n標「可能過時」的內容請先對照現況再採用。' : ''}`;
+  return `找到 ${hits.length} 筆${more > 0 ? `,以下列出前 ${shown} 筆(換更精確的關鍵字或加 kind、node、project、subtype 縮小範圍)` : ''}:\n${out.join('\n')}${hits.some(h => h.stale) ? '\n標「可能過時」的內容請先對照現況再採用。' : ''}`;
 }
 
 // ---------- 寫入 ----------

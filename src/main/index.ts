@@ -19,6 +19,7 @@ import { safeName, writeMemory } from './memory-write';
 import { CaseService } from './cases';
 import { CASE_DAILY_CAP, detectCandidate } from '../shared/case-candidates';
 import { attachArchive, findArchive } from './memory-archive';
+import { flushHeat } from './vault-sidecar';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
@@ -407,6 +408,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     vault?.unwatch();
     stopObserver();
     interopRef?.stop();
+    flushHeat();
     void Promise.allSettled([stopVoice(), core.shutdown()]).finally(() => { store?.close(); app.quit(); });
   });
 }
