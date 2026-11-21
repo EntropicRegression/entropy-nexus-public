@@ -696,6 +696,8 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
     if (cur && cur.status === 'running') { this.core?.interrupt(cur.targetId); this.finish(cur, 'failed', '會議中止'); }
     m.current = null;
     m.hostTurn?.resolve(true);
+    // 有人發過言才算一場會議,記下同席的節點(給記憶庫統計與判例的參與節點用)
+    if (m.transcript.some(t => t.round > 0)) this.core?.recordMeeting({ id: m.id, startedAt: m.createdAt, endedAt: Date.now(), ids: [m.callerId, ...m.participants.map(x => x.id)] });
     this.publish();
     this.core?.note(m.callerId, status === 'done' ? `會議結束(${m.id}),共 ${m.transcript.filter(t => t.round > 0).length} 則發言。` : `會議中止(${m.id}):${error}`);
     for (const w of m.waiters) w();

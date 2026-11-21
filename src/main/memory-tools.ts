@@ -16,7 +16,7 @@ import { safeName, writeMemory, type MetaValue } from './memory-write';
 
 export interface MemoryCaller { id: string; name: string; cwd: string; isChief: boolean }
 export interface MemoryProject { id: string; name: string; root: string }
-export interface MemoryNodeInfo { id: string; name: string; backendLabel: string; model: string }
+export interface MemoryNodeInfo { id: string; name: string; backendLabel: string; model: string; character?: string }
 
 export interface MemoryToolsDeps {
   vaultDir: string;
@@ -262,6 +262,7 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
     const head = await deps.head(proj.root);
     const full: Record<string, MetaValue> = { ...Object.fromEntries(meta), 種類: 'node', 節點ID: node.id, 節點: node.name, 後台: node.backendLabel, 模型: node.model, 更新時間: now, commit: head ?? undefined };
     if (!head) delete full.commit;
+    if (node.character) full.角色 = node.character;
     let next = setSection(body, '特長', content);
     if (getSection(next, '解決問題的流程') === null) next = `${next.trim()}\n\n## 解決問題的流程\n`;
     const r = writeMemory(deps.vaultDir, rel, full, next);

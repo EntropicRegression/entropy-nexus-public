@@ -243,7 +243,7 @@ test('判例檔案:路徑、屬性欄位、章節順序、客觀欄位由主控�
   assert.equal(meta.get('狀態'), '未確認');
   assert.deepEqual(meta.get('關鍵字'), ['登入', '逾時', '時區']);
   assert.match(String(meta.get('更新時間')), /^2026-11-21 12:00:00$/);
-  assert.deepEqual([...meta.keys()], ['案號', '案由', '種類', '範圍', '專案ID', '專案', '承辦節點', '節點ID', '任務', '來源', '耗時分鐘', '失敗次數', '改過的檔案', 'commit', '狀態', '關鍵字', '更新時間']);
+  assert.deepEqual([...meta.keys()], ['案號', '案由', '種類', '範圍', '專案ID', '專案', '承辦節點', '節點ID', '參與節點ID', '任務', '來源', '耗時分鐘', '失敗次數', '改過的檔案', 'commit', '狀態', '關鍵字', '更新時間']);
   // 本文:標題與章節順序固定
   assert.match(body, /^\s*# 解法第 2026-0001 號/);
   const heads = [...body.matchAll(/^## (.+)$/gm)].map(m => m[1]);
