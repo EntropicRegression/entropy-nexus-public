@@ -21,7 +21,7 @@ import { formatCommentsPrompt, formatReviewPrompt } from '../shared/review';
 import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } from './portraits';
 import { removeMedia } from './media';
 import { projectOf } from './project';
-import { chiefStatsSection, computeNodeStats, type StatsNode } from '../shared/node-stats';
+import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, writeArchive, type SummarySource } from './memory-archive';
 import { safeName } from './memory-write';
 import type { Store } from './store';
@@ -544,8 +544,8 @@ export class Core {
   private async archiveNode(agent: AgentInfo, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }> {
     const vault = this.vault!;
     const timeout = Number(process.env.NEXUS_ARCHIVE_TIMEOUT_MS) || 3 * 60 * 1000;
-    const tasks = this.store.loadTasksForStats(0, 100000).filter(t => t.agentId === agent.id && t.source !== 'archive');
-    const stats = computeNodeStats(tasks).get(agent.id);
+    const tasks = this.store.loadTasksForStats(0, 100000).filter(t => t.agentId === agent.id && isWorkTask(t));
+    const stats = computeNodeStats(tasks, isWorkTask).get(agent.id);
     const selfOk = agent.state === 'idle' && !agent.terminal && this.sessions.has(agent.id);
     const chief = this.chiefId && this.chiefId !== agent.id ? this.agents.get(this.chiefId) : undefined;
     const chiefOk = !!chief && chief.state === 'idle' && !chief.terminal && this.sessions.has(chief.id);
@@ -1259,7 +1259,7 @@ ${text}
 
   /** 總管守則用:每個最上層節點(不含總管自己)的統計。資料取自資料庫,包含任務面板已清除的任務。 */
   private chiefStats(): string {
-    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000), t => t.source !== 'archive');
+    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000), isWorkTask);
     const nodes: StatsNode[] = [...this.agents.values()].filter(a => !a.parentId && a.id !== this.chiefId)
       .map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model }));
     const strengths = new Map<string, string>();

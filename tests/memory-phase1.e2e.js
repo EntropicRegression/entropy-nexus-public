@@ -101,9 +101,10 @@
     ok((a2.verdict ?? null) === null, '送出評論之前第二個任務尚未驗收');
     await window.nexus.sendReviewComments(a2.id, [{ path: 'a.txt', row: null, side: 'new', line: 1, text: '這裡要改' }]);
     ok((await tasksOf(A.id)).find(t => t.id === a2.id).verdict === 'rejected', '把評論送回節點之後,原任務自動標成 rejected');
-    await until('評論產生的任務結束', async () => { const l = await tasksOf(A.id); return l.length === 3 && l[2].endedAt !== null; }, 60000);
+    // 評論送回後重做的任務本身是判例候選,判例庫會另外排一個「請寫判例」的任務(來源 case);這裡只看一般任務
+    await until('評論產生的任務結束', async () => { const l = (await tasksOf(A.id)).filter(t => t.source !== 'case'); return l.length === 3 && l[2].endedAt !== null; }, 60000);
     await idle(A.id);
-    const a3 = (await tasksOf(A.id))[2];
+    const a3 = (await tasksOf(A.id)).filter(t => t.source !== 'case')[2];
     ok(a3.status === 'interrupted' || a3.status === 'done', '評論產生了新任務(第三筆)', a3.status);
     await window.nexus.interrupt(A.id).catch(() => {});
     await shot('1-tasks-panel');
@@ -120,7 +121,7 @@
 
     // ---- 總管收到的節點統計
     // 目前:A 3 筆;B 2 筆(乙任務一、乙任務二,都完成,沒驗收);C 2 筆(丙一完成、丙二失敗)
-    const stateA = await tasksOf(A.id);
+    const stateA = (await tasksOf(A.id)).filter(t => t.source !== 'case');
     const doneA = stateA.filter(t => t.status === 'done').length;
     const accA = stateA.filter(t => t.verdict === 'accepted').length, rejA = stateA.filter(t => t.verdict === 'rejected').length;
     log('A 的任務', JSON.stringify(stateA.map(t => [t.title.slice(0, 8), t.status, t.verdict ?? null])));

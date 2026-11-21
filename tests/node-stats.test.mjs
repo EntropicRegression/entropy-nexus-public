@@ -2,7 +2,7 @@
 // 以及總管守則「各節點近況」段落的排序與字數截斷。
 // 用法:node --no-warnings tests/node-stats.test.mjs
 import assert from 'node:assert/strict';
-import { chiefStatsSection, computeNodeStats, computeProjectStats, emptyStats, formatDuration, statsLine } from '../src/shared/node-stats.ts';
+import { chiefStatsSection, computeNodeStats, computeProjectStats, emptyStats, formatDuration, isWorkTask, statsLine } from '../src/shared/node-stats.ts';
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('[ok]', name); };
@@ -117,6 +117,20 @@ test('段落:超過字數時先捨去沒有近期任務的節點,結尾寫另有
   // 剛好放得下全部時不寫結尾
   const full = chiefStatsSection(nodes.slice(0, 3), stats, NOW, 1500);
   assert.ok(!full.includes('另有'));
+});
+
+test('主控台自己的請求(寫工作總結、寫判例)不算進節點統計', () => {
+  assert.equal(isWorkTask({ source: 'archive' }), false);
+  assert.equal(isWorkTask({ source: 'case' }), false);
+  for (const source of ['desktop', 'remote', 'interop', 'autopilot', undefined]) assert.equal(isWorkTask({ source }), true, String(source));
+  const base = { agentId: 'a', agentName: 'A', backend: 'claude', model: '', note: '', steps: [], subs: [] };
+  const tasks = [
+    { ...base, id: '1', title: '一', status: 'done', startedAt: 0, endedAt: 60000, source: 'desktop' },
+    { ...base, id: '2', title: '請寫判例', status: 'done', startedAt: 0, endedAt: 60000, source: 'case' },
+    { ...base, id: '3', title: '請寫總結', status: 'failed', startedAt: 0, endedAt: 60000, source: 'archive' },
+  ];
+  const st = computeNodeStats(tasks, isWorkTask).get('a');
+  assert.equal(st.tasks, 1); assert.equal(st.done, 1); assert.equal(st.failed, 0);
 });
 
 console.log(`通過(${passed} 項)`);

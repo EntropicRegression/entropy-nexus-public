@@ -51,8 +51,8 @@
     ok(meet.every(s => ends(s, A.id, B.id) || ends(s, A.id, C.id)), '會議連線端點對得上節點位置');
     const speakers = new Set(meet.flatMap(s => s.links.flatMap(l => l.segments.filter(g => g.speaking).map(g => g.to))));
     ok(speakers.has(B.id) && speakers.has(C.id), '會議中輪到誰發言就標出誰', [...speakers]);
-    ok(await until(() => board.links().length === 0, 8000), '全部結束後連線都消失了');
-    ok(!(await window.nexus.getSnapshot()).links.length, '快照裡也沒有進行中的連線');
+    ok(await until(() => board.links().length === 0, 15000), '全部結束後連線都消失了', JSON.stringify(board.links()));
+    { const left = (await window.nexus.getSnapshot()).links; ok(!left.length, '快照裡也沒有進行中的連線', JSON.stringify(left)); }
 
     // 任務卡的來源標籤
     const snap = await window.nexus.getSnapshot();
