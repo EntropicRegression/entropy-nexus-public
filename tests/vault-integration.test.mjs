@@ -130,6 +130,27 @@ await test('統計:節點的數字、狀態、圖像路徑、session 狀態、�
   assert.ok(JSON.parse(JSON.stringify(p)).節點.n2);
 });
 
+await test('統計:專案ID 和專案名稱同序同長度,同名不同專案的 ID 不同;沒有任務的節點兩個都是空清單', () => {
+  const now = NOW.getTime();
+  const tasks2 = [
+    task('m1', 'done', { project: { id: 'c:/a/app', name: 'app' }, startedAt: now - 3000 }),
+    task('m1', 'done', { project: { id: 'd:/b/app', name: 'app' }, startedAt: now - 2000 }),
+    task('m1', 'done', { project: { id: 'c:/a/app', name: 'app' }, startedAt: now - 1000 }),
+    task('m1', 'done', { project: undefined, startedAt: now - 500 }),
+  ];
+  const out = buildVaultStats({ now, portraitsDir: portraits, live: [{ id: 'm1', name: '甲', character: '', backend: 'claude', sessionId: null, cwd: 'C:/w', state: 'idle' }],
+    removed: [{ id: 'm2', name: '乙', character: '', backend: 'claude', sessionId: 's', cwd: 'C:/w' }], archives: [], tasks: tasks2, cases: [], dispatches: [], meetings: [], cliSessions: null, dirExists: () => true, images: () => ({ avatar: null, portrait: null }) });
+  const m = out.節點.m1;
+  // 最近做的排前面:c:/a/app(最後一筆在 now-1000)、d:/b/app;舊任務沒有專案欄位就不列入
+  assert.deepEqual(m.專案ID, ['c:/a/app', 'd:/b/app']);
+  assert.deepEqual(m.專案, ['app', 'app'], '名稱欄位維持原樣(同名照列)');
+  assert.equal(m.專案ID.length, m.專案.length);
+  assert.equal(new Set(m.專案ID).size, 2, '同名不同專案算兩個');
+  assert.deepEqual([out.節點.m2.專案, out.節點.m2.專案ID], [[], []]);
+  // 舊欄位都還在(向下相容)
+  for (const k of ['名稱', '角色', '狀態', '任務數', '完成數', '完成率', '驗收數', '退回數', '判例數', '專案', '頭像路徑', '立繪路徑', 'session']) assert.ok(k in m, k);
+});
+
 await test('喚醒網址:解析與驗證', () => {
   assert.deepEqual(parseWakeUrl('entropy-nexus://wake?node=abc-123_X'), { ok: true, node: 'abc-123_X' });
   assert.deepEqual(parseWakeUrl('ENTROPY-NEXUS://WAKE/?node=a1'), { ok: true, node: 'a1' });

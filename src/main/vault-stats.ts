@@ -77,6 +77,8 @@ export function buildVaultStats(i: StatsInput) {
       退回數: fromTasks ? s!.rejected : a?.rejected ?? 0,
       判例數: caseCount.get(n.id) || a?.cases || 0,
       專案: (s?.projects ?? []).map(p => p.name),
+      // 和「專案」同序同長度;ID 是主控台的專案識別(git 版本庫與它的 worktree 共用,其他資料夾是正規化後的路徑),同名不同專案的 ID 不同
+      專案ID: (s?.projects ?? []).map(p => p.id),
       頭像路徑: imgs.avatar, 立繪路徑: imgs.portrait,
       session: {
         後台: backend, sessionId, 主控台有紀錄: known, CLI有紀錄: cli, 工作目錄存在: dirOk,
