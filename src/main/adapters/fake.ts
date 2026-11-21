@@ -204,6 +204,32 @@ class FakeSession implements AdapterSession {
       this.emit({ type: 'state', state: 'idle', detail: '' });
       return;
     }
+    // 【只給驗收測試用】對話草稿(長期記憶階段 4.5):
+    //   NEXUS_FAKE_DRAFT=1 時,收到主控台的「記憶草稿請求」就呼叫 memory_draft 提交一份固定內容的草稿:
+    //   對話片段含〔測試知識〕時寫專案知識(子類決策),否則寫使用者偏好;含〔測試重複提交〕時再提交一次,看主控台是否擋下。
+    //   結果以 [draft] 開頭的 note 事件回報。
+    if (process.env.NEXUS_FAKE_DRAFT === '1' && _text.includes('(主控台:記憶草稿請求。')) {
+      this.emit({ type: 'state', state: 'working', detail: '整理草稿' });
+      await this.wait(300);
+      const url = this.opts.interop?.url;
+      const knowledge = _text.includes('〔測試知識〕');
+      const args = knowledge
+        ? { kind: 'knowledge', title: '測試草稿知識', content: '決定改用第二種做法。\n使用者要求:api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456', subtype: 'decision' }
+        : { kind: 'preference', title: '測試草稿偏好', content: '使用者偏好回報要精簡。' };
+      const submit = async (): Promise<string> => {
+        if (!url) return 'no-interop-url';
+        try {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'memory_draft', arguments: args } }) });
+          const j = await r.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+          return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+        } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+      };
+      this.emit({ type: 'note', text: `[draft] ${await submit()}` });
+      if (_text.includes('〔測試重複提交〕')) this.emit({ type: 'note', text: `[draft] ${await submit()}` });
+      this.emit({ type: 'message', role: 'agent', text: '草稿已提交。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
     if (_text.includes('〔測試中途出錯〕')) {
       this.emit({ type: 'state', state: 'working', detail: '測試執行' });
       await this.wait(300);

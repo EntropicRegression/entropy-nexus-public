@@ -104,7 +104,7 @@ export interface AgentInfo {
  * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
  * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
  */
-export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive' | 'case';
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive' | 'case' | 'draft';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
 export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource; from?: TaskFrom }
@@ -219,6 +219,10 @@ export interface MemoryEntry {
   size: number;
   /** 例如 未確認 / 已確認 / 退回;沒寫就是空字串。 */
   status: string;
+  /** 子類:knowledge 的 決策 / 書籤(屬性「子類」);沒寫就是空字串。 */
+  subtype: string;
+  /** 這筆取代的舊檔路徑(屬性「取代」,去掉 [[ ]]);沒寫就是空字串。 */
+  supersedes: string;
 }
 
 /** 轉接器送給核心服務的事件。 */
@@ -682,6 +686,10 @@ export interface NexusApi {
   setTaskVerdict(taskId: string, verdict: TaskVerdict): Promise<void>;
   /** 「記下這個解法」:請承辦節點把這個已結束的任務寫成判例(狀態先是未確認)。回傳給使用者看的說明。 */
   markCase(taskId: string): Promise<string>;
+  /** 對話草稿按鈕要用的資訊:上次儲存到哪一筆事件(seq)、累積多少字才顯示按鈕。 */
+  draftInfo(id: string): Promise<{ lastSeq: number; threshold: number }>;
+  /** 「儲存這段記憶」:請這個節點把上次儲存之後的對話整理成草稿(狀態未確認),回傳給使用者看的說明。 */
+  requestDraft(id: string): Promise<string>;
   /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
   getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
   /** 刪除節點並先歸檔進記憶庫:summary 先請節點(不行就請總管)寫工作總結,stats 只存統計。歸檔失敗不擋刪除,note 說明結果。 */

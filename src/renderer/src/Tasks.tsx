@@ -35,7 +35,7 @@ function CaseMark({ task, status }: { task: TaskInfo; status: string }) {
   const [msg, setMsg] = useState('');
   if (task.caseId) return <span className="task-case" title="這個任務的解法已記成判例,在記憶庫管理 app 確認後總管才查得到">判例 {task.caseId}({status || '未確認'})</span>;
   if (task.casePending) return <span className="task-case pending" title="已請承辦節點撰寫,它提交後這裡會出現案號">判例撰寫中…</span>;
-  if (task.source === 'case') return null;
+  if (task.source === 'case' || task.source === 'draft') return null;
   const mark = () => { setMsg(''); void window.nexus.markCase(task.id).catch(e => setMsg(String((e as Error).message).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))); };
   return (
     <>

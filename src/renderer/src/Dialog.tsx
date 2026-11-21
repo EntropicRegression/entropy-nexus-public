@@ -8,6 +8,7 @@ import { QuestionPanel } from './Question';
 import { AgyAllowEditor } from './AgyAllow';
 import { ForkPanel } from './Fork';
 import { MicButton } from './Voice';
+import { accumulatedChars, shouldOfferDraft } from '../../shared/memory-draft';
 
 type Item =
   | { kind: 'user'; seq: number; text: string }
@@ -111,6 +112,16 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   }, [a.id]);
 
   const items = useMemo(() => toItems(events), [events]);
+  // 儲存這段記憶:上次儲存之後累積的對話夠多才出現按鈕;按下後記下涵蓋到哪一筆事件,按鈕消失到下一個門檻(進度存在主控台,換視窗不會重來)
+  const [draft, setDraft] = useState<{ lastSeq: number; threshold: number } | null>(null);
+  const [draftMsg, setDraftMsg] = useState('');
+  useEffect(() => { setDraft(null); setDraftMsg(''); if (!isSub) void window.nexus.draftInfo(a.id).then(setDraft, () => setDraft(null)); }, [a.id]);
+  const draftChars = useMemo(() => (draft ? accumulatedChars(events, draft.lastSeq) : 0), [events, draft]);
+  const offerDraft = !isSub && !a.terminal && draft !== null && shouldOfferDraft(draftChars, draft.threshold);
+  const requestDraft = () => {
+    setDraftMsg('');
+    window.nexus.requestDraft(a.id).then(msg => { setDraftMsg(msg); void window.nexus.draftInfo(a.id).then(setDraft); }, e => setDraftMsg(clean(e)));
+  };
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
@@ -403,6 +414,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
                 </span>
               );
             })}
+          </div>
+        )}
+        {(offerDraft || draftMsg) && (
+          <div className="dlg-draft">
+            {offerDraft && <button className="ghost need-op" disabled={offline} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
+            {draftMsg && <span className="muted">{draftMsg}</span>}
           </div>
         )}
         <div className={`dlg-input ${tall ? 'tall' : ''}`}>

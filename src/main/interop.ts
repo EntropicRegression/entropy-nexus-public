@@ -16,6 +16,7 @@ import { buildLinks, dispatchTitle } from '../shared/collab';
  *   start_meeting 召開會議:主控台主持,參與的節點輪流發言幾輪,最後把完整紀錄交回召開者
  *   meeting_say 會議中輪到主持人時,主持人用它發言(交給所有參與者,接著進行下一輪)或結束會議
  *   case_submit 主控台請節點撰寫判例時,節點用它提交敘述的章節(只有任務自己的節點能提交;見 cases.ts)
+ *   memory_draft 使用者按「儲存這段記憶」時,被請求的節點用它提交對話草稿(狀態未確認;見 memory-draft.ts)
  *
  * 設計:
  * - 每個節點有自己的網址(路徑裡帶一組亂數權杖),伺服器由權杖得知是誰在呼叫;只聽 127.0.0.1。
@@ -38,7 +39,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_read', 'memory_write', 'case_submit'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_read', 'memory_write', 'case_submit', 'memory_draft'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -185,6 +186,8 @@ const TOOL_DEFS = [
         reasoning: { type: 'string', description: '理由:為什麼這樣能解決(根本原因)。' },
         scope: { type: 'string', description: '適用範圍:適用條件,什麼情況下不適用。' },
         precedents: { type: 'string', description: '參照先例:相關的既有案號,用 [[案號]] 表示;沒有就寫「無」。' },
+        summary: { type: 'string', description: '摘要:結論的一句話(會放在判例檔第一行,搜尋時最先看到);不填就取結論的第一句。' },
+        review: { type: 'string', description: '回顧:2 到 3 句,事後回頭看這次處理有什麼值得記住的(要根據實際紀錄,不要美化);可省略。' },
       },
       required: ['task_id', 'title', 'keywords', 'facts', 'conclusion'],
       additionalProperties: false,
@@ -220,6 +223,22 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: 'memory_draft',
+    description: '只在主控台請你「整理記憶草稿」時使用(使用者按了「儲存這段記憶」):把你們剛才那段對話裡值得長期保留的內容,整理成一份草稿提交。寫進記憶庫但狀態是「未確認」,使用者確認前不會被任何節點查到。只有被請求的節點能提交,一次請求只能提交一份。誰說的要寫清楚(使用者要求…、我建議…),只寫對話裡實際出現的事,不要寫金鑰或密碼。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['preference', 'knowledge'], description: 'preference 使用者偏好(跨專案適用)、knowledge 專案知識(這個專案的決策、慣例、踩過的坑、書籤)。' },
+        title: { type: 'string', description: '一句話標題。' },
+        content: { type: 'string', description: '內容(Markdown),第一行寫最重要的一句話。' },
+        subtype: { type: 'string', enum: ['decision', 'bookmark'], description: 'knowledge 用,可省略:decision 決策、bookmark 書籤(還沒做完的事)。' },
+        supersedes: { type: 'string', description: '可省略:這則取代的舊記憶檔路徑。' },
+      },
+      required: ['kind', 'title', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'memory_write',
     description: '寫入長期記憶,只有總管節點可以用(其他節點會被拒絕)。kind 為 node:更新某個節點的特長,title 填節點名稱、content 寫它擅長什麼(簡短,第一行最重要,會顯示在總管守則裡);knowledge:寫一則專案知識(本專案踩過的坑、慣例、設定),title 是標題,同標題會取代內容;preference:寫一則使用者偏好(跨專案適用)。只寫日後真的用得到、講得清楚的事;不要寫金鑰、密碼或權杖(看起來像的會被自動遮罩)。專案知識每個專案有數量上限,超過時請整理合併。判例不能用這個工具寫,請用 case_submit。',
     inputSchema: {
@@ -229,6 +248,8 @@ const TOOL_DEFS = [
         title: { type: 'string', description: 'node 時是節點名稱;其餘是這則記憶的標題。' },
         content: { type: 'string', description: '內容(Markdown)。' },
         project: { type: 'string', description: 'knowledge 用:指定專案名稱;不填就是你目前的專案。' },
+        subtype: { type: 'string', enum: ['decision', 'bookmark'], description: 'knowledge 用,可省略:decision 決策(做了什麼決定、為什麼)、bookmark 書籤(還沒做完、之後要回來處理的事)。' },
+        supersedes: { type: 'string', description: '可省略:這則取代的舊記憶檔路徑(memory_search 查到的路徑)。' },
       },
       required: ['kind', 'title', 'content'],
       additionalProperties: false,
@@ -248,6 +269,8 @@ export class Interop {
   error = '';
   /** 判例提交(case_submit);由 index.ts 接上判例服務。callerId 是權杖對應的節點,判例服務據此檢查是不是任務自己的節點。 */
   caseSubmit: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
+  /** 記憶草稿提交(memory_draft);由 index.ts 接上草稿服務,只有被請求的節點能提交。 */
+  memoryDraft: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, 'interop');
@@ -433,6 +456,10 @@ export class Interop {
           if (!this.caseSubmit) throw new Error('判例功能沒有啟用。');
           return text(await this.caseSubmit(callerId, args));
         }
+        if (params?.name === 'memory_draft') {
+          if (!this.memoryDraft) throw new Error('記憶草稿功能沒有啟用。');
+          return text(await this.memoryDraft(callerId, args));
+        }
         if (params?.name === 'memory_search' || params?.name === 'memory_read' || params?.name === 'memory_write') {
           const deps = this.core?.memoryDeps();
           const caller = this.core?.memoryCaller(callerId);
@@ -440,7 +467,7 @@ export class Interop {
           const s = (...keys: string[]) => pick(...keys);
           if (params.name === 'memory_search') return text(await memorySearch(deps, caller, { query: s('query', 'q', 'keywords', 'text'), kind: s('kind', 'type'), node: s('node', 'node_name'), project: s('project'), subtype: s('subtype', 'sub_type') }));
           if (params.name === 'memory_read') return text(await memoryRead(deps, caller, { path: s('path', 'file', 'memory_path'), include_review: args.include_review === true || args.include_review === 'true' }));
-          return text(await memoryWrite(deps, caller, { kind: s('kind', 'type'), title: s('title', 'name'), content: s('content', 'text', 'body'), project: s('project') }));
+          return text(await memoryWrite(deps, caller, { kind: s('kind', 'type'), title: s('title', 'name'), content: s('content', 'text', 'body'), project: s('project'), subtype: s('subtype'), supersedes: s('supersedes') }));
         }
         return text(`沒有這個工具:${String(params?.name)}`, true);
       } catch (err) {

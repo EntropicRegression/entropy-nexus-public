@@ -92,10 +92,19 @@ export class Store {
         updated_at INTEGER NOT NULL,
         mtime INTEGER NOT NULL,
         size INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT ''
+        status TEXT NOT NULL DEFAULT '',
+        subtype TEXT NOT NULL DEFAULT '',
+        supersedes TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS memory_project ON memory_index (project_id);
     `);
+    // 記憶索引新增 subtype、supersedes 欄位:舊表補欄位後清空,下次掃描時整個重建(索引隨時可由檔案重建)
+    const memCols = this.db.prepare('PRAGMA table_info(memory_index)').all() as Array<{ name: string }>;
+    if (!memCols.some(c => c.name === 'subtype')) {
+      this.db.exec("ALTER TABLE memory_index ADD COLUMN subtype TEXT NOT NULL DEFAULT ''");
+      this.db.exec("ALTER TABLE memory_index ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''");
+      this.db.exec('DELETE FROM memory_index');
+    }
     // 舊版資料庫沒有 character 欄位
     const cols = this.db.prepare('PRAGMA table_info(agents)').all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === 'character')) this.db.exec("ALTER TABLE agents ADD COLUMN character TEXT NOT NULL DEFAULT ''");
@@ -268,14 +277,15 @@ export class Store {
     return rows.map(r => ({
       path: String(r.path), kind: String(r.kind) as MemoryEntry['kind'], scope: String(r.scope) as MemoryEntry['scope'], projectId: String(r.project_id), nodeId: String(r.node_id),
       title: String(r.title), updatedAt: Number(r.updated_at), mtime: Number(r.mtime), size: Number(r.size), status: String(r.status),
+      subtype: String(r.subtype ?? ''), supersedes: String(r.supersedes ?? ''),
     }));
   }
 
   memoryPut(e: MemoryEntry): void {
-    this.db.prepare(`INSERT INTO memory_index (path, kind, scope, project_id, node_id, title, updated_at, mtime, size, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.db.prepare(`INSERT INTO memory_index (path, kind, scope, project_id, node_id, title, updated_at, mtime, size, status, subtype, supersedes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(path) DO UPDATE SET kind = excluded.kind, scope = excluded.scope, project_id = excluded.project_id, node_id = excluded.node_id, title = excluded.title,
-        updated_at = excluded.updated_at, mtime = excluded.mtime, size = excluded.size, status = excluded.status`)
-      .run(e.path, e.kind, e.scope, e.projectId, e.nodeId, e.title, e.updatedAt, e.mtime, e.size, e.status);
+        updated_at = excluded.updated_at, mtime = excluded.mtime, size = excluded.size, status = excluded.status, subtype = excluded.subtype, supersedes = excluded.supersedes`)
+      .run(e.path, e.kind, e.scope, e.projectId, e.nodeId, e.title, e.updatedAt, e.mtime, e.size, e.status, e.subtype, e.supersedes);
   }
 
   memoryDelete(path: string): void {

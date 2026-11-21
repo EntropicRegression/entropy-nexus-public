@@ -13,12 +13,14 @@ import type { writeMemory as WriteMemory, safeName as SafeName } from './memory-
  */
 
 /** 判例敘述的章節,順序固定(和記憶設計一致)。 */
+/** 摘要的長度上限(判例檔第一行,搜尋結果與總管守則只看得到前面一小段)。 */
+const SUMMARY_MAX = 120;
 export const CASE_SECTIONS = ['事實經過', '爭點', '處理經過', '結論', '理由', '適用範圍', '參照先例'] as const;
 /**
  * case_submit 的參數名稱。工具參數名稱只能用英數字與 _ . -(Anthropic API 的規定,用中文的話 Claude 節點根本拿不到這個工具),
  * 所以參數用英文,寫進判例檔時再對應回中文章節與屬性。
  */
-export const CASE_ARGS = { title: '案由', keywords: '關鍵字', facts: '事實經過', issue: '爭點', process: '處理經過', conclusion: '結論', reasoning: '理由', scope: '適用範圍', precedents: '參照先例' } as const;
+export const CASE_ARGS = { title: '案由', keywords: '關鍵字', facts: '事實經過', issue: '爭點', process: '處理經過', conclusion: '結論', reasoning: '理由', scope: '適用範圍', precedents: '參照先例', summary: '摘要', review: '回顧' } as const;
 const SECTION_ARG = Object.fromEntries(Object.entries(CASE_ARGS).map(([arg, label]) => [label, arg])) as Record<string, keyof typeof CASE_ARGS>;
 export type CaseSection = (typeof CASE_SECTIONS)[number];
 export type CaseSource = '自動偵測' | '使用者標記';
@@ -108,7 +110,10 @@ export function formatCasePrompt(input: { taskId: string; title: string; reasons
     '- reasoning(理由):為什麼這樣能解決(根本原因)',
     '- scope(適用範圍):適用條件,什麼情況下不適用',
     '- precedents(參照先例):相關的既有案號,用 [[案號]] 表示;沒有就寫「無」',
+    '- summary(摘要):結論的一句話(會放在判例檔最前面,搜尋時最先被看到,所以要寫最重要的一句)',
+    '- review(回顧,可省略):2 到 3 句,事後回頭看這次處理有什麼值得記住的;一定要根據上面實際發生的紀錄寫,不要美化',
     '參數名稱一律用括號前的英文;內容用中文寫。',
+    '你是這份判例的單一作者:由你一個人整理,並且寫清楚誰說了什麼(例如「使用者指出…」「我發現…」),不要把推測寫成別人的話。',
     '規則:只寫這個任務裡實際發生的事,不要美化成績;不要寫入金鑰、密碼、權杖等機密;每段控制在 800 字內。',
   ];
   if (input.precedents.length) lines.push(`可能相關的既有判例(參照先例可從這裡挑):\n${input.precedents.map(p => `- [[${p.caseId}]] ${p.title}`).join('\n')}`);
@@ -117,7 +122,14 @@ export function formatCasePrompt(input: { taskId: string; title: string; reasons
 
 // ---- 提交內容的檢查與判例文件 ----
 
-export interface CaseSubmission { title: string; keywords: string[]; sections: Record<CaseSection, string> }
+export interface CaseSubmission { title: string; keywords: string[]; sections: Record<CaseSection, string>; summary: string; review: string }
+
+/** 結論的第一句(摘要沒填時用):取到第一個句號或換行,太長就截斷。 */
+export function firstSentence(s: string): string {
+  const t = s.replace(/^[\s#>*-]+/, '');
+  const m = /^[^。！？!?\n]*[。！？!?]?/.exec(t);
+  return (m?.[0] ?? t).replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX);
+}
 
 const text = (v: unknown): string => (typeof v === 'string' ? v : Array.isArray(v) ? v.map(String).join('\n') : v === undefined || v === null ? '' : String(v)).trim();
 
@@ -134,15 +146,21 @@ export function parseSubmission(args: Record<string, unknown>): CaseSubmission {
   const missing = [!title && 'title(案由)', !sections['事實經過'] && 'facts(事實經過)', !sections['結論'] && 'conclusion(結論)'].filter(Boolean);
   if (missing.length) throw new Error(`缺少必要的欄位:${missing.join('、')}。請補齊後再呼叫一次 case_submit(參數名稱:task_id、${Object.entries(CASE_ARGS).map(([a, l]) => `${a}(${l})`).join('、')})。`);
   if (!sections['參照先例']) sections['參照先例'] = '無';
-  return { title, keywords, sections };
+  const summary = (text(arg('summary')).replace(/\s+/g, ' ').slice(0, SUMMARY_MAX)) || firstSentence(sections['結論']);
+  const review = text(arg('review')).slice(0, SECTION_MAX);
+  return { title, keywords, sections, summary, review };
 }
 
 /** 敘述裡的 # 標題會破壞章節結構,降成小標題。 */
 const flatten = (s: string): string => s.replace(/^#{1,2}(\s)/gm, '###$1');
 
-export function buildCaseBody(caseId: string, sections: Record<CaseSection, string>): string {
+export function buildCaseBody(caseId: string, sections: Record<CaseSection, string>, summary = '', review = ''): string {
   const parts = [`# 解法第 ${caseId} 號`];
+  // 黃金第一行:摘要緊接在標題下面,搜尋結果的摘錄與總管守則都從這裡開始
+  if (summary.trim()) parts.push(`摘要:${summary.trim().replace(/\s+/g, ' ')}`);
   for (const k of CASE_SECTIONS) parts.push(`## ${k}\n\n${flatten(sections[k] || '(未填)')}`);
+  // 回顧永遠是檔案最後一段
+  if (review.trim()) parts.push(`## 回顧\n\n${flatten(review.trim())}`);
   return parts.join('\n\n') + '\n';
 }
 
@@ -320,7 +338,7 @@ export class CaseService {
       狀態: '未確認',
       關鍵字: sub.keywords,
       更新時間: localStamp(now),
-    }, buildCaseBody(caseId, sub.sections), 'replace', now);
+    }, buildCaseBody(caseId, sub.sections, sub.summary, sub.review), 'replace', now);
     this.setPending(task.id, null);
     this.d.patchTask(task.id, { caseId, casePending: false });
     this.d.rescan();
