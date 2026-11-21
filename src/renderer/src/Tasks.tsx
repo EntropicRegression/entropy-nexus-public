@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { AgentInfo, TaskInfo, TaskStatus, TaskVerdict } from '../../shared/types';
+import { sourceLabel } from '../../shared/collab';
 import { BACKEND_COLOR, hex } from './theme';
 
 const LABEL: Record<TaskStatus, string> = { running: '執行中', awaiting: '待授權', done: '完成', failed: '失敗', interrupted: '已中斷' };
@@ -32,8 +33,9 @@ function VerdictButtons({ task }: { task: TaskInfo }) {
  * 任務面板:每送出一句指令就自動多一筆任務,顯示內容、狀態、由誰執行與經過時間;
  * 後台有回報計畫步驟或呼叫子代理時一併列出。資料全部來自核心服務,這裡只負責呈現。
  */
-export function TaskPanel({ tasks, agents, selectedId, onSelect, onReview }: {
+export function TaskPanel({ tasks, chiefId, agents, selectedId, onSelect, onReview }: {
   tasks: TaskInfo[];
+  chiefId: string | null;
   agents: Record<string, AgentInfo>;
   selectedId: string | null;
   onSelect: (agentId: string) => void;
@@ -87,6 +89,7 @@ export function TaskPanel({ tasks, agents, selectedId, onSelect, onReview }: {
                 <span className="task-time">{span((t.endedAt ?? now) - t.startedAt)}</span>
               </span>
               <span className="task-title">{t.title}</span>
+              {sourceLabel(t, chiefId) && <span className="task-from" data-from={t.source}>{sourceLabel(t, chiefId)}</span>}
               <span className="task-who">
                 <i style={{ background: hex(BACKEND_COLOR[t.backend]) }} />
                 {t.agentName}{t.model ? ` · ${t.model}` : ''}{alive ? '' : '(已移除)'}

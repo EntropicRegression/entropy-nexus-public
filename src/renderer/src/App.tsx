@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
+  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type DispatchEntry, type LinkInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
 import type { DashboardData } from '../../shared/dashboard';
 import { Dashboard, DashboardFull } from './Dashboard';
@@ -33,6 +33,8 @@ export function App() {
   /** 新增節點面板是不是從總管區塊的「+」打開的(新增後指定為總管,也可以直接指定現有節點)。 */
   const [addingChief, setAddingChief] = useState(false);
   const [chiefId, setChiefId] = useState<string | null>(null);
+  const [links, setLinks] = useState<LinkInfo[]>([]);
+  const [dispatches, setDispatches] = useState<DispatchEntry[]>([]);
   const [maxActive, setMaxActive] = useState(4);
   const [quotaStop, setQuotaStop] = useState(0);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -88,6 +90,8 @@ export function App() {
       setMaxActive(s.maxActive);
       setQuotaStop(s.quotaStop);
       setChiefId(s.chiefId ?? null);
+      setLinks(s.links ?? []);
+      setDispatches(s.dispatches ?? []);
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
@@ -117,6 +121,8 @@ export function App() {
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.dashboard) setDash(u.dashboard);
+      if (u.links) setLinks(u.links);
+      if (u.dispatches) setDispatches(u.dispatches);
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
       if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
@@ -245,7 +251,7 @@ ${c.note}` : ''}`}>
         </div>
       </header>
 
-      {showDash && <DashboardFull agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
+      {showDash && <DashboardFull dispatches={dispatches} tasks={tasks} agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
       {showView && (
@@ -300,7 +306,7 @@ ${c.note}` : ''}`}>
         </div>
       )}
       <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} links={links} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
         {hover && agents[hover.id] && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} />}
         {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
@@ -310,7 +316,7 @@ ${c.note}` : ''}`}>
       {/* 右側欄:最上面是常駐的總覽儀表(原本節點清單的位置),下面是任務面板與新增節點 */}
       <aside className="sidebar">
         <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => setShowDash(v => !v)} onSelect={setSelectedId} />
-        {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
+        {!adding && <TaskPanel tasks={tasks} chiefId={chiefId} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>
@@ -353,7 +359,7 @@ function describe(e: NexusEvent): string {
 }
 
 /** PixiJS 主面板的 React 外殼。 */
-function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
+function Board({ agents, selectedId, avatars, chiefId, links, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; links: LinkInfo[]; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
   const addChiefRef = useRef(onAddChief);
@@ -361,6 +367,8 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<BoardScene | null>(null);
   const latest = useRef({ agents, selectedId, avatars, chiefId });
+  const latestLinks = useRef(links);
+  latestLinks.current = links;
   latest.current = { agents, selectedId, avatars, chiefId };
   // 區塊排不下時「另外 N 個」的清單:點面板上的標記打開,列出被收起來的節點
   const [more, setMore] = useState<BoardMore | null>(null);
@@ -383,6 +391,7 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
       if (dead) { s.destroy(); return; }
       scene.current = s;
       s.setAvatars(latest.current.avatars);
+      s.setLinks(latestLinks.current);
       s.sync(latest.current.agents, latest.current.selectedId, latest.current.chiefId);
     });
     return () => { dead = true; scene.current?.destroy(); scene.current = null; };
@@ -390,6 +399,7 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
 
   useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
+  useEffect(() => { scene.current?.setLinks(links); }, [links]);
 
   // 清單放在標記的上方或下方(看哪邊空間大),不超出面板
   const box = host.current?.parentElement;
