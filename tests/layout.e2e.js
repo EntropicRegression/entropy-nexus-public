@@ -18,6 +18,10 @@
     for (let i = 0; i < 14; i++) ids.push((await window.nexus.createAgent({ name: `節點${String(i + 1).padStart(2, '0')}`, character: i === 0 ? 'Layout' : '', model: '', backend: backends[i % 3], cwd, permissionMode: 'ask' })).id);
     await window.nexus.setChief(ids[13]);
     await wait(2500);
+    // 總覽儀表要在「內容最多」的情況下檢查:三家後台都有兩個額度視窗,其中一個快滿了(多一行提醒)
+    const soon = Math.round(Date.now() / 1000) + 3 * 86400;
+    for (let i = 0; i < 3; i++) await window.nexus.send(ids[i], `〔測試用量:${JSON.stringify({ windows: [{ label: '5 小時', used: i === 0 ? 0.93 : 0.4, resetsAt: soon }, { label: '每週', used: 0.3 + i * 0.1, resetsAt: soon }], spent: { tokens: 12000 * (i + 1), usd: i === 0 ? 0.05 : 0 } })}〕`);
+    await wait(2500);
 
     if (window.__LAYOUT_WEB__) {
       await window.nexus.remoteSet({ enabled: true });
