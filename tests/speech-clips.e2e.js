@@ -41,6 +41,15 @@
     ok(e2 === 'system', '沒有角色的節點:用系統語音', `${e2} ${JSON.stringify(via())}`);
     await wait(4000);
 
+    // 指定有固定語音的角色當總管:沒有角色的節點改用總管的聲音
+    await window.nexus.setChief(voiced.id);
+    mark = spoken().length;
+    await window.nexus.send(plain.id, '圖片測試\n有總管之後完成了。');
+    const e2b = await engineOf('Plain', mark);
+    ok(e2b === 'clips', '沒有角色的節點:有總管時用總管角色的固定語音', `${e2b} ${JSON.stringify(via())}`);
+    await wait(2500);
+    await window.nexus.setChief(null);
+
     // 關掉固定語音:同一個節點改用系統語音(本機語音合成沒有啟用)
     const after = await window.nexus.speechSet({ engines: ['local'] });
     ok(JSON.stringify(after.settings.engines) === '["local"]', '設定引擎:只留本機語音合成', JSON.stringify(after.settings));

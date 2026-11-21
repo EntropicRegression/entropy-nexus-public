@@ -330,7 +330,12 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       const names = core?.snapshot().agents.filter(a => !a.parentId).map(a => a.name) ?? [];
       return names.length ? `節點名稱:${names.join('、')}。` : '';
     }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
-    initSpeechEngines(store, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
+    // 播報用哪個角色的聲音:節點自己的角色;沒有角色的節點(以及不屬於節點的通知,例如每日預算)改用總管的角色
+    initSpeechEngines(store, id => {
+      const s = core?.snapshot();
+      if (!s) return null;
+      return s.agents.find(a => a.id === id)?.character || s.agents.find(a => a.id === s.chiefId)?.character || null;
+    });
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);
