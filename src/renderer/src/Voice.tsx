@@ -271,7 +271,7 @@ function SpeechEngines() {
   return (
     <>
       <div className="remote-sub">播報的聲音來源</div>
-      <p className="remote-note">依序嘗試勾選的來源,第一個有聲音的就用它;都沒有(或節點沒有角色)時用系統語音。</p>
+      <p className="remote-note">依序嘗試勾選的來源,第一個有聲音的就用它;都沒有時用系統語音。沒有角色的節點用總管的角色聲音(沒有總管、或總管也沒有角色時用系統語音)。</p>
       {order.map(id => {
         const i = on.indexOf(id);
         const st = s.engines.find(e => e.id === id);

@@ -1,10 +1,14 @@
 import 'pixi.js/unsafe-eval';
 import { Application, Circle, Container, Graphics, Matrix, Text, Texture } from 'pixi.js';
-import { STATE_LABEL, STATE_ZONE, type AgentInfo, type Zone } from '../../shared/types';
+import { STATE_LABEL, STATE_ZONE, type AgentInfo, type LinkInfo, type Zone } from '../../shared/types';
 import { BACKEND_COLOR, COLOR, STATE_COLOR, ZONE_COLOR, ZONE_TITLE } from './theme';
 import { HEADER_COMPACT, MIN_ZOOM, ZONES, centerOf, planBoard, slotAt, type BoardPlan, type Rect } from './board-layout';
 
 const FONT = '"Segoe UI", "Microsoft JhengHei", sans-serif';
+
+/** 協作連線畫在面板上的一段:從呼叫者(或主持人)到一個目標;端點被收進「+N」小標記時 toBadge 為 true。 */
+export interface LinkSegment { to: string; x1: number; y1: number; x2: number; y2: number; fromBadge: boolean; toBadge: boolean; speaking: boolean; r1: number; r2: number }
+export interface DrawnLink { id: string; kind: LinkInfo['kind']; from: string; label: string; segments: LinkSegment[] }
 
 /** 區塊排不下、被收進「另外 N 個」的節點:哪個區塊、哪些節點、標記在面板上的位置與縮放。 */
 export interface BoardMore { zone: Zone; ids: string[]; x: number; y: number; zoom: number }
@@ -208,6 +212,10 @@ export class BoardScene {
   private titles = new Map<Zone, Text>();
   private counts = new Map<Zone, Text>();
   private nodeLayer = new Container();
+  /** 協作連線(節點呼叫節點、會議):畫在節點下方,不接收點擊。 */
+  private linkLayer = new Graphics();
+  private links: LinkInfo[] = [];
+  private linksDrawn = false;
   private nodes = new Map<string, NodeView>();
   private rects = new Map<Zone, Rect>();
   /** 目前畫在畫面上的區塊外框:區塊大小改變時和節點一起滑過去。 */
@@ -278,7 +286,8 @@ export class BoardScene {
       this.app.stage.addChild(title, count);
     }
     this.buildAddChief();
-    this.app.stage.addChild(this.addChief, this.nodeLayer);
+    this.linkLayer.eventMode = 'none';
+    this.app.stage.addChild(this.addChief, this.linkLayer, this.nodeLayer);
     for (const z of ZONES) {
       if (z === 'chief') continue;
       const more = new MoreView(ZONE_COLOR[z], () => this.toggleMore(z));
@@ -295,6 +304,7 @@ export class BoardScene {
       this.time += tk.deltaMS;
       for (const n of this.nodes.values()) n.tick(tk.deltaMS, this.time);
       this.stepFrames(tk.deltaMS);
+      this.drawLinks();
       this.checkHover();
     });
     this.ready = true;
@@ -311,11 +321,88 @@ export class BoardScene {
       header: (z: Zone) => this.plan?.zones[z].header ?? 0,
       hidden: () => ZONES.map(z => ({ zone: z, count: this.hiddenIds.get(z)?.length ?? 0, ids: this.hiddenIds.get(z) ?? [] })).filter(x => x.count > 0),
       more: () => [...this.mores].filter(([, m]) => m.root.visible).map(([z, m]) => ({ zone: z, x: m.root.x, y: m.root.y, scale: m.boxScale, count: m.count, badge: m.badge })),
+      // 目前畫出的協作連線與端點(節點的畫面座標,被收進「+N」的端點改用小標記的位置)
+      links: () => this.resolveLinks(),
       total: () => this.nodes.size,
       // 節點都滑到定位了嗎(還在移動時,位置和區塊範圍對不起來是正常的)
       settled: () => [...this.nodes.values()].every(n => n.hidden || (n.placed && Math.abs(n.root.x - n.tx) < 0.5 && Math.abs(n.root.y - n.ty) < 0.5 && Math.abs(n.root.scale.x - n.scale) < 0.005)),
       openMore: (z: Zone) => this.toggleMore(z),
     };
+  }
+
+  /** 更新進行中的協作連線(由核心服務推送)。 */
+  setLinks(links: LinkInfo[]): void {
+    this.links = links;
+  }
+
+  /** 節點在面板上的連線端點:看得到就是節點中心,被收進「另外 N 個」就是該區塊的小標記;都沒有時為 null。 */
+  private endpointOf(id: string): { x: number; y: number; r: number; badge: boolean } | null {
+    const v = this.nodes.get(id);
+    if (v && !v.hidden && v.root.visible) return { x: v.root.x, y: v.root.y, r: 36 * v.root.scale.x, badge: false };
+    for (const [z, ids] of this.hiddenIds) {
+      if (!ids.includes(id)) continue;
+      const m = this.mores.get(z);
+      if (m?.root.visible) return { x: m.root.x, y: m.root.y, r: 16, badge: true };
+    }
+    return null;
+  }
+
+  /** 把連線資料對到畫面座標;端點找不到的(例如節點已被移除)略過。 */
+  private resolveLinks(): DrawnLink[] {
+    const out: DrawnLink[] = [];
+    for (const l of this.links) {
+      const a = this.endpointOf(l.from);
+      if (!a) continue;
+      const segments: LinkSegment[] = [];
+      for (const t of l.to) {
+        const b = this.endpointOf(t);
+        if (!b || (a.x === b.x && a.y === b.y)) continue;
+        segments.push({ to: t, x1: a.x, y1: a.y, x2: b.x, y2: b.y, fromBadge: a.badge, toBadge: b.badge, speaking: l.speaker === t, r1: a.r, r2: b.r });
+      }
+      if (segments.length) out.push({ id: l.id, kind: l.kind, from: l.from, label: l.label ?? '', segments });
+    }
+    return out;
+  }
+
+  /** 每一格重畫連線:淡淡的光暈線、流動的小點、目標端的箭頭;會議中正在發言的參與者外圍加一圈亮環。 */
+  private drawLinks(): void {
+    const g = this.linkLayer;
+    if (!this.links.length) { if (this.linksDrawn) { g.clear(); this.linksDrawn = false; } return; }
+    g.clear();
+    this.linksDrawn = true;
+    for (const l of this.resolveLinks()) {
+      const color = l.kind === 'meeting' ? COLOR.warn : COLOR.accent;
+      for (const s of l.segments) {
+        const dx = s.x2 - s.x1, dy = s.y2 - s.y1, len = Math.hypot(dx, dy);
+        const { r1, r2 } = s;
+        if (len < r1 + r2 + 8) continue;
+        const bend = Math.min(60, len * 0.16) * (l.kind === 'meeting' ? 0.6 : 1);
+        const cx = (s.x1 + s.x2) / 2 - (dy / len) * bend, cy = (s.y1 + s.y2) / 2 + (dx / len) * bend;
+        const at = (t: number) => ({ x: (1 - t) ** 2 * s.x1 + 2 * (1 - t) * t * cx + t * t * s.x2, y: (1 - t) ** 2 * s.y1 + 2 * (1 - t) * t * cy + t * t * s.y2 });
+        const t0 = r1 / len, t1 = 1 - r2 / len;
+        const pts: Array<{ x: number; y: number }> = [];
+        for (let i = 0; i <= 16; i++) pts.push(at(t0 + ((t1 - t0) * i) / 16));
+        g.moveTo(pts[0].x, pts[0].y);
+        for (const p of pts.slice(1)) g.lineTo(p.x, p.y);
+        g.stroke({ width: 7, color, alpha: s.speaking ? 0.16 : 0.07 });
+        g.moveTo(pts[0].x, pts[0].y);
+        for (const p of pts.slice(1)) g.lineTo(p.x, p.y);
+        g.stroke({ width: s.speaking ? 2.4 : 1.4, color, alpha: s.speaking ? 0.85 : 0.45 });
+        // 流動的小點(從呼叫者流向目標)
+        for (let i = 0; i < 3; i++) {
+          const p = at(t0 + (t1 - t0) * (((this.time / 1500 + i / 3) % 1)));
+          g.circle(p.x, p.y, s.speaking ? 3 : 2.2).fill({ color, alpha: 0.95 });
+        }
+        // 箭頭
+        const e = at(t1), b = at(t1 - 0.04);
+        const ang = Math.atan2(e.y - b.y, e.x - b.x);
+        g.poly([e.x, e.y, e.x - Math.cos(ang - 0.45) * 9, e.y - Math.sin(ang - 0.45) * 9, e.x - Math.cos(ang + 0.45) * 9, e.y - Math.sin(ang + 0.45) * 9]).fill({ color, alpha: 0.9 });
+        if (s.speaking) {
+          const pulse = 0.5 + 0.5 * Math.sin(this.time / 220);
+          g.circle(s.x2, s.y2, r2 + 6 + pulse * 3).stroke({ width: 2, color, alpha: 0.5 + pulse * 0.4 });
+        }
+      }
+    }
   }
 
   destroy(): void {

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
+import { join, resolve } from 'node:path';
+import { BACKEND_LABEL, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -14,7 +14,16 @@ import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, r
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
+import { MemoryVault } from './memory-vault';
+import { safeName, writeMemory } from './memory-write';
+import { CaseService } from './cases';
+import { DraftService } from './memory-draft';
+import { CASE_DAILY_CAP, detectCandidate } from '../shared/case-candidates';
+import { attachArchive, findArchive } from './memory-archive';
+import { flushHeat } from './vault-sidecar';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
+import { atomicWriteJson, buildVaultStats, StatsWriter, STATS_FILE } from './vault-stats';
+import { findWakeUrl, parseWakeUrl, WAKE_PROTOCOL } from './wake';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
@@ -34,8 +43,45 @@ const devUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
 let win: BrowserWindow | null = null;
 let core: Core | null = null;
 let store: Store | null = null;
+let vault: MemoryVault | null = null;
+let cases: CaseService | null = null;
+let drafts: DraftService | null = null;
 let quitting = false;
 let interopRef: Interop | null = null;
+let statsWriter: StatsWriter | null = null;
+/** 視窗與核心還沒準備好時收到的喚醒網址,準備好後再處理。 */
+let pendingWake: string | null = null;
+
+/**
+ * 跨 app 喚醒(entropy-nexus://wake?node=<節點ID>):把視窗帶到前面,一定先跳確認,同意後走「開啟舊 session」接回原本的節點。
+ * 節點已經在面板上就只提示;找不到或網址不正確也提示,不做任何事。
+ */
+async function handleWake(raw: string): Promise<void> {
+  if (!core || !win) { pendingWake = raw; return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  const parsed = parseWakeUrl(raw);
+  const notice = (message: string, type: 'info' | 'error' = 'info') => dialog.showMessageBox(win!, { type, title: '喚醒節點', message, buttons: ['確定'], noLink: true });
+  if (!parsed.ok) { await notice(`無法處理這個喚醒網址:${parsed.reason}。`, 'error'); return; }
+  const target = core.wakeTarget(parsed.node);
+  if (!target) { await notice('找不到這個節點,或它已經沒有可以接回的對話。', 'error'); return; }
+  if (target.kind === 'board') { await notice(`「${target.name}」已經在面板上了。`); return; }
+  const r = await dialog.showMessageBox(win, { type: 'question', title: '喚醒節點', message: `要接回 ${target.name} 的舊對話嗎?`, detail: '會把這個已封存的節點放回面板,繼續原本的對話。', buttons: ['接回', '取消'], defaultId: 1, cancelId: 1, noLink: true });
+  if (r.response !== 0) return;
+  try { await core.openOldSession(target.input); }
+  catch (e) { await notice(`接回失敗:${String((e as Error)?.message ?? e)}`, 'error'); }
+}
+
+/**
+ * 註冊自訂網址。測試模式與指定了 NEXUS_DATA_DIR 的獨立資料夾不註冊;開發模式(未打包)預設也不註冊,
+ * 否則會把系統的 entropy-nexus:// 指到 electron.exe 開發版,蓋掉安裝版的註冊。要在開發模式測試時設 NEXUS_REGISTER_PROTOCOL=1。
+ */
+function registerProtocol(): void {
+  if (testMode || process.env.NEXUS_DATA_DIR) return;
+  if (app.isPackaged) { app.setAsDefaultProtocolClient(WAKE_PROTOCOL); return; }
+  if (process.env.NEXUS_REGISTER_PROTOCOL === '1' && process.argv[1]) app.setAsDefaultProtocolClient(WAKE_PROTOCOL, process.execPath, [resolve(process.argv[1])]);
+}
 
 function createWindow(): void {
   // 初始大小與最小尺寸不超過螢幕的可用範圍(1366×768 開 125% 縮放時只有約 1093×580),視窗才不會比螢幕大。
@@ -76,6 +122,16 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     history: (id: string) => c.history(id),
     create: (input: CreateAgentInput) => c.createAgent(input),
     remove: (id: string) => c.removeAgent(id),
+    // 長期記憶階段 4:刪除節點時歸檔、新增節點時接回封存;沒有列在 access.ts 的方法表,所以只有完整角色呼叫得到
+    removeArchived: (id: string, mode: string) => c.removeWithArchive(String(id), mode === 'stats' ? 'stats' : 'summary'),
+    findMemoryArchive: (names: string[]) => (Array.isArray(names) ? findArchive(vault?.list() ?? [], names.map(String)) : null),
+    attachMemoryArchive: (agentId: string, archivePath: string) => {
+      const a = c.snapshot().agents.find(x => x.id === agentId);
+      if (!a || !vault) throw new Error('找不到這個節點');
+      const r = attachArchive(vault.dir, String(archivePath), { id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model });
+      vault.rescan();
+      return r ? r.path : null;
+    },
     send: (id: string, text: string, images?: string[]) => c.send(id, text, Array.isArray(images) ? images : [], 'user', source),
     updateAgent: (id: string, patch: { name?: string; character?: string; model?: string }) => c.updateAgent(id, patch),
     savePastedImage: (mime: string, data: ArrayBuffer) => savePastedImage(mime, data),
@@ -97,6 +153,11 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     autopilot: (on: boolean) => c.setAutopilot(on),
     maxActive: (n: number) => c.setMaxActive(n),
     clearTasks: () => c.clearFinishedTasks(),
+    taskVerdict: (taskId: string, verdict: TaskVerdict) => c.setTaskVerdict(String(taskId), verdict ?? null),
+    markCase: async (taskId: string) => { if (!cases) throw new Error('判例功能沒有啟用'); return cases.mark(String(taskId)); },
+    draftInfo: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.info(String(id)); },
+    requestDraft: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.request(String(id)); },
+    memoryVault: () => ({ dir: vault?.dir ?? '', entries: vault?.list() ?? [] }),
     taskChanges: (taskId: string) => c.taskChanges(taskId),
     oldSessions: () => c.listOldSessions(),
     inspectDir: (cwd: string) => inspectDir(cwd),
@@ -125,6 +186,8 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     forkAgent: (input: ForkAgentInput) => c.forkAgent(input),
     getAvatar: (character: string) => avatarDataUrl(String(character ?? '')),
     getPersona: (character: string) => c.getPersona(String(character ?? '')),
+    getAgyAllow: () => c.getAgyAllow(),
+    setAgyAllow: (rules: unknown) => c.setAgyAllow(rules).rules,
     setPersona: (character: string, text: string) => c.setPersona(String(character ?? ''), String(text ?? '')),
     setChief: (id: string | null) => c.setChief(typeof id === 'string' && id ? id : null),
   };
@@ -287,7 +350,15 @@ function scheduleScreenshot(): void {
 if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  registerProtocol();
+  pendingWake = findWakeUrl(process.argv);
+  app.on('second-instance', (_e, argv) => {
+    const url = findWakeUrl(argv);
+    if (url) void handleWake(url);
+    else if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+  });
+  // macOS:網址由系統事件傳入(要在 ready 之前註冊)
+  app.on('open-url', (e, url) => { e.preventDefault(); void handleWake(url); });
 
   void app.whenReady().then(async () => {
     const dir = app.getPath('userData');
@@ -302,15 +373,67 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     handlePortraitRequests();
     initMedia(dir);
     store = new Store(join(dir, 'nexus.db'));
+    // 記憶庫:啟動時完整掃描一次建立索引,之後監看資料夾,外部修改會自動重新讀取
+    vault = new MemoryVault(join(dir, 'memory-vault'), store);
+    vault.init();
+    vault.watch(() => statsWriter?.request());
     // 節點互相呼叫:主控台提供給各家 CLI 的工具服務;要在節點的 session 啟動之前設定好
     const interop = new Interop(dir);
     interopRef = interop;
-    core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); });
+    core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); if (u.agent || u.removedId || u.task || u.tasks || u.dispatches) statsWriter?.request(); });
+    core.setMemoryVault(vault);
     core.setInterop(id => interop.optionsFor(id));
     interop.attach(core);
     if (interop.error) console.error(interop.error);
+    // 判例庫:困難任務完成時請承辦節點寫判例(客觀欄位由主控台填),節點用 case_submit 提交
+    const c = core, v = vault, s = store;
+    cases = new CaseService({
+      vaultDir: v.dir,
+      getSetting: k => s.getSetting(k),
+      setSetting: (k, val) => s.setSetting(k, val),
+      entries: () => v.list(),
+      rescan: () => { v.rescan(); },
+      task: id => c.taskById(id),
+      agent: id => c.agentById(id),
+      changedFiles: async id => (await c.taskChanges(id)).files.map(f => f.path),
+      facts: t => c.caseFacts(t),
+      request: (agentId, text) => c.enqueue(agentId, text, [], 'case'),
+      patchTask: (id, patch) => c.patchTaskCase(id, patch),
+      detect: detectCandidate,
+      write: writeMemory,
+      safeName,
+      backendLabel: b => BACKEND_LABEL[b],
+      // 測試用:NEXUS_CASE_MIN_MINUTES 可把「耗時超過幾分鐘」縮短(可以是小數)
+      ...(Number(process.env.NEXUS_CASE_MIN_MINUTES) > 0 ? { minMinutes: Number(process.env.NEXUS_CASE_MIN_MINUTES) } : {}),
+      participants: t => c.caseParticipants(t),
+      dailyCap: Number(process.env.NEXUS_CASE_DAILY_CAP) >= 0 && process.env.NEXUS_CASE_DAILY_CAP ? Number(process.env.NEXUS_CASE_DAILY_CAP) : CASE_DAILY_CAP,
+    });
+    const caseSvc = cases;
+    core.attachCases(caseSvc);
+    interop.caseSubmit = (callerId, args) => caseSvc.submit(callerId, args);
+    // 對話草稿:使用者在對話視窗按「儲存這段記憶」,請節點整理成草稿(未確認),節點用 memory_draft 提交
+    drafts = new DraftService({
+      vaultDir: v.dir,
+      getSetting: k => s.getSetting(k),
+      setSetting: (k, val) => s.setSetting(k, val),
+      history: id => c.history(id),
+      agent: id => c.agentById(id),
+      project: async id => { const p = await c.memoryDeps()!.project(c.agentCwd(id) ?? ''); return { id: p.id, name: p.name }; },
+      request: (agentId, text) => c.enqueue(agentId, text, [], 'draft'),
+      rescan: () => { v.rescan(); },
+      write: writeMemory,
+      safeName,
+      backendLabel: b => BACKEND_LABEL[b],
+    });
+    const draftSvc = drafts;
+    interop.memoryDraft = (callerId, args) => draftSvc.submit(callerId, args);
     handleFileRequests(id => core?.agentCwd(id) ?? null);
     await core.init();
+    // 記憶庫統計(.nexus-stats.json,給管理 app 讀):啟動時寫一次,之後有變動最多每 5 秒寫一次
+    const statsFile = join(v.dir, STATS_FILE);
+    statsWriter = new StatsWriter(() => { const i = c.statsInput(); return i ? buildVaultStats(i) : null; }, data => (data ? atomicWriteJson(statsFile, data) : Promise.resolve(true)));
+    c.onStatsDirty = () => statsWriter?.request();
+    void statsWriter.flush();
     if (core.isEmpty() && process.env.NEXUS_NO_SEED !== '1') core.seedDemo(app.getPath('home'));
     registerIpc(apiMethods(core, 'desktop'));
     initRemote(core, store, dir, apiMethods(core, 'remote'));
@@ -330,11 +453,17 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       const names = core?.snapshot().agents.filter(a => !a.parentId).map(a => a.name) ?? [];
       return names.length ? `節點名稱:${names.join('、')}。` : '';
     }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
-    initSpeechEngines(store, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
+    // 播報用哪個角色的聲音:節點自己的角色;沒有角色的節點(以及不屬於節點的通知,例如每日預算)改用總管的角色
+    initSpeechEngines(store, id => {
+      const s = core?.snapshot();
+      if (!s) return null;
+      return s.agents.find(a => a.id === id)?.character || s.agents.find(a => a.id === s.chiefId)?.character || null;
+    });
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);
     createWindow();
+    if (pendingWake) { const w = pendingWake; pendingWake = null; win?.webContents.once('did-finish-load', () => { void handleWake(w); }); }
     win?.on('focus', () => win?.flashFrame(false));
     scheduleScreenshot();
   });
@@ -347,8 +476,11 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     e.preventDefault();
     quitting = true;
     stopRemote();
+    vault?.unwatch();
+    statsWriter?.stop();
     stopObserver();
     interopRef?.stop();
+    flushHeat();
     void Promise.allSettled([stopVoice(), core.shutdown()]).finally(() => { store?.close(); app.quit(); });
   });
 }

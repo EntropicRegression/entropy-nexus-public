@@ -365,6 +365,8 @@ button.mute { font-size: 12px; }
 .rv-path { display: flex; align-items: center; gap: 10px; }
 .rv-path span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rv-path button { flex: none; font-size: 11px; color: var(--bad); }
+.task-from { align-self: flex-start; padding: 0 6px; font-size: 11px; line-height: 17px; color: var(--accent); border: 1px solid rgba(63, 216, 230, 0.35); background: rgba(63, 216, 230, 0.06); }
+.task-from[data-from="autopilot"] { color: var(--dim); border-color: var(--line-soft); background: none; }
 .task-cost { font: 11px var(--mono); color: var(--dim); }
 .hc-spent { margin-top: 7px; font: 11px var(--mono); color: var(--text); }
 
@@ -639,6 +641,15 @@ button.mute { font-size: 12px; }
 .queue-item input { flex: 1; min-width: 0; padding: 3px 6px; font: 12.5px var(--font); color: var(--text); background: rgba(6, 10, 18, 0.85); border: 1px solid var(--line); }
 .task.t-queued { border-left-style: dashed; border-left-color: var(--dim); cursor: pointer; }
 .t-queued .task-status { color: var(--dim); }
+.task-verdict { display: flex; gap: 6px; margin-top: 2px; }
+.task-verdict-btn { padding: 0 7px; font: 11px var(--mono); color: var(--dim); border: 1px solid var(--line); cursor: pointer; }
+.task-verdict-btn:hover { color: var(--text); border-color: var(--dim); }
+.task-verdict-btn.v-accepted.on { color: var(--ok, #6fe08d); border-color: var(--ok, #6fe08d); }
+.task-verdict-btn.v-rejected.on { color: var(--bad); border-color: var(--bad); }
+.task-verdict { flex-wrap: wrap; align-items: center; }
+.task-case { font: 11px var(--mono); color: var(--accent, #7aa2f7); border: 1px solid var(--line); padding: 0 7px; }
+.task-case.pending { color: var(--dim); border-style: dashed; }
+.task-case-err { font-size: 11px; color: var(--bad); }
 .task-cancel { font-size: 11px; color: var(--dim); padding: 0 4px; cursor: pointer; }
 .task-cancel:hover { color: var(--bad); }
 
@@ -737,3 +748,24 @@ button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px
   .topbar .limits { gap: 7px; }
   .topbar .tb-long { display: none; }
 }
+
+.df-dispatch td { padding: 3px 6px 3px 0; vertical-align: top; }
+.df-dispatch .df-dtime { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+.df-dispatch .df-dwho { white-space: nowrap; }
+.df-dispatch .df-dtitle { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+.df-dispatch .df-dstatus { white-space: nowrap; font-size: 11px; }
+.df-dispatch .df-dstatus.s-running { color: var(--accent); }
+.df-dispatch .df-dstatus.s-failed, .df-dispatch .df-dstatus.s-timeout { color: var(--bad); }
+
+/* Antigravity 允許的工具(新增節點與節點設定裡,平常收合) */
+.agy-allow { margin: 0 16px 10px; padding: 6px 8px; border: 1px solid var(--line-soft); background: rgba(63, 216, 230, 0.03); }
+.dlg-main .agy-allow, .dialog .agy-allow { margin: 6px 0; }
+.agy-allow-head { padding: 0; font-size: 12px; color: var(--accent); }
+.agy-allow .note { margin: 6px 0; font-size: 11.5px; color: var(--dim); }
+.agy-allow code { font: 11px var(--mono); color: var(--text); }
+.agy-allow textarea { width: 100%; box-sizing: border-box; font: 12px var(--mono); color: var(--text); background: rgba(6, 10, 18, 0.85); border: 1px solid var(--line); border-radius: 2px; padding: 5px 8px; resize: vertical; user-select: text; }
+.agy-allow-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11.5px; }
+.agy-allow-actions button { padding: 2px 14px; font-size: 12px; }
+.agy-allow-ok { color: var(--ok, #6fe08d); }
+.agy-allow-err { color: var(--bad); }
+.dlg-draft { display: flex; align-items: center; gap: 8px; font-size: 12px; }

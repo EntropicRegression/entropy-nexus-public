@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { AdapterEvent, AgentInfo, AuditEntry, Backend, NexusEvent, QueuedPrompt, TaskInfo } from '../shared/types';
+import type { DispatchEntry, MemoryEntry } from '../shared/types';
 import type { QuotaBaseline, SpendRow } from '../shared/dashboard';
 
 function parseJson<T>(v: unknown): T | null {
@@ -77,7 +78,33 @@ export class Store {
       -- 總覽儀表:每個任務是哪一天交辦的、最後的狀態;任務面板清除已結束的任務後,今天的統計仍然算得出來
       CREATE TABLE IF NOT EXISTS task_daily (id TEXT PRIMARY KEY, date TEXT NOT NULL, agent_id TEXT NOT NULL, status TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS task_daily_date ON task_daily (date);
+      -- 分派紀錄:節點用 ask_node 交辦給其他節點的每一筆(保留 30 天)
+      CREATE TABLE IF NOT EXISTS dispatch_log (id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS dispatch_log_started ON dispatch_log (started_at);
+      -- 記憶庫索引:memory-vault 資料夾裡每個 .md 檔一筆;檔案才是正本,這張表隨時可以由掃描重建
+      CREATE TABLE IF NOT EXISTS memory_index (
+        path TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        node_id TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        mtime INTEGER NOT NULL,
+        size INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT '',
+        subtype TEXT NOT NULL DEFAULT '',
+        supersedes TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS memory_project ON memory_index (project_id);
     `);
+    // 記憶索引新增 subtype、supersedes 欄位:舊表補欄位後清空,下次掃描時整個重建(索引隨時可由檔案重建)
+    const memCols = this.db.prepare('PRAGMA table_info(memory_index)').all() as Array<{ name: string }>;
+    if (!memCols.some(c => c.name === 'subtype')) {
+      this.db.exec("ALTER TABLE memory_index ADD COLUMN subtype TEXT NOT NULL DEFAULT ''");
+      this.db.exec("ALTER TABLE memory_index ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''");
+      this.db.exec('DELETE FROM memory_index');
+    }
     // 舊版資料庫沒有 character 欄位
     const cols = this.db.prepare('PRAGMA table_info(agents)').all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === 'character')) this.db.exec("ALTER TABLE agents ADD COLUMN character TEXT NOT NULL DEFAULT ''");
@@ -86,6 +113,9 @@ export class Store {
     if (!cols.some(c => c.name === 'model')) this.db.exec("ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''");
     // 排隊中的指令(JSON 陣列)與佇列暫停原因;舊版資料庫沒有這兩欄,讀出時當作空佇列
     if (!cols.some(c => c.name === 'queue')) this.db.exec('ALTER TABLE agents ADD COLUMN queue TEXT');
+    // 任務面板「清除已結束」只是隱藏(cleared = 1),任務紀錄仍保留給節點統計使用
+    const taskCols = this.db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
+    if (!taskCols.some(c => c.name === 'cleared')) this.db.exec('ALTER TABLE tasks ADD COLUMN cleared INTEGER NOT NULL DEFAULT 0');
     if (!cols.some(c => c.name === 'queue_paused')) this.db.exec('ALTER TABLE agents ADD COLUMN queue_paused TEXT');
   }
 
@@ -222,12 +252,44 @@ export class Store {
   }
 
   loadTasks(limit: number): TaskInfo[] {
-    const rows = this.db.prepare('SELECT data FROM tasks ORDER BY started_at DESC LIMIT ?').all(limit) as Array<{ data: string }>;
+    const rows = this.db.prepare('SELECT data FROM tasks WHERE cleared = 0 ORDER BY started_at DESC LIMIT ?').all(limit) as Array<{ data: string }>;
     return rows.reverse().map(r => JSON.parse(r.data) as TaskInfo);
   }
 
+  /** 任務面板「清除已結束」:只隱藏,不刪除,節點統計還要用。 */
   deleteFinishedTasks(): void {
-    this.db.exec('DELETE FROM tasks WHERE ended_at IS NOT NULL');
+    this.db.exec('UPDATE tasks SET cleared = 1 WHERE ended_at IS NOT NULL');
+  }
+
+  /** 節點統計用:包含被清除的任務,只取 since 之後交辦的(最多 limit 筆,新的優先)。 */
+  loadTasksForStats(since: number, limit = 5000): TaskInfo[] {
+    const rows = this.db.prepare('SELECT data FROM tasks WHERE started_at >= ? ORDER BY started_at DESC LIMIT ?').all(since, limit) as Array<{ data: string }>;
+    return rows.map(r => JSON.parse(r.data) as TaskInfo);
+  }
+
+  /** 超過這個時間的任務紀錄直接刪掉(統計只看近期)。 */
+  pruneTasks(before: number): void {
+    this.db.prepare('DELETE FROM tasks WHERE started_at < ? AND ended_at IS NOT NULL').run(before);
+  }
+
+  memoryAll(): MemoryEntry[] {
+    const rows = this.db.prepare('SELECT * FROM memory_index ORDER BY path').all() as Array<Record<string, unknown>>;
+    return rows.map(r => ({
+      path: String(r.path), kind: String(r.kind) as MemoryEntry['kind'], scope: String(r.scope) as MemoryEntry['scope'], projectId: String(r.project_id), nodeId: String(r.node_id),
+      title: String(r.title), updatedAt: Number(r.updated_at), mtime: Number(r.mtime), size: Number(r.size), status: String(r.status),
+      subtype: String(r.subtype ?? ''), supersedes: String(r.supersedes ?? ''),
+    }));
+  }
+
+  memoryPut(e: MemoryEntry): void {
+    this.db.prepare(`INSERT INTO memory_index (path, kind, scope, project_id, node_id, title, updated_at, mtime, size, status, subtype, supersedes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(path) DO UPDATE SET kind = excluded.kind, scope = excluded.scope, project_id = excluded.project_id, node_id = excluded.node_id, title = excluded.title,
+        updated_at = excluded.updated_at, mtime = excluded.mtime, size = excluded.size, status = excluded.status, subtype = excluded.subtype, supersedes = excluded.supersedes`)
+      .run(e.path, e.kind, e.scope, e.projectId, e.nodeId, e.title, e.updatedAt, e.mtime, e.size, e.status, e.subtype, e.supersedes);
+  }
+
+  memoryDelete(path: string): void {
+    this.db.prepare('DELETE FROM memory_index WHERE path = ?').run(path);
   }
 
   /** 把一筆花費加進當天的累計(同一天、同一個後台、同一個節點一筆);節點名稱記最新的。 */
@@ -272,6 +334,20 @@ export class Store {
     this.db.prepare('DELETE FROM spend_daily WHERE date < ?').run(before);
     this.db.prepare('DELETE FROM quota_baseline WHERE date < ?').run(before);
     this.db.prepare('DELETE FROM task_daily WHERE date < ?').run(before);
+  }
+
+  saveDispatch(d: DispatchEntry): void {
+    this.db.prepare('INSERT INTO dispatch_log (id, started_at, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data').run(d.id, d.startedAt, JSON.stringify(d));
+  }
+
+  /** 最近的分派紀錄,新的在前。 */
+  loadDispatches(limit: number): DispatchEntry[] {
+    const rows = this.db.prepare('SELECT data FROM dispatch_log ORDER BY started_at DESC, id DESC LIMIT ?').all(limit) as Array<{ data: string }>;
+    return rows.map(r => parseJson<DispatchEntry>(r.data)).filter((d): d is DispatchEntry => !!d && typeof d.id === 'string');
+  }
+
+  pruneDispatches(before: number): void {
+    this.db.prepare('DELETE FROM dispatch_log WHERE started_at < ?').run(before);
   }
 
   getSetting(key: string): string | null {

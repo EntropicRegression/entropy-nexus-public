@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentInfo, TaskInfo, TaskStatus } from '../../shared/types';
+import type { AgentInfo, TaskInfo, TaskStatus, TaskVerdict } from '../../shared/types';
+import { sourceLabel } from '../../shared/collab';
 import { BACKEND_COLOR, hex } from './theme';
 
 const LABEL: Record<TaskStatus, string> = { running: '執行中', awaiting: '待授權', done: '完成', failed: '失敗', interrupted: '已中斷' };
@@ -12,12 +13,47 @@ function span(ms: number): string {
   return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** 驗收按鈕:再按一次同樣的結果就取消。事件處理放在 span 上,因為任務卡本身是按鈕(按鈕裡不能再放按鈕)。 */
+function VerdictButtons({ task, caseStatus }: { task: TaskInfo; caseStatus: string }) {
+  const set = (v: Exclude<TaskVerdict, null>) => void window.nexus.setTaskVerdict(task.id, task.verdict === v ? null : v).catch(() => {});
+  const btn = (v: Exclude<TaskVerdict, null>, text: string, title: string) => (
+    <span className={`task-verdict-btn v-${v} ${task.verdict === v ? 'on' : ''}`} role="button" tabIndex={0} aria-pressed={task.verdict === v} title={title}
+      onClick={e => { e.stopPropagation(); set(v); }}
+      onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); set(v); } }}>{text}</span>
+  );
+  return (
+    <span className="task-verdict need-op">
+      {btn('accepted', '✓ 驗收', task.verdict === 'accepted' ? '已驗收:結果符合你的要求(再按一次取消)' : '驗收:結果符合你的要求。「完成」只代表回合正常結束,驗收才代表結果對,兩者分開統計')}
+      {btn('rejected', '✗ 退回', task.verdict === 'rejected' ? '已退回:結果不符合你的要求(再按一次取消)。把評論送回節點修改時也會自動標成退回' : '退回:結果不符合你的要求,會計入這個節點的驗收率')}
+      <CaseMark task={task} status={caseStatus} />
+    </span>
+  );
+}
+
+/** 「記下這個解法」:請承辦節點把這個任務寫成判例;已經有判例或正在撰寫時改顯示標籤。 */
+function CaseMark({ task, status }: { task: TaskInfo; status: string }) {
+  const [msg, setMsg] = useState('');
+  if (task.caseId) return <span className="task-case" title="這個任務的解法已記成判例,在記憶庫管理 app 確認後總管才查得到">判例 {task.caseId}({status || '未確認'})</span>;
+  if (task.casePending) return <span className="task-case pending" title="已請承辦節點撰寫,它提交後這裡會出現案號">判例撰寫中…</span>;
+  if (task.source === 'case' || task.source === 'draft') return null;
+  const mark = () => { setMsg(''); void window.nexus.markCase(task.id).catch(e => setMsg(String((e as Error).message).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))); };
+  return (
+    <>
+      <span className="task-verdict-btn task-case-btn need-op" role="button" tabIndex={0} title="請承辦節點把這個任務的解法寫成判例(先標成未確認,之後在記憶庫管理 app 確認)"
+        onClick={e => { e.stopPropagation(); mark(); }}
+        onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); mark(); } }}>記下這個解法</span>
+      {msg && <span className="task-case-err">{msg}</span>}
+    </>
+  );
+}
+
 /**
  * 任務面板:每送出一句指令就自動多一筆任務,顯示內容、狀態、由誰執行與經過時間;
  * 後台有回報計畫步驟或呼叫子代理時一併列出。資料全部來自核心服務,這裡只負責呈現。
  */
-export function TaskPanel({ tasks, agents, selectedId, onSelect, onReview }: {
+export function TaskPanel({ tasks, chiefId, agents, selectedId, onSelect, onReview }: {
   tasks: TaskInfo[];
+  chiefId: string | null;
   agents: Record<string, AgentInfo>;
   selectedId: string | null;
   onSelect: (agentId: string) => void;
@@ -30,6 +66,18 @@ export function TaskPanel({ tasks, agents, selectedId, onSelect, onReview }: {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [active.length]);
+
+  // 任務卡上的判例標籤要顯示記憶庫裡目前的狀態(未確認、已確認…);讀不到就當作未確認
+  const caseKey = tasks.map(t => t.caseId ?? '').filter(Boolean).join(',');
+  const [caseStatus, setCaseStatus] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!caseKey) return;
+    void window.nexus.getMemoryVault().then(v => {
+      const m: Record<string, string> = {};
+      for (const e of v.entries) { const id = /^(\d{4}-\d{4,})/.exec(e.path.split('/').pop() ?? '')?.[1]; if (id && e.kind === 'case') m[id] = e.status; }
+      setCaseStatus(m);
+    }).catch(() => {});
+  }, [caseKey]);
 
   // 進行中的排最上面(待授權優先),其餘依結束時間由新到舊
   const sorted = useMemo(() => [...tasks].sort((a, b) => {
@@ -71,6 +119,7 @@ export function TaskPanel({ tasks, agents, selectedId, onSelect, onReview }: {
                 <span className="task-time">{span((t.endedAt ?? now) - t.startedAt)}</span>
               </span>
               <span className="task-title">{t.title}</span>
+              {sourceLabel(t, chiefId) && <span className="task-from" data-from={t.source}>{sourceLabel(t, chiefId)}</span>}
               <span className="task-who">
                 <i style={{ background: hex(BACKEND_COLOR[t.backend]) }} />
                 {t.agentName}{t.model ? ` · ${t.model}` : ''}{alive ? '' : '(已移除)'}
@@ -92,6 +141,7 @@ export function TaskPanel({ tasks, agents, selectedId, onSelect, onReview }: {
               )}
               {t.cost && t.cost.tokens > 0 && <span className="task-cost">花費 {t.cost.tokens >= 1000 ? `${(t.cost.tokens / 1000).toFixed(1)}k` : t.cost.tokens} tokens{t.cost.usd > 0 ? ` · 約 $${t.cost.usd.toFixed(t.cost.usd < 0.1 ? 3 : 2)}` : ''}</span>}
               {t.note && <span className="task-note">{t.note}</span>}
+              {t.endedAt !== null && <VerdictButtons task={t} caseStatus={caseStatus[t.caseId ?? ''] ?? ''} />}
             </button>
           );
         })}

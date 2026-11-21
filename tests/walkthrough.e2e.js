@@ -109,6 +109,8 @@
     window.__nexusSelect('走查一號');
     await wait(500);
     await click(btn('.dialog', '終止'));
+    await wait(300);
+    await click(btn('.dialog', '直接刪除'));
     await until('節點移除', async () => !(await snap()).agents.some(a => a.id === mine.id), 10000);
     check('點「終止」移除節點', true);
 

@@ -153,12 +153,14 @@
     getSnapshot: 'snapshot', getHistory: 'history', createAgent: 'create', removeAgent: 'remove', send: 'send', updateAgent: 'updateAgent',
     attachmentPreview: 'attachmentPreview', openTerminal: 'openTerminal', closeTerminal: 'closeTerminal', termAttach: 'termAttach', termWrite: 'termWrite', termResize: 'termResize',
     respondApproval: 'approval', interrupt: 'interrupt', enqueue: 'enqueue', cancelQueued: 'cancelQueued', editQueued: 'editQueued', resumeQueue: 'resumeQueue',
-    answerQuestion: 'answer', sleep: 'sleep', wake: 'wake', setAutopilot: 'autopilot', setMaxActive: 'maxActive', getAvatar: 'getAvatar', getPersona: 'getPersona', setPersona: 'setPersona',
-    clearFinishedTasks: 'clearTasks', getTaskChanges: 'taskChanges', listOldSessions: 'oldSessions', inspectDir: 'inspectDir', revertTask: 'revertTask', commitTask: 'commitTask',
+    answerQuestion: 'answer', sleep: 'sleep', wake: 'wake', setAutopilot: 'autopilot', setMaxActive: 'maxActive', getAvatar: 'getAvatar', getPersona: 'getPersona', setPersona: 'setPersona', getAgyAllow: 'getAgyAllow', setAgyAllow: 'setAgyAllow',
+    clearFinishedTasks: 'clearTasks', setTaskVerdict: 'taskVerdict', markCase: 'markCase', draftInfo: 'draftInfo', requestDraft: 'requestDraft', getTaskChanges: 'taskChanges', listOldSessions: 'oldSessions', inspectDir: 'inspectDir', revertTask: 'revertTask', commitTask: 'commitTask',
     sendReviewComments: 'sendReviewComments', requestReview: 'requestReview', worktreeStatus: 'worktreeStatus', mergeWorktree: 'mergeWorktree', openPullRequest: 'openPr',
     setQuotaStop: 'quotaStop', setDailyBudget: 'setDailyBudget', remoteStatus: 'remoteStatus', remoteSet: 'remoteSet', remoteNewCode: 'remoteNewCode', remoteRevoke: 'remoteRevoke', remotePairAccess: 'remotePairAccess', remoteSetDevice: 'remoteSetDevice', remoteAudit: 'remoteAudit',
     observeStatus: 'observeStatus', observeInstall: 'observeInstall', observeUninstall: 'observeUninstall', observeNewToken: 'observeNewToken', observeTakeover: 'observeTakeover',
     openOldSession: 'openOldSession', forkAgent: 'forkAgent', setChief: 'setChief',
+    // 長期記憶階段 4(只有完整角色呼叫得到,其他角色伺服器端會拒絕)
+    removeAgentArchived: 'removeArchived', findMemoryArchive: 'findMemoryArchive', attachMemoryArchive: 'attachMemoryArchive',
   };
   const api = Object.fromEntries(Object.entries(METHODS).map(([name, method]) => [name, (...args) => call(method, ...args)]));
   Object.assign(api, {

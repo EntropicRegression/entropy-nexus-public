@@ -45,3 +45,6 @@ temp/
 # Python
 __pycache__/
 *.pyc
+
+# 記憶寶庫管理 App 的互動原型:引用未公開的角色美術,只留在本機
+docs/memory-vault-app/互動原型.html

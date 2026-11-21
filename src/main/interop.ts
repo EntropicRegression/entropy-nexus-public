@@ -2,8 +2,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type Update } from '../shared/types';
+import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type DispatchEntry, type Update } from '../shared/types';
 import type { Core } from './core';
+import { memoryRead, memorySearch, memoryWrite } from './memory-tools';
+import { buildLinks, dispatchTitle } from '../shared/collab';
 
 /**
  * 節點互相呼叫:主控台開一個只聽本機迴路的 MCP 伺服器(Streamable HTTP,單純的 JSON 回應),
@@ -13,6 +15,8 @@ import type { Core } from './core';
  *   wait_reply  ask_node 等太久先返回時,用它繼續等
  *   start_meeting 召開會議:主控台主持,參與的節點輪流發言幾輪,最後把完整紀錄交回召開者
  *   meeting_say 會議中輪到主持人時,主持人用它發言(交給所有參與者,接著進行下一輪)或結束會議
+ *   case_submit 主控台請節點撰寫判例時,節點用它提交敘述的章節(只有任務自己的節點能提交;見 cases.ts)
+ *   memory_draft 使用者按「儲存這段記憶」時,被請求的節點用它提交對話草稿(狀態未確認;見 memory-draft.ts)
  *
  * 設計:
  * - 每個節點有自己的網址(路徑裡帶一組亂數權杖),伺服器由權杖得知是誰在呼叫;只聽 127.0.0.1。
@@ -35,7 +39,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_read', 'memory_write', 'case_submit', 'memory_draft'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -66,6 +70,12 @@ interface Pending {
   status: 'running' | 'done' | 'failed';
   error: string;
   waiters: Set<() => void>;
+  /** 會議裡某位參與者的發言回合:屬於哪場會議(不記進分派紀錄,連線畫在會議上)。 */
+  meetingId?: string;
+  /** 指令的簡短標題(分派紀錄與連線標籤)。 */
+  title?: string;
+  /** 這筆呼叫在被呼叫節點上產生的任務 id。 */
+  taskId?: string;
 }
 
 /** 一場會議:由主控台主持,參與者輪流發言。 */
@@ -159,6 +169,92 @@ const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'case_submit',
+    description: '只在主控台請你「撰寫判例」時使用:把你剛完成的任務的解法,依固定格式提交成一份判例(寫進記憶庫,狀態先是「未確認」)。task_id 是主控台請求裡給的任務編號;只有承辦該任務的節點能提交,一個任務只能提交一次。耗時、失敗次數、改過的檔案等客觀欄位由主控台自動填,你只寫敘述的部分。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '任務編號(主控台請求裡給的)。' },
+        // 參數名稱只能用英數字與 _ . -(Anthropic API 的規定);寫進判例檔時對應回中文章節,見 cases.ts 的 CASE_ARGS
+        title: { type: 'string', description: '案由:一句話描述問題。' },
+        keywords: { type: 'array', items: { type: 'string' }, description: '關鍵字:3 到 6 個。' },
+        facts: { type: 'string', description: '事實經過:遇到什麼狀況、錯誤訊息或症狀。' },
+        issue: { type: 'string', description: '爭點:真正要解決的問題是什麼。' },
+        process: { type: 'string', description: '處理經過:試過哪些方法,哪些沒用、為什麼(走過的彎路)。' },
+        conclusion: { type: 'string', description: '結論:最後有效的解法:改了哪些檔案、哪些設定、哪些指令。' },
+        reasoning: { type: 'string', description: '理由:為什麼這樣能解決(根本原因)。' },
+        scope: { type: 'string', description: '適用範圍:適用條件,什麼情況下不適用。' },
+        precedents: { type: 'string', description: '參照先例:相關的既有案號,用 [[案號]] 表示;沒有就寫「無」。' },
+        summary: { type: 'string', description: '摘要:結論的一句話(會放在判例檔第一行,搜尋時最先看到);不填就取結論的第一句。' },
+        review: { type: 'string', description: '回顧:2 到 3 句,事後回頭看這次處理有什麼值得記住的(要根據實際紀錄,不要美化);可省略。' },
+      },
+      required: ['task_id', 'title', 'keywords', 'facts', 'conclusion'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_search',
+    description: '搜尋主控台的長期記憶:節點側寫(各節點的特長與解決問題的流程)、使用者已確認的判例(以前遇過的問題與解法)、專案知識、使用者偏好。開始一件不熟的工作、要決定交給哪個節點、或想知道「這個專案有什麼要注意的」「使用者偏好什麼」之前先查。範圍是全域加上你目前的專案(可用 project 指定別的專案);你自己的側寫與判例排在最前面。回傳每筆的路徑、種類、標題、狀態、更新日期與一小段摘要(只是摘要,要看全文請用 memory_read);已被新記憶取代的、使用者還沒確認的草稿都不會出現;標「可能過時」的(很久沒更新,或專案之後已改了很多)請先對照現況再採用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '關鍵字,空白分隔(中文直接寫詞即可,不分大小寫)。' },
+        kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好。不填就全部查。' },
+        node: { type: 'string', description: '只看和這個節點(名稱或 id)有關的記憶。' },
+        project: { type: 'string', description: '指定專案(名稱或路徑);不填就是你目前的專案。' },
+        subtype: { type: 'string', enum: ['decision', 'bookmark'], description: '只查專案知識的子類:decision 決策、bookmark 書籤(未完成的書籤排在前面)。不填就不限。' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_read',
+    description: '讀一則長期記憶的全文。memory_search 只給摘要;搜尋到相關的記憶、要真的採用它之前,用這個讀完整內容(path 用搜尋結果裡的路徑)。預設不含檔案最後的「回顧」段(事後的檢討與觀察,通常不必讀);想知道這則記憶後來的結果或教訓時再把 include_review 設為 true。可見範圍和 memory_search 相同(全域加你目前的專案,草稿與未確認的判例讀不到)。讀取會被記為一次「召回」(常被讀的記憶使用者在管理畫面看得到),只是瀏覽不必每則都讀。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '記憶的路徑,用 memory_search 結果裡的那個,例如 knowledge/專案名/標題.md。' },
+        include_review: { type: 'boolean', description: '是否包含「## 回顧」段,預設 false。' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_draft',
+    description: '只在主控台請你「整理記憶草稿」時使用(使用者按了「儲存這段記憶」):把你們剛才那段對話裡值得長期保留的內容,整理成一份草稿提交。寫進記憶庫但狀態是「未確認」,使用者確認前不會被任何節點查到。只有被請求的節點能提交,一次請求只能提交一份。誰說的要寫清楚(使用者要求…、我建議…),只寫對話裡實際出現的事,不要寫金鑰或密碼。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['preference', 'knowledge'], description: 'preference 使用者偏好(跨專案適用)、knowledge 專案知識(這個專案的決策、慣例、踩過的坑、書籤)。' },
+        title: { type: 'string', description: '一句話標題。' },
+        content: { type: 'string', description: '內容(Markdown),第一行寫最重要的一句話。' },
+        subtype: { type: 'string', enum: ['decision', 'bookmark'], description: 'knowledge 用,可省略:decision 決策、bookmark 書籤(還沒做完的事)。' },
+        supersedes: { type: 'string', description: '可省略:這則取代的舊記憶檔路徑。' },
+      },
+      required: ['kind', 'title', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'memory_write',
+    description: '寫入長期記憶,只有總管節點可以用(其他節點會被拒絕)。kind 為 node:更新某個節點的特長,title 填節點名稱、content 寫它擅長什麼(簡短,第一行最重要,會顯示在總管守則裡);knowledge:寫一則專案知識(本專案踩過的坑、慣例、設定),title 是標題,同標題會取代內容;preference:寫一則使用者偏好(跨專案適用)。只寫日後真的用得到、講得清楚的事;不要寫金鑰、密碼或權杖(看起來像的會被自動遮罩)。專案知識每個專案有數量上限,超過時請整理合併。判例不能用這個工具寫,請用 case_submit。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['node', 'knowledge', 'preference'], description: 'node 節點特長、knowledge 專案知識、preference 使用者偏好。' },
+        title: { type: 'string', description: 'node 時是節點名稱;其餘是這則記憶的標題。' },
+        content: { type: 'string', description: '內容(Markdown)。' },
+        project: { type: 'string', description: 'knowledge 用:指定專案名稱;不填就是你目前的專案。' },
+        subtype: { type: 'string', enum: ['decision', 'bookmark'], description: 'knowledge 用,可省略:decision 決策(做了什麼決定、為什麼)、bookmark 書籤(還沒做完、之後要回來處理的事)。' },
+        supersedes: { type: 'string', description: '可省略:這則取代的舊記憶檔路徑(memory_search 查到的路徑)。' },
+      },
+      required: ['kind', 'title', 'content'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export class Interop {
@@ -171,6 +267,10 @@ export class Interop {
   private meetings = new Map<string, Meeting>();
   private enabled = process.env.NEXUS_INTEROP !== '0';
   error = '';
+  /** 判例提交(case_submit);由 index.ts 接上判例服務。callerId 是權杖對應的節點,判例服務據此檢查是不是任務自己的節點。 */
+  caseSubmit: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
+  /** 記憶草稿提交(memory_draft);由 index.ts 接上草稿服務,只有被請求的節點能提交。 */
+  memoryDraft: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, 'interop');
@@ -261,18 +361,37 @@ export class Interop {
     }
   }
 
-  private finish(p: Pending, status: 'done' | 'failed', error: string): void {
+  private finish(p: Pending, status: 'done' | 'failed' | 'timeout', error: string): void {
     if (p.status !== 'running') return;
-    p.status = status;
+    p.status = status === 'timeout' ? 'failed' : status;
     p.error = error;
+    if (!p.meetingId) this.core?.recordDispatch(this.dispatchOf(p, status));
+    this.publish();
     for (const w of p.waiters) w();
     p.waiters.clear();
+  }
+
+  /** 這筆呼叫在分派紀錄裡的樣子。 */
+  private dispatchOf(p: Pending, status: 'running' | 'done' | 'failed' | 'timeout'): DispatchEntry {
+    const name = (id: string, fallback: string) => this.agents().find(a => a.id === id)?.name ?? fallback;
+    return {
+      id: p.id, startedAt: p.createdAt, endedAt: status === 'running' ? null : Date.now(), fromId: p.callerId, fromName: name(p.callerId, '(已移除)'),
+      toId: p.targetId, toName: p.targetName, title: p.title ?? '', status, ...(p.taskId ? { taskId: p.taskId } : {}),
+    };
+  }
+
+  /** 把進行中的呼叫與會議整理成連線,推送給畫面(內容沒變時核心服務不會重複推送)。 */
+  private publish(): void {
+    this.core?.setLinks(buildLinks(
+      [...this.pending.values()].map(p => ({ id: p.id, callerId: p.callerId, targetId: p.targetId, status: p.status, createdAt: p.createdAt, meetingId: p.meetingId, label: p.title })),
+      [...this.meetings.values()].map(m => ({ id: m.id, callerId: m.callerId, participantIds: m.participants.map(x => x.id), status: m.status, createdAt: m.createdAt, topic: m.topic, currentTargetId: m.current?.status === 'running' ? m.current.targetId : null })),
+    ));
   }
 
   private prune(): void {
     const now = Date.now();
     for (const [id, p] of this.pending) {
-      if (p.status === 'running' && now - p.createdAt > REQUEST_TTL) this.finish(p, 'failed', '等候超過 30 分鐘');
+      if (p.status === 'running' && now - p.createdAt > REQUEST_TTL) this.finish(p, 'timeout', '等候超過 30 分鐘');
       if (p.status !== 'running' && now - p.createdAt > REQUEST_TTL + 10 * 60 * 1000) this.pending.delete(id);
     }
     for (const [id, m] of this.meetings) if (m.status !== 'running' && now - m.createdAt > 3 * 60 * 60 * 1000) this.meetings.delete(id);
@@ -332,6 +451,23 @@ export class Interop {
           const end = args.end === true || args.end === 'true';
           if (!rid || (!say && !end)) throw new Error(`meeting_say 需要 request_id(start_meeting 回傳的 m 開頭識別碼),以及 text(你的發言)或 end: true(結束會議)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。`);
           return text(await this.meetingSay(callerId, rid, say, end));
+        }
+        if (params?.name === 'case_submit') {
+          if (!this.caseSubmit) throw new Error('判例功能沒有啟用。');
+          return text(await this.caseSubmit(callerId, args));
+        }
+        if (params?.name === 'memory_draft') {
+          if (!this.memoryDraft) throw new Error('記憶草稿功能沒有啟用。');
+          return text(await this.memoryDraft(callerId, args));
+        }
+        if (params?.name === 'memory_search' || params?.name === 'memory_read' || params?.name === 'memory_write') {
+          const deps = this.core?.memoryDeps();
+          const caller = this.core?.memoryCaller(callerId);
+          if (!deps || !caller) throw new Error('記憶庫現在不能用。');
+          const s = (...keys: string[]) => pick(...keys);
+          if (params.name === 'memory_search') return text(await memorySearch(deps, caller, { query: s('query', 'q', 'keywords', 'text'), kind: s('kind', 'type'), node: s('node', 'node_name'), project: s('project'), subtype: s('subtype', 'sub_type') }));
+          if (params.name === 'memory_read') return text(await memoryRead(deps, caller, { path: s('path', 'file', 'memory_path'), include_review: args.include_review === true || args.include_review === 'true' }));
+          return text(await memoryWrite(deps, caller, { kind: s('kind', 'type'), title: s('title', 'name'), content: s('content', 'text', 'body'), project: s('project'), subtype: s('subtype'), supersedes: s('supersedes') }));
         }
         return text(`沒有這個工具:${String(params?.name)}`, true);
       } catch (err) {
@@ -404,14 +540,20 @@ export class Interop {
       if (!again) throw new Error(`節點「${target.name}」已經不在了。`);
       this.checkReady(again);
     }
-    const p: Pending = { id: randomUUID().slice(0, 8), callerId, targetId: target.id, targetName: target.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set() };
+    const p: Pending = { id: randomUUID().slice(0, 8), callerId, targetId: target.id, targetName: target.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set(), title: dispatchTitle(prompt) };
     this.pending.set(p.id, p);
+    core.recordDispatch(this.dispatchOf(p, 'running'));
+    this.publish();
     // 讓被呼叫的 agent 自己也知道是誰找它、答覆會交給誰(這一行會送進 CLI,對話裡也看得到)
     const header = `(主控台:這則指令來自節點「${caller.name}」(${BACKEND_LABEL[caller.backend]}${caller.model ? ` · ${caller.model}` : ''}),不是使用者直接下的;你這個回合的答覆會交還給它。)`;
     try {
       await core.send(target.id, `${header}
 
-${prompt}`, [], 'user', 'interop');
+${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
+      // 記下這次交辦產生的任務,分派紀錄才查得到花費
+      const taskId = core.currentTaskId(target.id);
+      if (taskId && p.status === 'running') { p.taskId = taskId; core.recordDispatch(this.dispatchOf(p, 'running')); }
+      else if (taskId) p.taskId = taskId;
     } catch (err) {
       this.finish(p, 'failed', String((err as Error)?.message ?? err));
     }
@@ -473,6 +615,7 @@ ${prompt}`, [], 'user', 'interop');
     }
     const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0 };
     this.meetings.set(m.id, m);
+    this.publish();
     core.note(callerId, `會議開始(${m.id}):參與者 ${who};最多 ${total} 輪${hostTurns ? ',每輪之間輪到主持人發言' : ''}。中斷這個節點就會散會。`);
     void this.runMeeting(m, `${caller.name}(${BACKEND_LABEL[caller.backend]}${caller.model ? ` · ${caller.model}` : ''})`).catch(err => this.endMeeting(m, 'failed', String((err as Error)?.message ?? err)));
     return this.awaitMeeting(m);
@@ -503,10 +646,11 @@ ${prompt}`, [], 'user', 'interop');
           `【請你發言】針對主題與其他人的發言提出你的看法:同意什麼、不同意什麼、有什麼補充或疑問。請直接講重點,不要客套,也不要重複別人說過的內容。這是討論,除非主題明確要求,否則不要修改檔案。如果你認為已經沒有需要補充的,請在發言最後單獨一行寫「${NOTHING_TO_ADD}」。`,
         ].filter(Boolean).join('\n\n');
         seen.set(`${part.id}:topic`, 1);
-        const p: Pending = { id: randomUUID().slice(0, 8), callerId: m.callerId, targetId: part.id, targetName: part.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set() };
+        const p: Pending = { id: randomUUID().slice(0, 8), callerId: m.callerId, targetId: part.id, targetName: part.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set(), meetingId: m.id };
         this.pending.set(p.id, p);
         m.current = p;
-        try { await core.send(part.id, prompt, [], 'user', 'interop'); } catch (err) { this.finish(p, 'failed', String((err as Error)?.message ?? err)); }
+        this.publish();
+        try { await core.send(part.id, prompt, [], 'user', 'interop', { id: m.callerId, name: m.callerName, meeting: true }); } catch (err) { this.finish(p, 'failed', String((err as Error)?.message ?? err)); }
         // 等這位講完;太久就中斷它,換下一位
         if (p.status === 'running') await new Promise<void>(resolve => {
           const done = () => { clearTimeout(timer); p.waiters.delete(done); resolve(); };
@@ -514,6 +658,7 @@ ${prompt}`, [], 'user', 'interop');
           p.waiters.add(done);
         });
         m.current = null;
+        this.publish();
         if (m.status !== 'running') return;
         const said = p.parts.join('\n\n').trim();
         if (p.status === 'failed') { this.record(m, 0, part.name, `(第 ${round} 輪沒有完成發言:${p.error})${said ? `\n${said.slice(-MEETING_STATEMENT_MAX)}` : ''}`); continue; }
@@ -593,6 +738,9 @@ ${prompt}`, [], 'user', 'interop');
     if (cur && cur.status === 'running') { this.core?.interrupt(cur.targetId); this.finish(cur, 'failed', '會議中止'); }
     m.current = null;
     m.hostTurn?.resolve(true);
+    // 有人發過言才算一場會議,記下同席的節點(給記憶庫統計與判例的參與節點用)
+    if (m.transcript.some(t => t.round > 0)) this.core?.recordMeeting({ id: m.id, startedAt: m.createdAt, endedAt: Date.now(), ids: [m.callerId, ...m.participants.map(x => x.id)] });
+    this.publish();
     this.core?.note(m.callerId, status === 'done' ? `會議結束(${m.id}),共 ${m.transcript.filter(t => t.round > 0).length} 則發言。` : `會議中止(${m.id}):${error}`);
     for (const w of m.waiters) w();
     m.waiters.clear();

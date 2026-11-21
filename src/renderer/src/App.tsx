@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
+  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type DispatchEntry, type LinkInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
 import type { DashboardData } from '../../shared/dashboard';
 import { Dashboard, DashboardFull } from './Dashboard';
@@ -12,6 +12,7 @@ import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
+import { AgyAllowEditor } from './AgyAllow';
 import { BoardScene, type BoardMore } from './board';
 import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
 import { BACKEND_COLOR, ZONE_TITLE, hex } from './theme';
@@ -33,6 +34,8 @@ export function App() {
   /** 新增節點面板是不是從總管區塊的「+」打開的(新增後指定為總管,也可以直接指定現有節點)。 */
   const [addingChief, setAddingChief] = useState(false);
   const [chiefId, setChiefId] = useState<string | null>(null);
+  const [links, setLinks] = useState<LinkInfo[]>([]);
+  const [dispatches, setDispatches] = useState<DispatchEntry[]>([]);
   const [maxActive, setMaxActive] = useState(4);
   const [quotaStop, setQuotaStop] = useState(0);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -88,6 +91,8 @@ export function App() {
       setMaxActive(s.maxActive);
       setQuotaStop(s.quotaStop);
       setChiefId(s.chiefId ?? null);
+      setLinks(s.links ?? []);
+      setDispatches(s.dispatches ?? []);
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
@@ -117,6 +122,8 @@ export function App() {
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.dashboard) setDash(u.dashboard);
+      if (u.links) setLinks(u.links);
+      if (u.dispatches) setDispatches(u.dispatches);
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
       if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
@@ -245,7 +252,7 @@ ${c.note}` : ''}`}>
         </div>
       </header>
 
-      {showDash && <DashboardFull agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
+      {showDash && <DashboardFull dispatches={dispatches} tasks={tasks} agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
       {showView && (
@@ -300,7 +307,7 @@ ${c.note}` : ''}`}>
         </div>
       )}
       <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} links={links} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
         {hover && agents[hover.id] && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} />}
         {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
@@ -310,7 +317,7 @@ ${c.note}` : ''}`}>
       {/* 右側欄:最上面是常駐的總覽儀表(原本節點清單的位置),下面是任務面板與新增節點 */}
       <aside className="sidebar">
         <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => setShowDash(v => !v)} onSelect={setSelectedId} />
-        {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
+        {!adding && <TaskPanel tasks={tasks} chiefId={chiefId} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>
@@ -353,7 +360,7 @@ function describe(e: NexusEvent): string {
 }
 
 /** PixiJS 主面板的 React 外殼。 */
-function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
+function Board({ agents, selectedId, avatars, chiefId, links, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; links: LinkInfo[]; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
   const addChiefRef = useRef(onAddChief);
@@ -361,6 +368,8 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<BoardScene | null>(null);
   const latest = useRef({ agents, selectedId, avatars, chiefId });
+  const latestLinks = useRef(links);
+  latestLinks.current = links;
   latest.current = { agents, selectedId, avatars, chiefId };
   // 區塊排不下時「另外 N 個」的清單:點面板上的標記打開,列出被收起來的節點
   const [more, setMore] = useState<BoardMore | null>(null);
@@ -383,6 +392,7 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
       if (dead) { s.destroy(); return; }
       scene.current = s;
       s.setAvatars(latest.current.avatars);
+      s.setLinks(latestLinks.current);
       s.sync(latest.current.agents, latest.current.selectedId, latest.current.chiefId);
     });
     return () => { dead = true; scene.current?.destroy(); scene.current = null; };
@@ -390,6 +400,7 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
 
   useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
+  useEffect(() => { scene.current?.setLinks(links); }, [links]);
 
   // 清單放在標記的上方或下方(看哪邊空間大),不超出面板
   const box = host.current?.parentElement;
@@ -428,7 +439,9 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
 }
 
 function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; agents: AgentInfo[]; chief?: boolean; onDone: () => void }) {
-  const firstUsable = caps.find(c => c.available)?.backend ?? 'claude';
+  // 總管的預設建議(tests/chief-real 的實測:Claude Code 的 sonnet 最快、回覆最精簡):有就預選,沒有就照一般節點
+  const chiefClaude = chief ? caps.find(c => c.backend === 'claude' && c.available) : undefined;
+  const firstUsable = chiefClaude?.backend ?? caps.find(c => c.available)?.backend ?? 'claude';
   const [name, setName] = useState('');
   const [character, setCharacter] = useState('');
   const [characters, setCharacters] = useState<string[]>([]);
@@ -437,7 +450,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
   const [backend, setBackend] = useState<Backend>(firstUsable);
   const [cwd, setCwd] = useState('');
   const [mode, setMode] = useState<PermissionMode>('ask');
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(chiefClaude?.models.includes('sonnet') ? 'sonnet' : '');
   const [isolate, setIsolate] = useState(false);
   const [dir, setDir] = useState<DirInfo | null>(null);
   // 資料夾改變後查一下它是不是 git 版本庫,決定能不能用獨立工作區
@@ -448,13 +461,25 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
     return () => { alive = false; clearTimeout(t); };
   }, [cwd]);
   const [error, setError] = useState('');
+  // 名稱或角色對得上封存的記憶時問要不要接回(刪除節點時歸檔的工作履歷)
+  const [archive, setArchive] = useState<{ path: string; date: string; name: string } | null>(null);
+  const [attach, setAttach] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    const names = [name.trim(), character.trim()].filter(Boolean);
+    if (!names.length) { setArchive(null); return; }
+    const t = setTimeout(() => { void window.nexus.findMemoryArchive(names).then(r => { if (alive) setArchive(r); }).catch(() => { if (alive) setArchive(null); }); }, 250);
+    return () => { alive = false; clearTimeout(t); };
+  }, [name, character]);
   const cap = caps.find(c => c.backend === backend);
   // 同一個資料夾已有節點時提醒:它們會互相覆寫,變更檢視也分不出是誰改的
   const norm = (p: string) => p.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
   const sameDir = cwd.trim() ? agents.filter(a => !a.parentId && norm(a.cwd) === norm(cwd)) : [];
   const create = async () => {
     try {
-      await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode, ...(chief ? { chief: true } : {}) });
+      const made = await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode, ...(chief ? { chief: true } : {}) });
+      // 接回封存的記憶失敗不影響節點建立
+      if (archive && attach) await window.nexus.attachMemoryArchive(made.id, archive.path).catch(() => null);
       onDone();
     } catch (e) {
       setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
@@ -471,6 +496,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
       <div className="addform-body">
       {chief && <>
         <p className="note">總管負責接收你交代的事(可以在它的對話視窗用語音說),判斷交給哪個節點,再用節點互相呼叫分派出去。建議用「每次詢問」模式:每次分派前會先問你。</p>
+        <p className="note">預設建議:Claude Code 搭配 sonnet 模型。實測(tests/chief-real)它是反應最快、回覆最精簡的組合,適合只負責判斷與分派的總管;已為你預選,可以自行更換。</p>
         {candidates.length > 0 && <div className="chief-pick">
           <span className="note">直接指定現有節點:</span>
           {candidates.map(a => <button key={a.id} onClick={() => void pickChief(a.id)} title={`${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''}`}>{a.name}</button>)}
@@ -489,6 +515,10 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
         {characters.length === 0 && <span className="note">還沒有自訂立繪。按「資料夾」看放置方式。</span>}
       </label>
       {character && <PersonaEditor character={character} />}
+      {archive && <label className="check addform-archive" title="封存是刪除節點時存進記憶庫的工作履歷">
+        <span><input type="checkbox" checked={attach} onChange={e => setAttach(e.target.checked)} /> 找到 {archive.name} 的封存記憶({archive.date}),要接回嗎?</span>
+        <span className="note">接回後,封存裡的特長與解決問題的流程會複製進新節點的側寫。</span>
+      </label>}
       <label>後台 CLI
         <select value={backend} onChange={e => { setBackend(e.target.value as Backend); setModel(''); }}>
           {caps.map(c => (
@@ -499,6 +529,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
         </select>
         {cap && <span className="note">{cap.note}</span>}
       </label>
+      {backend === 'antigravity' && <AgyAllowEditor />}
       <label>模型
         <input list="model-options" value={model} onChange={e => setModel(e.target.value)} placeholder="預設(使用 CLI 的設定)" />
         <datalist id="model-options">{(cap?.models ?? []).map(m => <option key={m} value={m} />)}</datalist>
@@ -524,6 +555,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
               <option value="auto">自動執行</option>
             </select>
             {mode === 'auto' && <span className="note warn">修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。節點上會標示 AUTO。</span>}
+            {chief && mode === 'auto' && <span className="note warn">總管會在不問你的情況下,把工作交給其他節點執行。建議維持「每次詢問」,分派前先由你確認。</span>}
           </label>
         )}
       </div>

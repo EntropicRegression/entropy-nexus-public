@@ -500,7 +500,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const action = name === 'maxActive' || name === 'quotaStop' ? 'settings' : name;
     const input: Record<string, any> = name === 'send' || name === 'enqueue' ? { text: args[1] } : name === 'editQueued' ? { text: args[2] } : name === 'approval' ? { decision: args[2] }
       : name === 'answer' ? { answers: args[2] } : name === 'create' && args[0] && typeof args[0] === 'object' ? args[0] : name === 'updateAgent' && args[1] && typeof args[1] === 'object' ? args[1]
-      : name === 'setPersona' ? { character: args[0] } : name === 'maxActive' ? { maxActive: args[0] } : name === 'quotaStop' ? { quotaStop: args[0] } : name === 'setDailyBudget' ? { backend: args[0], percent: args[1] } : name === 'commitTask' ? { message: args[1] } : {};
+      : name === 'setPersona' ? { character: args[0] } : name === 'maxActive' ? { maxActive: args[0] } : name === 'quotaStop' ? { quotaStop: args[0] } : name === 'setDailyBudget' ? { backend: args[0], percent: args[1] } : name === 'commitTask' ? { message: args[1] } : name === 'taskVerdict' ? { verdict: args[1] } : {};
     if (!allow(rule, action, rule.scope ? first : null, input)) return;
     const target = targetOf(first);
     if (name === 'snapshot') { json(res, 200, { result: { ...filterSnapshot(await fn() as any, access, rootOf), access } }); return; }

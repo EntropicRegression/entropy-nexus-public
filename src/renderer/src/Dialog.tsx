@@ -5,8 +5,10 @@ import { PersonaEditor } from './PersonaEditor';
 import { Portrait } from './Portrait';
 import { TerminalView } from './Terminal';
 import { QuestionPanel } from './Question';
+import { AgyAllowEditor } from './AgyAllow';
 import { ForkPanel } from './Fork';
 import { MicButton } from './Voice';
+import { accumulatedChars, shouldOfferDraft } from '../../shared/memory-draft';
 
 type Item =
   | { kind: 'user'; seq: number; text: string }
@@ -110,6 +112,16 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   }, [a.id]);
 
   const items = useMemo(() => toItems(events), [events]);
+  // 儲存這段記憶:上次儲存之後累積的對話夠多才出現按鈕;按下後記下涵蓋到哪一筆事件,按鈕消失到下一個門檻(進度存在主控台,換視窗不會重來)
+  const [draft, setDraft] = useState<{ lastSeq: number; threshold: number } | null>(null);
+  const [draftMsg, setDraftMsg] = useState('');
+  useEffect(() => { setDraft(null); setDraftMsg(''); if (!isSub) void window.nexus.draftInfo(a.id).then(setDraft, () => setDraft(null)); }, [a.id]);
+  const draftChars = useMemo(() => (draft ? accumulatedChars(events, draft.lastSeq) : 0), [events, draft]);
+  const offerDraft = !isSub && !a.terminal && draft !== null && shouldOfferDraft(draftChars, draft.threshold);
+  const requestDraft = () => {
+    setDraftMsg('');
+    window.nexus.requestDraft(a.id).then(msg => { setDraftMsg(msg); void window.nexus.draftInfo(a.id).then(setDraft); }, e => setDraftMsg(clean(e)));
+  };
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
@@ -221,6 +233,15 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   };
   // 分支對話:需要後台支援,而且節點已經有 session
   const [forking, setForking] = useState(false);
+  // 終止最上層節點:先確認要不要請它寫工作總結再歸檔進記憶庫(ask = 等使用者選,busy = 正在寫總結)
+  const [rm, setRm] = useState<null | 'ask' | 'busy'>(null);
+  const [rmNote, setRmNote] = useState('');
+  const removeWith = async (mode: 'summary' | 'stats') => {
+    setRm('busy');
+    setRmNote(mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘…' : '正在歸檔統計…');
+    try { await window.nexus.removeAgentArchived(a.id, mode); }
+    catch (e) { setRmNote(`終止失敗:${String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`); setRm('ask'); }
+  };
   const forkWhy = !cap?.fork ? `${BACKEND_LABEL[a.backend]} 不支援分支對話。` : !a.sessionId ? '這個節點還沒有 session(先對話一次),沒有可以分支的內容。' : '';
   const lastAgentSeq = items.findLast(i => i.kind === 'agent')?.seq ?? -1;
   const p = a.pendingApproval;
@@ -254,10 +275,21 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             : <button className="need-op" onClick={() => void window.nexus.sleep(a.id)} disabled={busy} title="結束行程並保留 session">休眠</button>}
           {isSub
             ? <button className="need-full" onClick={() => void window.nexus.removeAgent(a.id)} title="只從面板移除,不會停止子代理">從面板移除</button>
-            : <button className="danger need-full" onClick={() => void window.nexus.removeAgent(a.id)}>終止</button>}
+            : <button className="danger need-full" onClick={() => setRm(r => r ?? 'ask')} disabled={rm === 'busy'}>終止</button>}
           <button className={`ghost dlg-full ${full ? 'on' : ''}`} onClick={toggleFull} title={full ? '還原成下半部(Alt+F)' : '向上展開到佔滿面板(Alt+F)'} aria-label={full ? '還原對話視窗' : '展開對話視窗'}>{full ? '▼ 還原' : '▲ 展開'}</button>
           <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
         </header>
+
+        {rm && !isSub && (
+          <div className="dlg-settings dlg-remove need-full">
+            <span className="muted">終止「{a.name}」前,要先請它寫一份工作總結,和任務統計一起封存進記憶庫嗎?之後建立同名節點時可以接回。</span>
+            <span className="spacer" />
+            {rmNote && <span className="muted">{rmNote}</span>}
+            <button className="primary" disabled={rm === 'busy'} onClick={() => void removeWith('summary')}>先請它寫工作總結再刪除</button>
+            <button className="danger" disabled={rm === 'busy'} onClick={() => void removeWith('stats')}>直接刪除(只存統計)</button>
+            <button className="ghost" disabled={rm === 'busy'} onClick={() => { setRm(null); setRmNote(''); }}>取消</button>
+          </div>
+        )}
 
         {editing && (
           <div className="dlg-settings">
@@ -283,6 +315,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             warn={busy ? '節點正在執行:分支點是目前已寫入紀錄的對話,進行中的這一回合可能不完整或沒有包含在內。' : undefined}
             onCancel={() => setForking(false)} onDone={n => { setForking(false); onOpen?.(n.id); }} />
         )}
+        {editing && a.backend === 'antigravity' && <AgyAllowEditor />}
         {editing && form.character && <PersonaEditor character={form.character} />}
         {note && <div className="line err">{note}</div>}
 
@@ -381,6 +414,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
                 </span>
               );
             })}
+          </div>
+        )}
+        {(offerDraft || draftMsg) && (
+          <div className="dlg-draft">
+            {offerDraft && <button className="ghost need-op" disabled={offline} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
+            {draftMsg && <span className="muted">{draftMsg}</span>}
           </div>
         )}
         <div className={`dlg-input ${tall ? 'tall' : ''}`}>

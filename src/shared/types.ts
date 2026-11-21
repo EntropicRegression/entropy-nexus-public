@@ -104,10 +104,13 @@ export interface AgentInfo {
  * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
  * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
  */
-export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive' | 'case' | 'draft';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
-export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
+export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource; from?: TaskFrom }
+
+/** 節點互相呼叫(或會議)時,指令是哪個節點交辦的;meeting 為 true 表示是會議裡的發言回合。 */
+export interface TaskFrom { id: string; name: string; meeting?: boolean }
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
 export interface UsageWindow {
@@ -184,6 +187,42 @@ export interface TaskInfo {
   changes?: TaskChanges | null;
   /** 這個任務的指令是從哪裡送出的;舊資料沒有這個欄位。 */
   source?: SpeechSource;
+  /** source 為 interop 時:是哪個節點交辦的(任務卡顯示「由 … 交辦」);舊資料沒有這個欄位。 */
+  from?: TaskFrom;
+  /** 交辦當下節點所在的專案(之後不會依節點目前的工作目錄重算);舊資料沒有這個欄位。 */
+  project?: { id: string; name: string };
+  /**
+   * 使用者驗收:accepted 已驗收、rejected 退回、null 或沒有 = 尚未判斷。和 status 分開:
+   * status 只代表回合有沒有正常結束,驗收才代表結果對不對。使用者按任務卡的按鈕、或把審查評論送回節點時(自動退回)會設定。
+   */
+  verdict?: TaskVerdict;
+  /** 這個任務寫成的判例案號(例如 2026-0003);有值就不會再請節點撰寫。 */
+  caseId?: string;
+  /** 已請承辦節點撰寫判例、還在等它提交。 */
+  casePending?: boolean;
+}
+export type TaskVerdict = 'accepted' | 'rejected' | null;
+
+/** 記憶庫裡一筆記憶(一個 .md 檔)在資料庫索引中的樣子。 */
+export interface MemoryEntry {
+  /** 相對於記憶庫資料夾的路徑,一律用 /。 */
+  path: string;
+  kind: 'node' | 'case' | 'knowledge' | 'preference';
+  scope: '全域' | '專案';
+  projectId: string;
+  nodeId: string;
+  title: string;
+  /** 記憶自己標的更新時間(front matter 的「更新時間」),沒有就用檔案修改時間。 */
+  updatedAt: number;
+  /** 檔案修改時間(毫秒),用來判斷檔案有沒有被改過。 */
+  mtime: number;
+  size: number;
+  /** 例如 未確認 / 已確認 / 退回;沒寫就是空字串。 */
+  status: string;
+  /** 子類:knowledge 的 決策 / 書籤(屬性「子類」);沒寫就是空字串。 */
+  subtype: string;
+  /** 這筆取代的舊檔路徑(屬性「取代」,去掉 [[ ]]);沒寫就是空字串。 */
+  supersedes: string;
 }
 
 /** 轉接器送給核心服務的事件。 */
@@ -274,6 +313,41 @@ export interface Snapshot {
   chiefId: string | null;
   /** 總覽儀表的資料:每日預算、花費與今天的任務統計。 */
   dashboard: DashboardData;
+  /** 目前進行中的協作連線(節點呼叫節點、會議);面板上畫成連線。 */
+  links: LinkInfo[];
+  /** 分派紀錄:最近的節點交辦(新的在前,最多 50 筆)。 */
+  dispatches: DispatchEntry[];
+}
+
+/** 一條進行中的協作連線:ask 是 from 呼叫 to[0];meeting 是主持人 from 與每位參與者 to。 */
+export interface LinkInfo {
+  id: string;
+  kind: 'ask' | 'meeting';
+  from: string;
+  to: string[];
+  label?: string;
+  startedAt: number;
+  active: boolean;
+  /** 會議:目前正在發言的參與者。 */
+  speaker?: string;
+}
+
+export type DispatchStatus = 'running' | 'done' | 'failed' | 'timeout';
+
+/** 分派紀錄的一筆:一次 ask_node。 */
+export interface DispatchEntry {
+  id: string;
+  startedAt: number;
+  endedAt: number | null;
+  fromId: string;
+  fromName: string;
+  toId: string;
+  toName: string;
+  /** 指令的簡短標題。 */
+  title: string;
+  status: DispatchStatus;
+  /** 被呼叫節點因此產生的任務(花費從任務查);沒有時為空。 */
+  taskId?: string;
 }
 
 /**
@@ -337,6 +411,10 @@ export interface Update {
   chiefId?: string | null;
   /** 總覽儀表的資料有變(花費、預算用量、任務統計、換日)。 */
   dashboard?: DashboardData;
+  /** 目前進行中的協作連線(整份取代)。 */
+  links?: LinkInfo[];
+  /** 分派紀錄(整份取代)。 */
+  dispatches?: DispatchEntry[];
 }
 
 export interface CreateAgentInput {
@@ -597,9 +675,29 @@ export interface NexusApi {
   getAvatar(character: string): Promise<string | null>;
   /** 讀取角色卡(立繪資料夾\<角色>\persona.md);超過 max 字的部分會截掉,truncated 為 true。 */
   getPersona(character: string): Promise<{ text: string; truncated: boolean; max: number }>;
+  /** Antigravity 的工具白名單(所有 Antigravity 節點共用,agy 的 permissions.allow 規則);只有完整權限。 */
+  getAgyAllow(): Promise<string[]>;
+  /** 儲存白名單(一行一條或字串陣列);格式不對的規則會丟出說明。節點要重新啟動才會套用。回傳整理後的清單。 */
+  setAgyAllow(rules: string[] | string): Promise<string[]>;
   /** 儲存角色卡;使用這個角色的節點會在下一則指令前收到新的角色設定。 */
   setPersona(character: string, text: string): Promise<void>;
   clearFinishedTasks(): Promise<void>;
+  /** 使用者驗收或退回一個已結束的任務(再按一次同樣的結果即取消);null 表示清除判斷。 */
+  setTaskVerdict(taskId: string, verdict: TaskVerdict): Promise<void>;
+  /** 「記下這個解法」:請承辦節點把這個已結束的任務寫成判例(狀態先是未確認)。回傳給使用者看的說明。 */
+  markCase(taskId: string): Promise<string>;
+  /** 對話草稿按鈕要用的資訊:上次儲存到哪一筆事件(seq)、累積多少字才顯示按鈕。 */
+  draftInfo(id: string): Promise<{ lastSeq: number; threshold: number }>;
+  /** 「儲存這段記憶」:請這個節點把上次儲存之後的對話整理成草稿(狀態未確認),回傳給使用者看的說明。 */
+  requestDraft(id: string): Promise<string>;
+  /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
+  getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
+  /** 刪除節點並先歸檔進記憶庫:summary 先請節點(不行就請總管)寫工作總結,stats 只存統計。歸檔失敗不擋刪除,note 說明結果。 */
+  removeAgentArchived(id: string, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }>;
+  /** 找這些名稱(依序:節點名稱、角色)的最新封存;沒有就是 null。 */
+  findMemoryArchive(names: string[]): Promise<{ path: string; date: string; name: string } | null>;
+  /** 把封存的特長與解決問題的流程接回這個節點的側寫;封存裡沒有這兩段時回傳 null。 */
+  attachMemoryArchive(agentId: string, archivePath: string): Promise<string | null>;
   /** 取得一個任務期間的檔案變更;任務還在執行時回傳到目前為止的變更。 */
   getTaskChanges(taskId: string): Promise<ChangeSet>;
   listOldSessions(): Promise<OldSession[]>;
