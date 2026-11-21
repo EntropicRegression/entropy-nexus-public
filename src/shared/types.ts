@@ -104,7 +104,7 @@ export interface AgentInfo {
  * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
  * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
  */
-export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
 export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
@@ -630,6 +630,12 @@ export interface NexusApi {
   setTaskVerdict(taskId: string, verdict: TaskVerdict): Promise<void>;
   /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
   getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
+  /** 刪除節點並先歸檔進記憶庫:summary 先請節點(不行就請總管)寫工作總結,stats 只存統計。歸檔失敗不擋刪除,note 說明結果。 */
+  removeAgentArchived(id: string, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }>;
+  /** 找這些名稱(依序:節點名稱、角色)的最新封存;沒有就是 null。 */
+  findMemoryArchive(names: string[]): Promise<{ path: string; date: string; name: string } | null>;
+  /** 把封存的特長與解決問題的流程接回這個節點的側寫;封存裡沒有這兩段時回傳 null。 */
+  attachMemoryArchive(agentId: string, archivePath: string): Promise<string | null>;
   /** 取得一個任務期間的檔案變更;任務還在執行時回傳到目前為止的變更。 */
   getTaskChanges(taskId: string): Promise<ChangeSet>;
   listOldSessions(): Promise<OldSession[]>;

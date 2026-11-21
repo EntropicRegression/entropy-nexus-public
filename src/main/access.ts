@@ -72,6 +72,7 @@ const RPC: Record<string, Rule> = {
   getAvatar: read(),
   // 只有完整角色能用,而且只是讀取或太頻繁,不寫紀錄
   remoteStatus: ADMIN_QUIET, remoteAudit: ADMIN_QUIET, observeStatus: ADMIN_QUIET, getPersona: ADMIN_QUIET, oldSessions: ADMIN_QUIET,
+  findMemoryArchive: ADMIN_QUIET,
   inspectDir: ADMIN_QUIET, termAttach: ADMIN_QUIET, termWrite: ADMIN_QUIET, termResize: ADMIN_QUIET,
 };
 
