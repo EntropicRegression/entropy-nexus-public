@@ -15,7 +15,13 @@ function span(ms: number): string {
 
 /** 驗收按鈕:再按一次同樣的結果就取消。事件處理放在 span 上,因為任務卡本身是按鈕(按鈕裡不能再放按鈕)。 */
 function VerdictButtons({ task, caseStatus }: { task: TaskInfo; caseStatus: string }) {
-  const set = (v: Exclude<TaskVerdict, null>) => void window.nexus.setTaskVerdict(task.id, task.verdict === v ? null : v).catch(() => {});
+  // 正常完成的任務預設已驗收:再按「✓」不會取消,取消「退回」就回到已驗收;失敗或中斷的任務維持原本的切換(再按一次取消)
+  const base: TaskVerdict = task.status === 'done' ? 'accepted' : null;
+  const set = (v: Exclude<TaskVerdict, null>) => {
+    const next = task.verdict !== v ? v : base === v ? v : base;
+    if (next === (task.verdict ?? null)) return;
+    void window.nexus.setTaskVerdict(task.id, next).catch(() => {});
+  };
   const btn = (v: Exclude<TaskVerdict, null>, text: string, title: string) => (
     <span className={`task-verdict-btn v-${v} ${task.verdict === v ? 'on' : ''}`} role="button" tabIndex={0} aria-pressed={task.verdict === v} title={title}
       onClick={e => { e.stopPropagation(); set(v); }}
@@ -23,7 +29,7 @@ function VerdictButtons({ task, caseStatus }: { task: TaskInfo; caseStatus: stri
   );
   return (
     <span className="task-verdict need-op">
-      {btn('accepted', '✓ 驗收', task.verdict === 'accepted' ? '已驗收:結果符合你的要求(再按一次取消)' : '驗收:結果符合你的要求。「完成」只代表回合正常結束,驗收才代表結果對,兩者分開統計')}
+      {btn('accepted', '✓ 驗收', task.verdict === 'accepted' ? (task.status === 'done' ? '已驗收:正常完成的任務預設算驗收,結果不對請按「退回」' : '已驗收:結果符合你的要求(再按一次取消)') : '驗收:結果符合你的要求。「完成」只代表回合正常結束,驗收才代表結果對,兩者分開統計')}
       {btn('rejected', '✗ 退回', task.verdict === 'rejected' ? '已退回:結果不符合你的要求(再按一次取消)。把評論送回節點修改時也會自動標成退回' : '退回:結果不符合你的要求,會計入這個節點的驗收率')}
       <CaseMark task={task} status={caseStatus} />
     </span>

@@ -1542,6 +1542,8 @@ ${section}
     task.status = status;
     task.endedAt = Date.now();
     if (note) task.note = note;
+    // 預設驗收:正常完成的工作任務直接算驗收,使用者按「退回」才改(主控台自己發出的封存、判例、草稿請求不算工作)
+    if (status === 'done' && !task.verdict && isWorkTask(task)) task.verdict = 'accepted';
     for (const s of task.subs) if (s.status === 'running') s.status = status === 'failed' ? 'failed' : 'done';
     if (!keepCurrent) this.current.delete(agentId);
     this.interrupted.delete(agentId);

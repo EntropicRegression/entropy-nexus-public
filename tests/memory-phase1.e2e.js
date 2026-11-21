@@ -69,11 +69,11 @@
     ok(reread.project?.id === a1.project.id, '重新取得快照時專案仍在', JSON.stringify(reread.project));
 
     // ---- 驗收:API
-    ok(a1.verdict === undefined || a1.verdict === null, '新任務尚未驗收', String(a1.verdict));
+    ok(a1.verdict === 'accepted', '正常完成的工作任務預設已驗收', String(a1.verdict));
     await window.nexus.setTaskVerdict(a1.id, 'accepted');
     ok((await tasksOf(A.id))[0].verdict === 'accepted', '驗收之後快照的 verdict 是 accepted');
     await window.nexus.setTaskVerdict(a1.id, null);
-    ok(((await tasksOf(A.id))[0].verdict ?? null) === null, '清除之後回到尚未驗收');
+    ok(((await tasksOf(A.id))[0].verdict ?? null) === null, 'API 仍可清除驗收(之後由畫面按鈕再驗收)');
     try { await window.nexus.setTaskVerdict(a1.id, 'maybe'); ok(false, '不正確的驗收結果被拒絕'); } catch (e) { ok(/不正確/.test(errText(e)), '不正確的驗收結果被拒絕', errText(e)); }
     try { await window.nexus.setTaskVerdict('no-such-task', 'accepted'); ok(false, '找不到的任務被拒絕'); } catch (e) { ok(/找不到/.test(errText(e)), '找不到的任務被拒絕', errText(e)); }
 
@@ -84,11 +84,14 @@
     ok(clickIn('甲任務一', 'v-accepted'), '點擊 ✓ 驗收');
     ok(await until('驗收寫入', async () => (await tasksOf(A.id))[0].verdict === 'accepted', 8000), '按下 ✓ 驗收之後任務是 accepted');
     ok(await until('按鈕亮起', () => card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '按鈕顯示為已驗收');
-    // 驗收按鈕是「再按一次就切換」:每次只點一下,等資料和按鈕外觀都更新後再點下一下(連點會來回切換,結果不固定)
+    // 正常完成的任務預設已驗收:再按 ✓ 不會取消;按退回改成退回,再按一次退回回到已驗收。每次只點一下,等資料和按鈕外觀都更新後再點下一下
     clickIn('甲任務一', 'v-accepted');
-    ok(await until('已清除', async () => ((await tasksOf(A.id))[0].verdict ?? null) === null && !card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '再按一次取消驗收');
-    clickIn('甲任務一', 'v-accepted');
-    ok(await until('再次驗收', async () => (await tasksOf(A.id))[0].verdict === 'accepted' && card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '取消後再按一次又變回驗收');
+    await new Promise(r => setTimeout(r, 800));
+    ok((await tasksOf(A.id))[0].verdict === 'accepted' && card('甲任務一')?.querySelector('.v-accepted.on'), '已驗收的完成任務再按 ✓ 仍是已驗收');
+    clickIn('甲任務一', 'v-rejected');
+    ok(await until('改成退回', async () => (await tasksOf(A.id))[0].verdict === 'rejected' && card('甲任務一')?.querySelector('.v-rejected.on'), 8000), '按退回之後是 rejected');
+    clickIn('甲任務一', 'v-rejected');
+    ok(await until('回到驗收', async () => (await tasksOf(A.id))[0].verdict === 'accepted' && card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '再按一次退回,回到預設的已驗收');
     ok(clickIn('丙任務一', 'v-rejected'), '點擊 ✗ 退回');
     ok(await until('退回寫入', async () => (await tasksOf(C.id))[0].verdict === 'rejected', 8000), '按下 ✗ 退回之後任務是 rejected');
     await window.nexus.setTaskVerdict(c1.id, null);
@@ -100,7 +103,7 @@
 
     // ---- 評論送回節點:自動退回
     const a2 = await run(A.id, '〔測試執行:300〕甲任務二');
-    ok((a2.verdict ?? null) === null, '送出評論之前第二個任務尚未驗收');
+    ok(a2.verdict === 'accepted', '送出評論之前第二個任務是預設的已驗收');
     await window.nexus.sendReviewComments(a2.id, [{ path: 'a.txt', row: null, side: 'new', line: 1, text: '這裡要改' }]);
     ok((await tasksOf(A.id)).find(t => t.id === a2.id).verdict === 'rejected', '把評論送回節點之後,原任務自動標成 rejected');
     // 評論送回後重做的任務本身是判例候選,判例庫會另外排一個「請寫判例」的任務(來源 case);這裡只看一般任務
@@ -122,7 +125,7 @@
     ok(await until('索引移除', async () => !(await vault()).entries.some(e => e.path === 'preferences/dropped.md'), 15000), '外部刪除檔案後從索引移除');
 
     // ---- 總管收到的節點統計
-    // 目前:A 3 筆;B 2 筆(乙任務一、乙任務二,都完成,沒驗收);C 2 筆(丙一完成、丙二失敗)
+    // 目前:A 3 筆;B 2 筆(乙任務一、乙任務二,都完成,預設已驗收);C 2 筆(丙一完成但驗收被清除、丙二失敗)
     const stateA = (await tasksOf(A.id)).filter(t => t.source !== 'case');
     const doneA = stateA.filter(t => t.status === 'done').length;
     const accA = stateA.filter(t => t.verdict === 'accepted').length, rejA = stateA.filter(t => t.verdict === 'rejected').length;
@@ -135,7 +138,7 @@
     const pctA = Math.round(doneA / finA * 100);
     const lA = lineOf(first, 'AlphaA'), lB = lineOf(first, 'BetaB'), lC = lineOf(first, 'GammaC');
     ok(lA.includes(`完成率 ${pctA}%(${doneA}/${finA})`) && lA.includes(`驗收率 ${Math.round(accA / (accA + rejA) * 100)}%(${accA}/${accA + rejA})`) && lA.endsWith('近期專案 repo') && /平均耗時 \d/.test(lA), 'AlphaA 的完成率、驗收率(含分子分母)與專案正確', lA);
-    ok(lB.includes('完成率 100%(2/2)') && lB.includes('驗收率 尚無驗收') && lB.endsWith('近期專案 repo'), 'BetaB:完成 2/2、尚無驗收、同一個專案 repo', lB);
+    ok(lB.includes('完成率 100%(2/2)') && lB.includes('驗收率 100%(2/2)') && lB.endsWith('近期專案 repo'), 'BetaB:完成 2/2、預設驗收 2/2、同一個專案 repo', lB);
     ok(lC.includes('完成率 50%(1/2)') && lC.includes('驗收率 尚無驗收') && lC.endsWith('近期專案 plain'), 'GammaC:完成 1/2(一次失敗)、尚無驗收、專案 plain', lC);
     ok(!first.includes('- 總管乙('), '總管自己不在統計裡');
     ok(first.indexOf('- AlphaA(') < first.indexOf('- BetaB(') && first.indexOf('- BetaB(') < first.indexOf('- GammaC('), '依最近交辦的時間排序:AlphaA、BetaB、GammaC');
