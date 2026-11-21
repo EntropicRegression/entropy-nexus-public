@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, TaskVerdict, Update } from '../shared/types';
+import { BACKEND_LABEL, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -15,6 +15,7 @@ import { initObserver, observedList, observeInstall, observeNewToken, observerSa
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
 import { MemoryVault } from './memory-vault';
+import { attachArchive, findArchive } from './memory-archive';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
@@ -78,6 +79,16 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     history: (id: string) => c.history(id),
     create: (input: CreateAgentInput) => c.createAgent(input),
     remove: (id: string) => c.removeAgent(id),
+    // 長期記憶階段 4:刪除節點時歸檔、新增節點時接回封存;沒有列在 access.ts 的方法表,所以只有完整角色呼叫得到
+    removeArchived: (id: string, mode: string) => c.removeWithArchive(String(id), mode === 'stats' ? 'stats' : 'summary'),
+    findMemoryArchive: (names: string[]) => (Array.isArray(names) ? findArchive(vault?.list() ?? [], names.map(String)) : null),
+    attachMemoryArchive: (agentId: string, archivePath: string) => {
+      const a = c.snapshot().agents.find(x => x.id === agentId);
+      if (!a || !vault) throw new Error('找不到這個節點');
+      const r = attachArchive(vault.dir, String(archivePath), { id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model });
+      vault.rescan();
+      return r ? r.path : null;
+    },
     send: (id: string, text: string, images?: string[]) => c.send(id, text, Array.isArray(images) ? images : [], 'user', source),
     updateAgent: (id: string, patch: { name?: string; character?: string; model?: string }) => c.updateAgent(id, patch),
     savePastedImage: (mime: string, data: ArrayBuffer) => savePastedImage(mime, data),

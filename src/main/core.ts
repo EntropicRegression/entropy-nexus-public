@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { BACKEND_LABEL, usageWindowsFor, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { BACKEND_LABEL, usageWindowsFor, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
@@ -21,6 +22,8 @@ import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } 
 import { removeMedia } from './media';
 import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, type StatsNode } from '../shared/node-stats';
+import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, writeArchive, type SummarySource } from './memory-archive';
+import { safeName } from './memory-write';
 import type { Store } from './store';
 import type { MemoryVault } from './memory-vault';
 import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
@@ -502,6 +505,76 @@ export class Core {
     if (input.chief) { this.chiefId = agent.id; this.store.setSetting('chief', agent.id); this.broadcast({ chiefId: agent.id }); }
     this.startSession(agent);
     return agent;
+  }
+
+  /**
+   * 刪除最上層節點前先歸檔進記憶庫(長期記憶階段 4)。mode:summary 先請節點寫工作總結(不行就請總管代寫),stats 只存統計。
+   * 歸檔失敗不會擋住刪除:失敗的原因回傳給畫面,節點照樣移除。
+   */
+  async removeWithArchive(id: string, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }> {
+    const agent = this.agents.get(id);
+    let out: { archive: string | null; note: string } = { archive: null, note: '' };
+    if (agent && !agent.parentId && this.vault) {
+      try { out = await this.archiveNode(agent, mode === 'stats' ? 'stats' : 'summary'); }
+      catch (e) { out = { archive: null, note: `歸檔失敗,節點仍已刪除:${String((e as Error)?.message ?? e)}` }; console.error('歸檔節點失敗', e); }
+    }
+    await this.removeAgent(id);
+    return out;
+  }
+
+  /** 等這個節點交辦出去的歸檔提示結束,回傳它的最後一則回覆;逾時、失敗或沒有回覆就是 null。 */
+  private async askForSummary(id: string, prompt: string, timeoutMs: number): Promise<string | null> {
+    const t0 = Date.now();
+    try { await this.send(id, prompt, [], 'user', 'archive'); } catch { return null; }
+    const find = () => [...this.tasks.values()].find(t => t.agentId === id && t.source === 'archive' && t.startedAt >= t0);
+    while (Date.now() - t0 < timeoutMs) {
+      const t = find();
+      if (t && t.endedAt !== null) {
+        if (t.status !== 'done') return null;
+        const reply = this.store.agentEvents(id, 40).filter(e => e.type === 'message' && e.role === 'agent' && e.ts >= t.startedAt).map(e => (e as { text: string }).text).pop();
+        return reply?.trim() || null;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    void Promise.resolve(this.interrupt(id)).catch(() => {});
+    return null;
+  }
+
+  private async archiveNode(agent: AgentInfo, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }> {
+    const vault = this.vault!;
+    const timeout = Number(process.env.NEXUS_ARCHIVE_TIMEOUT_MS) || 3 * 60 * 1000;
+    const tasks = this.store.loadTasksForStats(0, 100000).filter(t => t.agentId === agent.id && t.source !== 'archive');
+    const stats = computeNodeStats(tasks).get(agent.id);
+    const selfOk = agent.state === 'idle' && !agent.terminal && this.sessions.has(agent.id);
+    const chief = this.chiefId && this.chiefId !== agent.id ? this.agents.get(this.chiefId) : undefined;
+    const chiefOk = !!chief && chief.state === 'idle' && !chief.terminal && this.sessions.has(chief.id);
+    let summary = '';
+    let source: SummarySource = '無';
+    let reason = mode === 'stats' ? '使用者選擇只存統計' : '';
+    let plan = decideSummarizer({ mode, selfAvailable: selfOk, selfFailed: false, chiefAvailable: chiefOk });
+    if (plan === 'self') {
+      const r = await this.askForSummary(agent.id, SELF_SUMMARY_PROMPT, timeout);
+      if (r) { summary = r; source = '節點自己'; }
+      else plan = decideSummarizer({ mode, selfAvailable: selfOk, selfFailed: true, chiefAvailable: chiefOk });
+    }
+    if (!summary && plan === 'chief' && chief) {
+      const events = this.store.agentEvents(agent.id, 200);
+      const titles = [...tasks].sort((a, b) => b.startedAt - a.startedAt).slice(0, 20).map(t => t.title.slice(0, 120));
+      const replies = events.filter(e => e.type === 'message' && e.role === 'agent').slice(-6).map(e => (e as { text: string }).text.slice(0, 600));
+      const r = await this.askForSummary(chief.id, chiefSummaryPrompt(agent.name, titles, replies), timeout);
+      if (r) { summary = r; source = '總管'; }
+    }
+    if (!summary && mode === 'summary') {
+      reason = !selfOk
+        ? (chief ? (chiefOk ? '節點無法回覆,總管也沒有寫出來' : '節點無法回覆,總管目前忙碌或無法使用') : '節點無法回覆,也沒有總管可以代寫')
+        : (chiefOk ? '節點沒有在時限內回覆,總管也沒有寫出來' : '節點沒有在時限內回覆,也沒有可用的總管代寫');
+    }
+    const cases = vault.list().filter(e => e.kind === 'case' && e.nodeId === agent.id).map(caseNumber);
+    const r = writeArchive(vault.dir, {
+      node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt },
+      stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, now: new Date(),
+    });
+    return { archive: r.path, note: summary ? `已封存(工作總結由${source}撰寫):${r.path}` : `已封存,但沒有工作總結(${reason}):${r.path}` };
   }
 
   async removeAgent(id: string): Promise<void> {
@@ -1158,7 +1231,7 @@ ${text}
 
   /** 總管守則用:每個最上層節點(不含總管自己)的統計。資料取自資料庫,包含任務面板已清除的任務。 */
   private chiefStats(): string {
-    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000));
+    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000), t => t.source !== 'archive');
     const nodes: StatsNode[] = [...this.agents.values()].filter(a => !a.parentId && a.id !== this.chiefId)
       .map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model }));
     const strengths = new Map<string, string>();
@@ -1466,4 +1539,9 @@ ${section}
       }
     }
   }
+}
+
+/** 節點目前側寫(nodes/<名稱>.md)裡「特長」一段;沒有側寫或讀不到就是空字串。 */
+function readLiveTraits(vaultDir: string, name: string): string {
+  try { return extractSection(readFileSync(join(vaultDir, 'nodes', `${safeName(name)}.md`), 'utf8'), '特長'); } catch { return ''; }
 }

@@ -221,6 +221,15 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   };
   // 分支對話:需要後台支援,而且節點已經有 session
   const [forking, setForking] = useState(false);
+  // 終止最上層節點:先確認要不要請它寫工作總結再歸檔進記憶庫(ask = 等使用者選,busy = 正在寫總結)
+  const [rm, setRm] = useState<null | 'ask' | 'busy'>(null);
+  const [rmNote, setRmNote] = useState('');
+  const removeWith = async (mode: 'summary' | 'stats') => {
+    setRm('busy');
+    setRmNote(mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘…' : '正在歸檔統計…');
+    try { await window.nexus.removeAgentArchived(a.id, mode); }
+    catch (e) { setRmNote(`終止失敗:${String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`); setRm('ask'); }
+  };
   const forkWhy = !cap?.fork ? `${BACKEND_LABEL[a.backend]} 不支援分支對話。` : !a.sessionId ? '這個節點還沒有 session(先對話一次),沒有可以分支的內容。' : '';
   const lastAgentSeq = items.findLast(i => i.kind === 'agent')?.seq ?? -1;
   const p = a.pendingApproval;
@@ -254,10 +263,21 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             : <button className="need-op" onClick={() => void window.nexus.sleep(a.id)} disabled={busy} title="結束行程並保留 session">休眠</button>}
           {isSub
             ? <button className="need-full" onClick={() => void window.nexus.removeAgent(a.id)} title="只從面板移除,不會停止子代理">從面板移除</button>
-            : <button className="danger need-full" onClick={() => void window.nexus.removeAgent(a.id)}>終止</button>}
+            : <button className="danger need-full" onClick={() => setRm(r => r ?? 'ask')} disabled={rm === 'busy'}>終止</button>}
           <button className={`ghost dlg-full ${full ? 'on' : ''}`} onClick={toggleFull} title={full ? '還原成下半部(Alt+F)' : '向上展開到佔滿面板(Alt+F)'} aria-label={full ? '還原對話視窗' : '展開對話視窗'}>{full ? '▼ 還原' : '▲ 展開'}</button>
           <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
         </header>
+
+        {rm && !isSub && (
+          <div className="dlg-settings dlg-remove need-full">
+            <span className="muted">終止「{a.name}」前,要先請它寫一份工作總結,和任務統計一起封存進記憶庫嗎?之後建立同名節點時可以接回。</span>
+            <span className="spacer" />
+            {rmNote && <span className="muted">{rmNote}</span>}
+            <button className="primary" disabled={rm === 'busy'} onClick={() => void removeWith('summary')}>先請它寫工作總結再刪除</button>
+            <button className="danger" disabled={rm === 'busy'} onClick={() => void removeWith('stats')}>直接刪除(只存統計)</button>
+            <button className="ghost" disabled={rm === 'busy'} onClick={() => { setRm(null); setRmNote(''); }}>取消</button>
+          </div>
+        )}
 
         {editing && (
           <div className="dlg-settings">
