@@ -575,6 +575,8 @@ export class Core {
       node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt },
       stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, now: new Date(),
     });
+    // 馬上更新索引:不等資料夾監看(有去抖動),緊接著的查詢(例如新增同名節點時找封存)才讀得到
+    vault.rescan();
     return { archive: r.path, note: summary ? `已封存(工作總結由${source}撰寫):${r.path}` : `已封存,但沒有工作總結(${reason}):${r.path}` };
   }
 

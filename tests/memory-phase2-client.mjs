@@ -43,16 +43,20 @@ try {
   check('祕密被遮罩、帶有更新時間', kn && !kn.includes('hunter2secret') && kn.includes('更新時間:'), kn);
 
   // 判例可見度:只有已確認的看得到
-  for (const [i, st] of ['已確認', '未確認', '退回'].entries()) put(`cases/other/${i}-圖表案.md`, `---\n種類: case\n案由: 圖表案${i}\n狀態: ${st}\n---\n圖表壞掉的解法${i}\n`);
+  // 判例屬於專案範圍:放在呼叫者(Worker)所在的專案才在搜尋範圍內;專案 ID 沿用剛才寫入的專案知識
+  const projId = (/專案ID: (.+)/.exec(kn)?.[1] ?? '').trim().replace(/^"|"$/g, '');
+  for (const [i, st] of ['已確認', '未確認', '退回'].entries()) put(`cases/${projDir}/${i}-圖表案.md`, `---\n種類: case\n範圍: 專案\n專案ID: ${projId}\n案由: 圖表案${i}\n狀態: ${st}\n---\n圖表壞掉的解法${i}\n`);
   await call(C, 'memory_write', { kind: 'preference', title: '觸發重新掃描', content: '讓索引讀到判例' });
   await wait(500);
   const s = await call(W, 'memory_search', { query: '圖表' });
   check('搜尋有結果與路徑', !s.error && s.text.includes('路徑:'), s.text);
-  check('只看得到已確認的判例', s.text.includes('圖表案0') && !s.text.includes('圖表案1') && !s.text.includes('圖表案2'), s.text);
+  // 只查判例,避免結果被大量專案知識擠掉
+  const cs = await call(W, 'memory_search', { query: '圖表案', kind: 'case' });
+  check('只看得到已確認的判例', cs.text.includes('圖表案0') && !cs.text.includes('圖表案1') && !cs.text.includes('圖表案2'), cs.text);
   check('自己的側寫排最前面', /1\. \[節點側寫\] Worker/.test(s.text) && s.text.includes('(你自己的)'), s.text.slice(0, 300));
   const k = await call(W, 'memory_search', { query: '圖表', kind: 'knowledge' });
   check('kind 篩選與專案範圍(同一個工作目錄的專案知識看得到)', k.text.includes('圖表知識') && !k.text.includes('節點側寫'), k.text);
-  check('沒有符合時有說明', (await call(W, 'memory_search', { query: '絕對沒有這個詞' })).text.includes('沒有符合'));
+  check('沒有符合時有說明', (await call(W, 'memory_search', { query: 'zqxjv-nomatch-7731' })).text.includes('沒有符合'));
 
   console.log(`[client] ${bad ? `有 ${bad} 項不符` : '用戶端全部通過'}`);
 } catch (err) {

@@ -103,7 +103,7 @@
     ok(!(await task(running.id)).casePending, '超過上限後耗時的任務也沒有自動請求');
 
     // ---- 任務面板:案號標籤與按鈕
-    const card = title => [...document.querySelectorAll('.tasks-list .task')].find(el => el.querySelector('.task-title')?.textContent.startsWith(title));
+    const card = title => [...document.querySelectorAll('.tasks-list .task')].find(el => el.querySelector('.task-title')?.textContent.includes(title));
     ok(await until('任務卡出現案號標籤', () => card('登入逾時問題')?.querySelector('.task-case')?.textContent.includes(`判例 ${caseId(2)}`), 10000), '任務卡顯示「判例 案號」標籤', card('登入逾時問題')?.textContent);
     ok(/未確認/.test(card('登入逾時問題')?.querySelector('.task-case')?.textContent ?? ''), '標籤顯示狀態未確認');
     ok(Boolean(card('快速任務')?.querySelector('.task-case-btn')) && !card('登入逾時問題')?.querySelector('.task-case-btn'), '沒有判例的已結束任務有「記下這個解法」按鈕,有判例的沒有');

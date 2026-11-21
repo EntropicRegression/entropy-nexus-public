@@ -191,7 +191,8 @@ export async function searchMemory(deps: MemoryToolsDeps, caller: MemoryCaller, 
     const { meta, body } = parseFrontMatter(text);
     const score = scoreText(query, e.title, body);
     const own = isOwn(e);
-    if (query && score <= 0 && !(own && e.kind === 'node')) continue;
+    // 有關鍵字時只列出命中的(自己的側寫也一樣,命中時才排最前面);沒有關鍵字時全部列出
+    if (query && score <= 0) continue;
     const commit = String(Array.isArray(meta.get('commit')) ? '' : meta.get('commit') ?? '').trim();
     let ahead: number | null = null;
     if (commit && e.scope === '專案' && (proj || e.projectId)) ahead = await deps.commitsAhead(proj && sameId(e.projectId, proj.id) ? proj.root : e.projectId, commit).catch(() => null);

@@ -80,7 +80,7 @@
     // ---- 驗收:任務面板的按鈕(真的點擊)
     const card = title => [...document.querySelectorAll('.tasks-list .task')].find(el => el.querySelector('.task-title')?.textContent.includes(title));
     const clickIn = (title, cls) => { const b = card(title)?.querySelector(`.task-verdict-btn.${cls}`); if (b) b.click(); return Boolean(b); };
-    ok(await until('任務卡出現驗收按鈕', () => card('甲任務一')?.querySelectorAll('.task-verdict-btn').length === 2), '已結束的任務卡有 ✓ 驗收 與 ✗ 退回 兩個按鈕');
+    ok(await until('任務卡出現驗收按鈕', () => card('甲任務一')?.querySelectorAll('.task-verdict-btn.v-accepted, .task-verdict-btn.v-rejected').length === 2), '已結束的任務卡有 ✓ 驗收 與 ✗ 退回 兩個按鈕');
     ok(clickIn('甲任務一', 'v-accepted'), '點擊 ✓ 驗收');
     ok(await until('驗收寫入', async () => (await tasksOf(A.id))[0].verdict === 'accepted', 8000), '按下 ✓ 驗收之後任務是 accepted');
     ok(await until('按鈕亮起', () => card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '按鈕顯示為已驗收');

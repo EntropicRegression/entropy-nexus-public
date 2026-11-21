@@ -32,7 +32,8 @@ try {
   check('initialize', init.body.result.serverInfo.name === 'entropy-nexus' && !!init.body.result.capabilities.tools);
   check('通知回 202', (await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) })).status === 202);
   const tools = (await rpc(url, 'tools/list', {})).body.result.tools.map(t => t.name);
-  check('八個工具', tools.join() === 'list_nodes,ask_node,wait_reply,start_meeting,meeting_say,memory_search,memory_write,case_submit', tools.join());
+  // 只比對有哪些工具,不比對順序(工具是幾個功能各自加進清單的)
+  check('八個工具', [...tools].sort().join() === ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_write', 'case_submit'].sort().join(), tools.join());
   check('權杖不對是 404', (await rpc(url.replace(/[0-9a-f]{48}$/, 'f'.repeat(48)), 'tools/list', {})).status === 404);
   check('GET 不接受', (await fetch(url)).status === 405);
 
