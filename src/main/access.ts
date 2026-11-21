@@ -1,4 +1,4 @@
-import type { RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
+import type { DispatchEntry, LinkInfo, RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
 import type { DashboardData } from '../shared/dashboard';
 
 /**
@@ -128,13 +128,34 @@ function limitDashboard(d: DashboardData, see: (id: string) => boolean): Dashboa
   return { ...d, spend: d.spend.filter(r => see(r.agentId)), tasks: d.tasks.filter(r => see(r.agentId)) };
 }
 
+/**
+ * 遠端裝置只看得到兩端都看得到的連線;會議只留看得到的參與者(主持人看不到就整條拿掉)。
+ * see 判斷節點 id 是否在這支裝置的範圍內(見 access.ts)。
+ */
+export function filterLinks(links: LinkInfo[], see: (id: string) => boolean): LinkInfo[] {
+  const out: LinkInfo[] = [];
+  for (const l of links) {
+    if (!see(l.from)) continue;
+    const to = l.to.filter(see);
+    if (!to.length || (l.kind === 'ask' && to.length !== l.to.length)) continue;
+    out.push({ ...l, to, ...(l.speaker && !to.includes(l.speaker) ? { speaker: undefined } : {}) });
+  }
+  return out;
+}
+
+/** 分派紀錄只留兩端都看得到的。 */
+export const filterDispatches = (list: DispatchEntry[], see: (id: string) => boolean): DispatchEntry[] => list.filter(d => see(d.fromId) && see(d.toId));
+
 /** 狀態快照只留這支裝置看得到的節點;非完整角色不提供外部觀察節點與立繪資料夾的位置。 */
-export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
+export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard' | 'links' | 'dispatches'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
   if (access.role === 'full') return s;
   const see = (id: string) => visible(access, rootOf(id));
   const out = { ...s, agents: s.agents.filter(a => see(a.id)), tasks: s.tasks.filter(t => see(t.agentId)) };
   if (s.events) out.events = s.events.filter(e => see(e.agentId));
   if (s.dashboard) out.dashboard = limitDashboard(s.dashboard, see);
+  // 協作連線與分派紀錄:兩端都看得到的才給
+  if (s.links) out.links = filterLinks(s.links, see);
+  if (s.dispatches) out.dispatches = filterDispatches(s.dispatches, see);
   if ('observed' in s) out.observed = [];
   if ('portraitsDir' in s) out.portraitsDir = '';
   return out;
@@ -157,6 +178,8 @@ export function filterUpdate(u: Update, access: RemoteAccess, rootOf: (id: strin
   if (u.removedId !== undefined) out.removedId = u.removedId;
   if (u.usage) out.usage = u.usage;
   if (u.dashboard) out.dashboard = limitDashboard(u.dashboard, see);
+  if (u.links) out.links = filterLinks(u.links, see);
+  if (u.dispatches) out.dispatches = filterDispatches(u.dispatches, see);
   if (u.maxActive !== undefined) out.maxActive = u.maxActive;
   if (u.quotaStop !== undefined) out.quotaStop = u.quotaStop;
   if (u.autopilot !== undefined) out.autopilot = u.autopilot;

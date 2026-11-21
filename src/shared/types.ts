@@ -107,7 +107,10 @@ export interface AgentInfo {
 export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
-export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
+export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource; from?: TaskFrom }
+
+/** 節點互相呼叫(或會議)時,指令是哪個節點交辦的;meeting 為 true 表示是會議裡的發言回合。 */
+export interface TaskFrom { id: string; name: string; meeting?: boolean }
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
 export interface UsageWindow {
@@ -184,6 +187,8 @@ export interface TaskInfo {
   changes?: TaskChanges | null;
   /** 這個任務的指令是從哪裡送出的;舊資料沒有這個欄位。 */
   source?: SpeechSource;
+  /** source 為 interop 時:是哪個節點交辦的(任務卡顯示「由 … 交辦」);舊資料沒有這個欄位。 */
+  from?: TaskFrom;
   /** 交辦當下節點所在的專案(之後不會依節點目前的工作目錄重算);舊資料沒有這個欄位。 */
   project?: { id: string; name: string };
   /**
@@ -300,6 +305,41 @@ export interface Snapshot {
   chiefId: string | null;
   /** 總覽儀表的資料:每日預算、花費與今天的任務統計。 */
   dashboard: DashboardData;
+  /** 目前進行中的協作連線(節點呼叫節點、會議);面板上畫成連線。 */
+  links: LinkInfo[];
+  /** 分派紀錄:最近的節點交辦(新的在前,最多 50 筆)。 */
+  dispatches: DispatchEntry[];
+}
+
+/** 一條進行中的協作連線:ask 是 from 呼叫 to[0];meeting 是主持人 from 與每位參與者 to。 */
+export interface LinkInfo {
+  id: string;
+  kind: 'ask' | 'meeting';
+  from: string;
+  to: string[];
+  label?: string;
+  startedAt: number;
+  active: boolean;
+  /** 會議:目前正在發言的參與者。 */
+  speaker?: string;
+}
+
+export type DispatchStatus = 'running' | 'done' | 'failed' | 'timeout';
+
+/** 分派紀錄的一筆:一次 ask_node。 */
+export interface DispatchEntry {
+  id: string;
+  startedAt: number;
+  endedAt: number | null;
+  fromId: string;
+  fromName: string;
+  toId: string;
+  toName: string;
+  /** 指令的簡短標題。 */
+  title: string;
+  status: DispatchStatus;
+  /** 被呼叫節點因此產生的任務(花費從任務查);沒有時為空。 */
+  taskId?: string;
 }
 
 /**
@@ -363,6 +403,10 @@ export interface Update {
   chiefId?: string | null;
   /** 總覽儀表的資料有變(花費、預算用量、任務統計、換日)。 */
   dashboard?: DashboardData;
+  /** 目前進行中的協作連線(整份取代)。 */
+  links?: LinkInfo[];
+  /** 分派紀錄(整份取代)。 */
+  dispatches?: DispatchEntry[];
 }
 
 export interface CreateAgentInput {

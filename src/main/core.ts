@@ -3,7 +3,9 @@ import { existsSync } from 'node:fs';
 import { BACKEND_LABEL, usageWindowsFor, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
+import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
 import type {
+  DispatchEntry, LinkInfo, TaskFrom,
   AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
 import type { Adapter, AdapterSession, StartOptions } from './adapters/adapter';
@@ -55,6 +57,9 @@ export class Core {
   private notices = new Map<string, Set<'name' | 'persona'>>();
   /** 總管節點(主控語音模式);存在設定的 chief。 */
   private chiefId: string | null = null;
+  /** 協作連線(進行中的 ask_node 與會議)與分派紀錄;由 interop 更新。 */
+  private links: LinkInfo[] = [];
+  private dispatches: DispatchEntry[] = [];
   private capabilities = new Map<Backend, Capability>();
   private autopilot = true;
   private autopilotTimer: NodeJS.Timeout | null = null;
@@ -131,6 +136,10 @@ export class Core {
       try { saved = JSON.parse(this.store.getSetting(`usage:${backend}`) ?? 'null'); } catch { /* 存壞了就當作沒有 */ }
       this.usage.set(backend, saved?.windows ? { ...saved, backend, unsupported: false } : { backend, windows: [], unsupported: false, updatedAt: 0 });
     }
+    this.store.pruneDispatches(Date.now() - DISPATCH_KEEP_MS);
+    // 上次關閉時還在進行的交辦:這次開啟時標成失敗
+    this.dispatches = this.store.loadDispatches(DISPATCH_MAX);
+    for (const d of this.dispatches) if (d.status === 'running') { d.status = 'failed'; d.endedAt = Date.now(); this.store.saveDispatch(d); }
     this.store.pruneTasks(Date.now() - STATS_DAYS * 24 * 3600 * 1000);
     // 上次關閉時還沒結束的任務,這次開啟時一律標成已中斷
     for (const t of this.store.loadTasks(200)) {
@@ -190,7 +199,30 @@ export class Core {
       portraitsDir: portraitsDir(),
       chiefId: this.chiefId,
       dashboard: this.dashboard(),
+      links: this.links,
+      dispatches: this.dispatches,
     };
+  }
+
+  /** 協作連線有變時由 interop 呼叫;內容相同就不推送。 */
+  setLinks(links: LinkInfo[]): void {
+    if (sameLinks(this.links, links)) return;
+    this.links = links;
+    this.broadcast({ links });
+  }
+
+  /** 新增或更新一筆分派紀錄(寫進資料庫並推送給畫面)。 */
+  recordDispatch(d: DispatchEntry): void {
+    const i = this.dispatches.findIndex(x => x.id === d.id);
+    if (i >= 0) this.dispatches[i] = d; else this.dispatches.unshift(d);
+    this.dispatches = trimDispatches(this.dispatches, Date.now());
+    this.store.saveDispatch(d);
+    this.broadcast({ dispatches: this.dispatches });
+  }
+
+  /** 節點目前進行中的任務 id(沒有時為 undefined)。 */
+  currentTaskId(agentId: string): string | undefined {
+    return this.current.get(agentId);
   }
 
   /** 總覽儀表的資料:各後台今天的預算用量、本週的花費、今天的任務統計。額度本身在 usage,節點狀態在 agents。 */
@@ -495,11 +527,11 @@ export class Core {
 
   /** origin 是佇列項目時表示由佇列自動送出:送不出去就放回佇列開頭,不會丟掉。 */
   /** source:指令是從哪裡送出的(語音播報用);佇列送出時沿用排入時記下的來源。 */
-  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop'): Promise<void> {
+  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop', from?: TaskFrom): Promise<void> {
     const agent = this.agents.get(id);
     const session = this.sessions.get(id);
     const fromQueue = typeof origin === 'object' ? origin : null;
-    if (fromQueue) source = fromQueue.source ?? 'desktop';
+    if (fromQueue) { source = fromQueue.source ?? 'desktop'; from = fromQueue.from; }
     else if (origin === 'autopilot') source = 'autopilot';
     if (!agent || !session) { if (fromQueue && agent) this.requeue(agent, fromQueue); return; }
     // 額度上限:這家後台的額度用到設定的百分比就不再送出新指令
@@ -525,7 +557,7 @@ export class Core {
     if (!BUSY.has(agent.state) && this.activeCount(id) >= this.maxActive) {
       if (fromQueue) { this.requeue(agent, fromQueue); return; }
       if (origin === 'autopilot') return;
-      this.pushQueue(agent, text, images, source);
+      this.pushQueue(agent, text, images, source, from);
       this.onAdapterEvent(id, { type: 'note', text: `已達同時執行上限(${this.maxActive} 個),指令已排隊,有名額時會自動送出。` });
       return;
     }
@@ -535,7 +567,7 @@ export class Core {
       try {
         // 專案在交辦的這一刻依節點目前的工作目錄決定,之後不再重算
         const project = await projectOf(agent.cwd).catch(() => null);
-        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name } : undefined);
+        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name } : undefined, from);
         await this.captureBase(agent, task);
       } finally {
         this.starting.delete(id);
@@ -930,9 +962,9 @@ ${text}
     this.broadcast({ agent: { ...agent, queued: agent.queued.map(q => ({ ...q })) } });
   }
 
-  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource): void {
+  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource, from?: TaskFrom): void {
     if (agent.queued.length >= MAX_QUEUED) throw new Error(`佇列已滿(最多 ${MAX_QUEUED} 筆)`);
-    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now(), source });
+    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now(), source, ...(from ? { from } : {}) });
     this.saveQueue(agent);
     this.schedulePump();
   }
@@ -1168,7 +1200,7 @@ ${section}
     this.broadcast({ tasks: [...this.tasks.values()] });
   }
 
-  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: { id: string; name: string }): TaskInfo {
+  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: { id: string; name: string }, from?: TaskFrom): TaskInfo {
     const task: TaskInfo = {
       id: randomUUID(),
       agentId: agent.id,
@@ -1184,6 +1216,7 @@ ${section}
       subs: [],
       changes: null,
       source,
+      ...(from ? { from } : {}),
       ...(project ? { project } : {}),
     };
     this.interrupted.delete(agent.id);
