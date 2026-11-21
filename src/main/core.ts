@@ -4,7 +4,7 @@ import { BACKEND_LABEL, usageWindowsFor, type SpeechNotice, type SpeechSource, t
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import type {
-  AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, Update, WorktreeInfo, WorktreeStatus,
+  AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
 import type { Adapter, AdapterSession, StartOptions } from './adapters/adapter';
 import { AntigravityAdapter } from './adapters/antigravity';
@@ -17,6 +17,8 @@ import { createWorktree, mergeBack, openPullRequest, removeWorktree, worktreeSta
 import { formatCommentsPrompt, formatReviewPrompt } from '../shared/review';
 import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } from './portraits';
 import { removeMedia } from './media';
+import { projectOf } from './project';
+import { chiefStatsSection, computeNodeStats, type StatsNode } from '../shared/node-stats';
 import type { Store } from './store';
 
 /** 執行中超過這段時間沒有任何事件就標成失聯;NEXUS_STALL_MS 可在測試時縮短。 */
@@ -24,6 +26,11 @@ const STALL_MS = Number(process.env.NEXUS_STALL_MS) || 10 * 60 * 1000;
 const BUSY = new Set(['planning', 'working', 'awaiting']);
 /** 子代理結束後,子節點留在面板上的時間。 */
 const SUB_LINGER_MS = Number(process.env.NEXUS_SUB_LINGER_MS) || 20000;
+
+/** 總管守則裡的節點統計最多隔這麼久才再通知一次(統計有變時);NEXUS_CHIEF_STATS_MS 可在測試時縮短。 */
+const CHIEF_STATS_MS = Number(process.env.NEXUS_CHIEF_STATS_MS) || 10 * 60 * 1000;
+/** 節點統計只看這段時間內交辦的任務,更舊的紀錄啟動時清掉。 */
+const STATS_DAYS = 180;
 
 /** 每個節點最多排幾筆指令。 */
 const MAX_QUEUED = 50;
@@ -60,6 +67,8 @@ export class Core {
   /** 任務面板的資料:每句指令一筆任務。current 記錄每個節點目前的任務。 */
   private tasks = new Map<string, TaskInfo>();
   private current = new Map<string, string>();
+  /** 上一次送給總管的節點統計段落與時間;用來判斷下一則指令前要不要再通知。 */
+  private chiefStatsSent = { text: '', at: 0 };
   private interrupted = new Set<string>();
   /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
   private turnText = new Map<string, string[]>();
@@ -122,6 +131,7 @@ export class Core {
       try { saved = JSON.parse(this.store.getSetting(`usage:${backend}`) ?? 'null'); } catch { /* 存壞了就當作沒有 */ }
       this.usage.set(backend, saved?.windows ? { ...saved, backend, unsupported: false } : { backend, windows: [], unsupported: false, updatedAt: 0 });
     }
+    this.store.pruneTasks(Date.now() - STATS_DAYS * 24 * 3600 * 1000);
     // 上次關閉時還沒結束的任務,這次開啟時一律標成已中斷
     for (const t of this.store.loadTasks(200)) {
       if (t.endedAt === null) {
@@ -522,8 +532,10 @@ export class Core {
     if (!BUSY.has(agent.state)) {
       // 送出前先拍下工作目錄的快照,任務結束後才算得出這個任務改了什麼
       this.starting.add(id);
-      const task = this.startTask(agent, text, source);
       try {
+        // 專案在交辦的這一刻依節點目前的工作目錄決定,之後不再重算
+        const project = await projectOf(agent.cwd).catch(() => null);
+        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name } : undefined);
         await this.captureBase(agent, task);
       } finally {
         this.starting.delete(id);
@@ -537,7 +549,7 @@ export class Core {
     }
     this.onAdapterEvent(id, { type: 'message', role: 'user', text });
     // 改名、換角色之後的第一則指令順便告訴 agent;紀錄裡仍只留使用者原本的文字
-    session.send(this.takeNotice(agent) + text, images);
+    session.send(this.takeNotice(agent) + this.takeStatsNotice(agent) + text, images);
   }
 
   /** 讓 agent 知道自己在主控台裡的身分:節點名稱,加上所選角色的角色卡(有的話)。 */
@@ -551,12 +563,17 @@ export class Core {
   /** 總管節點的工作守則;不是總管時回傳空字串。 */
   private chiefRules(agent: AgentInfo): string {
     if (agent.id !== this.chiefId) return '';
+    // 守則送出時一併帶上最新的節點統計,並記下內容與時間,之後的通知才知道有沒有變
+    const stats = this.chiefStats();
+    this.chiefStatsSent = { text: stats, at: Date.now() };
     return `你是這個主控台的「總管」節點。使用者交代給你的事(常常是用語音說的、由語音辨識轉成的文字,可能有錯字或同音字)是要分派出去的工作:
 - 先用 list_nodes 看面板上有哪些節點、各自的後台、模型、狀態與工作目錄,再判斷這件事適合交給誰。使用者在句首直接叫了某個節點的名字(或聽起來像那個名字)時,就交給那個節點。
 - 用 ask_node 交辦。對方看不到你和使用者的對話,所以 prompt 要寫完整:背景、要做什麼、要讀的檔案(絕對路徑)、希望怎麼回覆。需要多方意見或討論時用 start_meeting。
 - 交辦之前,先用一句話說明你要交給誰、做什麼;判斷不出來、或指令聽起來不完整時,先問使用者,不要猜。
 - 除非使用者明確要你自己做,或沒有合適的節點,否則不要自己改檔案或執行指令。
-- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。`;
+- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。${stats ? `
+
+${stats}` : ''}`;
   }
 
   /** 角色卡包成一段有邊界的「主控台角色設定」,和使用者的指令分開;沒有角色卡時回傳空字串。 */
@@ -1051,6 +1068,43 @@ ${text}
     this.reviewTarget(task.agentId, '產生這個任務的節點', false);
     const set = await this.taskChanges(taskId);
     await this.send(task.agentId, formatCommentsPrompt({ title: task.title, comments: list, files: set.files }), [], 'user', source);
+    // 使用者把評論送回去修改,等於這次的結果沒有通過:自動標成退回(使用者之後仍可在任務卡改成驗收)
+    task.verdict = 'rejected';
+    this.pushTask(task);
+  }
+
+  /** 使用者驗收或退回一個已結束的任務;null 清除判斷。還在執行的任務不能驗收。 */
+  setTaskVerdict(taskId: string, verdict: TaskVerdict): void {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error('找不到這個任務');
+    if (verdict !== null && verdict !== 'accepted' && verdict !== 'rejected') throw new Error('不正確的驗收結果');
+    if (task.endedAt === null) throw new Error('任務還沒結束,結束後才能驗收。');
+    if ((task.verdict ?? null) === verdict) return;
+    task.verdict = verdict;
+    this.pushTask(task);
+  }
+
+  /** 總管守則用:每個最上層節點(不含總管自己)的統計。資料取自資料庫,包含任務面板已清除的任務。 */
+  private chiefStats(): string {
+    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000));
+    const nodes: StatsNode[] = [...this.agents.values()].filter(a => !a.parentId && a.id !== this.chiefId)
+      .map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model }));
+    return chiefStatsSection(nodes, stats, Date.now());
+  }
+
+  /**
+   * 總管在平常的指令前補充統計:統計有變、而且離上次告知超過 CHIEF_STATS_MS 才附上(每個任務結束都通知會太吵)。
+   * session 啟動與守則更新時,守則本身就帶了最新的統計(見 chiefRules),這裡不會重複。
+   */
+  private takeStatsNotice(agent: AgentInfo): string {
+    if (agent.id !== this.chiefId || Date.now() - this.chiefStatsSent.at < CHIEF_STATS_MS) return '';
+    const section = this.chiefStats();
+    if (!section || section === this.chiefStatsSent.text) return '';
+    this.chiefStatsSent = { text: section, at: Date.now() };
+    return `(主控台通知:各節點的統計已更新,以下內容取代先前的節點近況。)
+${section}
+
+`;
   }
 
   /** 把任務的變更送交另一個節點審查。提示詞在這裡組合,diff 由 taskChanges() 取得完整內容。 */
@@ -1114,7 +1168,7 @@ ${text}
     this.broadcast({ tasks: [...this.tasks.values()] });
   }
 
-  private startTask(agent: AgentInfo, text: string, source: SpeechSource): TaskInfo {
+  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: { id: string; name: string }): TaskInfo {
     const task: TaskInfo = {
       id: randomUUID(),
       agentId: agent.id,
@@ -1130,6 +1184,7 @@ ${text}
       subs: [],
       changes: null,
       source,
+      ...(project ? { project } : {}),
     };
     this.interrupted.delete(agent.id);
     this.turnText.delete(agent.id);
