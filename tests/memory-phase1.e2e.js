@@ -84,9 +84,11 @@
     ok(clickIn('甲任務一', 'v-accepted'), '點擊 ✓ 驗收');
     ok(await until('驗收寫入', async () => (await tasksOf(A.id))[0].verdict === 'accepted', 8000), '按下 ✓ 驗收之後任務是 accepted');
     ok(await until('按鈕亮起', () => card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '按鈕顯示為已驗收');
-    ok(await until('已清除', async () => { clickIn('甲任務一', 'v-accepted'); return ((await tasksOf(A.id))[0].verdict ?? null) === null; }, 8000), '再按一次取消驗收');
+    // 驗收按鈕是「再按一次就切換」:每次只點一下,等資料和按鈕外觀都更新後再點下一下(連點會來回切換,結果不固定)
     clickIn('甲任務一', 'v-accepted');
-    await until('再次驗收', async () => (await tasksOf(A.id))[0].verdict === 'accepted', 8000);
+    ok(await until('已清除', async () => ((await tasksOf(A.id))[0].verdict ?? null) === null && !card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '再按一次取消驗收');
+    clickIn('甲任務一', 'v-accepted');
+    ok(await until('再次驗收', async () => (await tasksOf(A.id))[0].verdict === 'accepted' && card('甲任務一')?.querySelector('.v-accepted.on'), 8000), '取消後再按一次又變回驗收');
     ok(clickIn('丙任務一', 'v-rejected'), '點擊 ✗ 退回');
     ok(await until('退回寫入', async () => (await tasksOf(C.id))[0].verdict === 'rejected', 8000), '按下 ✗ 退回之後任務是 rejected');
     await window.nexus.setTaskVerdict(c1.id, null);
