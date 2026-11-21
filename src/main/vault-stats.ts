@@ -165,6 +165,7 @@ const RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
  * 原子寫入 JSON:先寫 <file>.tmp 再改名取代;Windows 上管理 app 正在讀、改名被拒(EPERM、EBUSY、EACCES)時短暫重試,
  * 仍然失敗就清掉暫存檔、回傳 false(留到下一輪)。其他錯誤也回傳 false,不丟出例外。
  */
+// 非同步版本:統計每 5 秒最多寫一次,重試時用 setTimeout 等待,不卡住主行程。主控台關閉前要同步寫完的場合用 vault-sidecar.ts 的 writeJsonAtomic。
 export async function atomicWriteJson(file: string, data: unknown, o: AtomicOptions = {}): Promise<boolean> {
   const attempts = o.attempts ?? 5, delay = o.delayMs ?? 60;
   const rename = o.rename ?? renameSync, write = o.write ?? ((f, d) => writeFileSync(f, d));

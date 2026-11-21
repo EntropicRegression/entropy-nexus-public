@@ -31,6 +31,7 @@ export const RETRY_DELAYS = [25, 50, 100, 200];
  * 只在 EPERM、EBUSY、EACCES 時重試(Windows 上檔案被別的程式開著);其他錯誤直接放棄。永遠不丟例外。
  * 第三個參數只給測試用(假的檔案系統)。
  */
+// 同步版本:主控台關閉前(before-quit)也要確實寫完熱度,所以不用非同步。定期寫入、不想卡住主行程的場合用 vault-stats.ts 的 atomicWriteJson(非同步)。
 export function writeJsonAtomic(file: string, data: unknown, io: SidecarIo = defaultIo): boolean {
   const tmp = `${file}.${process.pid}.tmp`;
   try { io.write(tmp, JSON.stringify(data, null, 2)); } catch { io.remove(tmp); return false; }
