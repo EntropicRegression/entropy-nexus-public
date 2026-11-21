@@ -52,6 +52,7 @@ const SUITES = [
   { name: 'speech-clips', group: 'e2e', core: true, min: 1, ...bash('tests/speech-clips.sh') },
   { name: 'dashboard', group: 'e2e', core: true, min: 1.5, ...bash('tests/dashboard.sh') },
   { name: 'memory-phase1', group: 'e2e', core: true, min: 1.5, ...bash('tests/memory-phase1.sh') },
+  { name: 'case-library', group: 'e2e', core: true, min: 1.5, ...bash('tests/case-library.sh') },
   { name: 'memory-phase2', group: 'e2e', core: true, min: 1, ...bash('tests/memory-phase2.sh') },
   { name: 'collab', group: 'e2e', core: true, min: 1.5, ...bash('tests/collab.sh') },
   { name: 'memory-archive', group: 'e2e', core: true, min: 2, ...bash('tests/memory-archive.sh') },
