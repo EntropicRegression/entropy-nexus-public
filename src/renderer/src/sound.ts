@@ -100,6 +100,7 @@ function phrase(n: SpeechNotice): string {
     case 'failed': {
       const paused = n.queuePaused ? ',排隊的指令已暫停' : '';
       if (n.reason === 'quota') return `${n.agentName} 的額度到達上限,排隊的指令已暫停。`;
+      if (n.reason === 'budget') return `${n.agentName} 今天的用量超過每日預算了。`;
       return n.reason === 'lost' ? `${n.agentName} 失去連線${paused}。` : `${n.agentName} 出錯了${paused}。`;
     }
   }

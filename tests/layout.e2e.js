@@ -122,7 +122,7 @@
         }
       }
       // 對話視窗:主面板只剩上方一條
-      [...document.querySelectorAll('.row')].find(r => r.textContent.includes('節點01'))?.click();
+      window.__nexusSelect('節點01');
       await wait(1800);
       const dlg = document.querySelector('.dialog')?.getBoundingClientRect();
       const cv = rectOf();

@@ -41,7 +41,7 @@
     await wait(700);
     const hb = await window.nexus.getHistory(b.id);
     log('被擋下的節點狀態', (await snap()).agents.find(x => x.id === b.id).state, '| 訊息', JSON.stringify(hb.filter(e => e.type === 'error').pop()?.message), '| 指令是否被記錄', hb.some(e => e.type === 'message' && e.role === 'user'), '| 是否排隊(額度上限不排隊)', (await snap()).agents.find(x => x.id === b.id).queued.length);
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes(b.name)).click();
+    window.__nexusSelect(b.name);
     await wait(600);
     await shot('1-quota-blocked');
     await shot('1-quota-blocked-b');

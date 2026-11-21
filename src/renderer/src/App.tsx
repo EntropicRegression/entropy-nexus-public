@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
+import type { DashboardData } from '../../shared/dashboard';
+import { Dashboard, DashboardFull } from './Dashboard';
 import { HoverCard } from './Hover';
-import { ObservedRows } from './Observe';
 import { VoicePanel } from './Voice';
 import { OldSessions } from './OldSessions';
 import { PersonaEditor } from './PersonaEditor';
@@ -13,10 +14,10 @@ import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
 import { BoardScene, type BoardMore } from './board';
 import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
-import { BACKEND_COLOR, STATE_COLOR, ZONE_TITLE, hex } from './theme';
+import { BACKEND_COLOR, ZONE_TITLE, hex } from './theme';
 
 const MAX_EVENTS = 80;
-// 「需要你」的排最上面
+// Alt+N 依序跳到需要你的節點:待授權的排最前面
 const ATTENTION: Record<AgentState, number> = { awaiting: 0, error: 1, lost: 1, working: 2, planning: 2, idle: 3, sleeping: 4 };
 
 /** 瀏覽器版的遠端裝置可能不是完整權限(操作或唯讀);桌面視窗一律是完整。 */
@@ -47,7 +48,10 @@ export function App() {
   const [showMore, setShowMore] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const [observed, setObserved] = useState<Record<string, ObservedSession>>({});
-  const [hover, setHover] = useState<{ id: string; x: number; y: number; side: 'right' | 'left' } | null>(null);
+  // 總覽儀表:需要資料庫才算得出來的部分(預算、花費、任務統計)由主行程推送;showDash 是完整內容有沒有展開
+  const [dash, setDash] = useState<DashboardData | null>(null);
+  const [showDash, setShowDash] = useState(false);
+  const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null);
   const [muted, setMutedState] = useState(isMuted());
   // 主面板的節點在六角形裡顯示角色的 Q 版頭像(角色資料夾裡有 avatar 圖檔時);預設開啟,設定會記住
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
@@ -66,7 +70,7 @@ export function App() {
         const a = agentsRef.current[n.agentId];
         if (n.kind === 'approval' || n.kind === 'question') return !resolvedRef.current.has(n.requestId) && (!a || a.state !== 'sleeping');
         // 故障:剛發生的照念;排了一陣子才輪到的,節點已經恢復就不念
-        if (n.kind === 'failed' && n.reason !== 'quota' && Date.now() - n.ts > 3000) return !!a && (a.state === 'error' || a.state === 'lost');
+        if (n.kind === 'failed' && n.reason !== 'quota' && n.reason !== 'budget' && Date.now() - n.ts > 3000) return !!a && (a.state === 'error' || a.state === 'lost');
         return true;
       },
     });
@@ -87,6 +91,7 @@ export function App() {
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
+      setDash(prev => prev ?? s.dashboard ?? null);
     });
     const off = window.nexus.onUpdate(u => {
       if (u.agent) { const a = u.agent; setAgents(prev => ({ ...prev, [a.id]: a })); }
@@ -111,6 +116,7 @@ export function App() {
       if (u.task) { const t = u.task; setTasks(prev => (prev.some(x => x.id === t.id) ? prev.map(x => (x.id === t.id ? t : x)) : [...prev, t])); }
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
+      if (u.dashboard) setDash(u.dashboard);
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
       if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
@@ -132,7 +138,18 @@ export function App() {
   }, [showMore]);
 
   const list = useMemo(() => Object.values(agents), [agents]);
-  // 節點清單:需要你的排最上面;子節點緊跟在呼叫它的節點後面
+  const observedList = useMemo(() => Object.values(observed).sort((a, b) => a.startedAt - b.startedAt), [observed]);
+  // 自我檢查用:依名稱(或 id)打開節點的對話視窗,效果和在主面板上點那個節點相同
+  useEffect(() => {
+    const dbg = window as unknown as Record<string, unknown>;
+    dbg.__nexusSelect = (key: string) => {
+      const a = agentsRef.current[key] ?? Object.values(agentsRef.current).find(x => x.name === key) ?? Object.values(agentsRef.current).find(x => x.name.includes(key));
+      if (a) setSelectedId(a.id);
+      return !!a;
+    };
+    return () => { delete dbg.__nexusSelect; };
+  }, []);
+  // Alt+N 的順序:需要你的排最前面;子節點緊跟在呼叫它的節點後面
   const roster = useMemo(() => {
     const roots = list.filter(a => !a.parentId || !agents[a.parentId]).sort((a, b) => ATTENTION[a.state] - ATTENTION[b.state] || a.createdAt - b.createdAt);
     return roots.flatMap(r => [r, ...list.filter(a => a.parentId === r.id).sort((a, b) => a.createdAt - b.createdAt)]);
@@ -148,7 +165,7 @@ export function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'n') { e.preventDefault(); if (fullAccess) setAdding(true); return; }
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); if (fullAccess) setShowOld(true); return; }
       if (e.key === 'Escape' && !reviewId && !showOld) {
-        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (selectedId) setSelectedId(null);
+        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (showDash) setShowDash(false); else if (selectedId) setSelectedId(null);
         return;
       }
       if (!e.altKey || e.ctrlKey) return;
@@ -170,7 +187,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agents, roster, selectedId, reviewId, showOld, showKeys, showMore]);
+  }, [agents, roster, selectedId, reviewId, showOld, showKeys, showMore, showDash]);
   const reviewTask = reviewId ? tasks.find(t => t.id === reviewId) ?? null : null;
   // 對話視窗的「變更」按鈕:這個節點最近一個有變更資料的任務
   const latestTask = (agentId: string) => tasks.filter(t => t.agentId === agentId && t.changes).sort((a, b) => b.startedAt - a.startedAt)[0]?.id ?? null;
@@ -228,6 +245,7 @@ ${c.note}` : ''}`}>
         </div>
       </header>
 
+      {showDash && <DashboardFull agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
       {showView && (
@@ -282,31 +300,16 @@ ${c.note}` : ''}`}>
         </div>
       )}
       <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={h => setHover(h ? { ...h, side: 'right' } : null)} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
-        {hover && agents[hover.id] && hover.side === 'right' && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} side="right" />}
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
+        {hover && agents[hover.id] && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} />}
         {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
         {showOld && <OldSessions onOpened={id => { setShowOld(false); setSelectedId(id); }} onClose={() => setShowOld(false)} />}
       </main>
 
-      {hover && agents[hover.id] && hover.side === 'left' && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} side="left" />}
-      <aside className="roster">
-        <div className="panel-title">節點清單</div>
-        <div className="roster-list">
-          {roster.map(a => (
-            <button key={a.id} className={`row ${a.id === selectedId ? 'on' : ''} s-${a.state} ${a.parentId ? 'sub' : ''}`} onClick={() => setSelectedId(a.id)}
-              onMouseEnter={e => { const r = e.currentTarget.getBoundingClientRect(); setHover({ id: a.id, x: r.left, y: r.top, side: 'left' }); }} onMouseLeave={() => setHover(null)}>
-              <span className="dot" style={{ borderColor: hex(BACKEND_COLOR[a.backend]), background: hex(STATE_COLOR[a.state]) }} />
-              <span className="row-main">
-                <span className="row-name">{a.name}</span>
-                <span className="row-sub">{a.parentId ? `子代理 · ${agents[a.parentId]?.name ?? ''}` : `${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''}${a.simulated ? ' · 模擬' : ''}`}</span>
-              </span>
-              <span className="row-state">{STATE_LABEL[a.state]}</span>
-            </button>
-          ))}
-          {list.length === 0 && <div className="empty">還沒有節點。按下方按鈕新增。</div>}
-          <ObservedRows list={Object.values(observed).sort((a, b) => a.startedAt - b.startedAt)} onOpened={setSelectedId} />
-        </div>
+      {/* 右側欄:最上面是常駐的總覽儀表(原本節點清單的位置),下面是任務面板與新增節點 */}
+      <aside className="sidebar">
+        <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => setShowDash(v => !v)} onSelect={setSelectedId} />
         {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">

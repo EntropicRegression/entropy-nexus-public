@@ -14,7 +14,7 @@
     const a = await window.nexus.createAgent({ name: 'Smoke', character: '', model: 'haiku', backend: 'claude', cwd: window.__TEST_CWD__, permissionMode: 'ask' });
     const state = async () => (await window.nexus.getSnapshot()).agents.find(x => x.id === a.id);
     await until('待命', async () => (await state()).state === 'idle');
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Smoke')).click();
+    window.__nexusSelect('Smoke');
     await wait(500);
     await window.nexus.send(a.id, '只回覆兩個字:OK');
     await wait(800);

@@ -147,7 +147,7 @@
     // 開 C 的對話視窗截圖
     document.querySelector('.review .ghost').click();
     await wait(300);
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Agy-C'))?.click();
+    window.__nexusSelect('Agy-C');
     await wait(900);
     await shot('4-reviewer-dialog');
 

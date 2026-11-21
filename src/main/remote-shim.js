@@ -156,7 +156,7 @@
     answerQuestion: 'answer', sleep: 'sleep', wake: 'wake', setAutopilot: 'autopilot', setMaxActive: 'maxActive', getAvatar: 'getAvatar', getPersona: 'getPersona', setPersona: 'setPersona',
     clearFinishedTasks: 'clearTasks', getTaskChanges: 'taskChanges', listOldSessions: 'oldSessions', inspectDir: 'inspectDir', revertTask: 'revertTask', commitTask: 'commitTask',
     sendReviewComments: 'sendReviewComments', requestReview: 'requestReview', worktreeStatus: 'worktreeStatus', mergeWorktree: 'mergeWorktree', openPullRequest: 'openPr',
-    setQuotaStop: 'quotaStop', remoteStatus: 'remoteStatus', remoteSet: 'remoteSet', remoteNewCode: 'remoteNewCode', remoteRevoke: 'remoteRevoke', remotePairAccess: 'remotePairAccess', remoteSetDevice: 'remoteSetDevice', remoteAudit: 'remoteAudit',
+    setQuotaStop: 'quotaStop', setDailyBudget: 'setDailyBudget', remoteStatus: 'remoteStatus', remoteSet: 'remoteSet', remoteNewCode: 'remoteNewCode', remoteRevoke: 'remoteRevoke', remotePairAccess: 'remotePairAccess', remoteSetDevice: 'remoteSetDevice', remoteAudit: 'remoteAudit',
     observeStatus: 'observeStatus', observeInstall: 'observeInstall', observeUninstall: 'observeUninstall', observeNewToken: 'observeNewToken', observeTakeover: 'observeTakeover',
     openOldSession: 'openOldSession', forkAgent: 'forkAgent', setChief: 'setChief',
   };

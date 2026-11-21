@@ -124,7 +124,7 @@ window.__layoutScene = async function layoutScene(name) {
   const btn = (text, root = document) => root && [...root.querySelectorAll('button')].find(b => b.textContent.trim() === text);
   if (name === 'board') { await wait(1200); return [...window.__layoutAudit(), ...window.__boardIssues()]; }
   if (name === 'dialog') {
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('節點01'))?.click();
+    window.__nexusSelect('節點01');
     await wait(1500);
     return [...window.__layoutAudit(), ...window.__boardIssues()];
   }

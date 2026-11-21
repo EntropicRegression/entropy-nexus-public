@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { BACKEND_LABEL, usageWindowsFor, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
+import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import type {
   AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
@@ -26,6 +27,10 @@ const SUB_LINGER_MS = Number(process.env.NEXUS_SUB_LINGER_MS) || 20000;
 
 /** 每個節點最多排幾筆指令。 */
 const MAX_QUEUED = 50;
+/** 節點出錯或失聯超過這段時間,儀表就提醒;NEXUS_FAULT_WARN_MS 可在測試時縮短。 */
+const FAULT_MS = Number(process.env.NEXUS_FAULT_WARN_MS) || FAULT_WARN_MS;
+/** 儀表的每日紀錄(花費、額度起點、任務統計)保留幾天。 */
+const DAILY_KEEP_DAYS = 90;
 
 const DEMO_PROMPTS = ['整理這個模組', '跑一次測試', '找出效能瓶頸', '更新說明文件', '修正型別錯誤'];
 
@@ -73,6 +78,14 @@ export class Core {
   /** 正在拍快照、還沒真正送出第一句的節點;算進同時執行數,也不會被佇列重複送出。 */
   private starting = new Set<string>();
   private pumpScheduled = false;
+  /** 使用者調整過的每日預算(佔每週額度的百分比);沒有調整過的後台用預設值。存在設定的 dailyBudget。 */
+  private budgets = new Map<Backend, number>();
+  /** 儀表資料的推送:短時間內的多次變動合併成一次。 */
+  private dashTimer: NodeJS.Timeout | null = null;
+  private dayTimer: NodeJS.Timeout | null = null;
+  private dashDate = localDate(Date.now());
+  /** 各任務上次記進每日統計的狀態,狀態沒變就不必重算儀表。 */
+  private taskStatus = new Map<string, string>();
 
   // 三家都已接上真正的 CLI。FakeAdapter 保留給開發時測試畫面用(NEXUS_FAKE=1 時全部改用假資料)
   private adapters: Record<Backend, Adapter> = {
@@ -94,6 +107,7 @@ export class Core {
     // 重開後行程都不在了:還原成休眠,由使用者喚醒續接
     for (const a of this.store.loadAgents()) {
       a.state = 'sleeping';
+      a.stateSince = Date.now();
       a.detail = '';
       a.simulated = this.isSimulated(a.backend);
       // 假資料時期留下的 session 不能拿去續接真正的 CLI
@@ -116,7 +130,9 @@ export class Core {
         t.endedAt = Date.now();
         for (const s of t.subs) if (s.status === 'running') s.status = 'done';
         this.store.saveTask(t);
+        this.store.recordTask(t.id, localDate(t.startedAt), t.agentId, t.status);
       }
+      this.taskStatus.set(t.id, t.status);
       this.tasks.set(t.id, t);
       const cwd = this.agents.get(t.agentId)?.cwd;
       if (cwd) this.taskCwd.set(t.id, cwd);
@@ -127,6 +143,12 @@ export class Core {
     if (Number.isInteger(stop) && stop >= 0 && stop <= 100) this.quotaStop = stop;
     const saved = Number(this.store.getSetting('maxActive'));
     if (Number.isInteger(saved) && saved >= 1) this.maxActive = saved;
+    try {
+      const budgets = JSON.parse(this.store.getSetting('dailyBudget') ?? '{}') as Record<string, unknown>;
+      for (const backend of Object.keys(this.adapters) as Backend[]) { const v = normalizeBudget(budgets?.[backend]); if (v !== null) this.budgets.set(backend, v); }
+    } catch { /* 存壞了就用預設值 */ }
+    this.store.pruneDaily(shiftDate(this.dashDate, -DAILY_KEEP_DAYS));
+    this.dayTimer = setInterval(() => this.dayTick(), 30000);
     this.autopilotTimer = setInterval(() => this.autopilotTick(), 2500);
     this.watchdogTimer = setInterval(() => this.watchdogTick(), Math.min(30000, Math.max(1000, STALL_MS / 4)));
   }
@@ -157,7 +179,73 @@ export class Core {
       characters: listCharacters(),
       portraitsDir: portraitsDir(),
       chiefId: this.chiefId,
+      dashboard: this.dashboard(),
     };
+  }
+
+  /** 總覽儀表的資料:各後台今天的預算用量、本週的花費、今天的任務統計。額度本身在 usage,節點狀態在 agents。 */
+  dashboard(): DashboardData {
+    const now = Date.now();
+    const date = localDate(now);
+    const from = weekStart(date);
+    return {
+      date,
+      weekStart: from,
+      budgets: (Object.keys(this.adapters) as Backend[]).map(b => budgetStatus(b, this.usage.get(b), this.store.latestBaseline(b), this.budgets.get(b) ?? null, date, now)),
+      spend: this.store.spendSince(from),
+      tasks: countTasks(this.store.tasksOn(date)),
+      faultWarnMs: FAULT_MS,
+    };
+  }
+
+  /**
+   * 設定某家後台的每日預算(佔每週額度的百分比,0 到 100;0 表示不提醒);null 表示改回預設值。
+   * 超過預算只提醒(儀表上的警示與一次語音),不會擋下指令;擋下新指令是「額度上限」的事。
+   */
+  setDailyBudget(backend: Backend, percent: number | null): void {
+    if (!Object.hasOwn(this.adapters, backend)) return;
+    const value = percent === null ? null : normalizeBudget(percent);
+    if (percent !== null && value === null) return;
+    if (value === null) this.budgets.delete(backend); else this.budgets.set(backend, value);
+    this.store.setSetting('dailyBudget', JSON.stringify(Object.fromEntries(this.budgets)));
+    // 調高預算後回到預算內:之後再超過時要重新提醒
+    const now = Date.now();
+    const b = this.store.latestBaseline(backend);
+    if (b?.warned && b.date === localDate(now) && budgetStatus(backend, this.usage.get(backend), b, value, b.date, now).level !== 'over') this.store.saveBaseline({ ...b, warned: false });
+    this.pushDashboard();
+  }
+
+  private pushDashboard(): void {
+    if (this.dashTimer) { clearTimeout(this.dashTimer); this.dashTimer = null; }
+    this.broadcast({ dashboard: this.dashboard() });
+  }
+
+  private scheduleDashboard(): void {
+    if (this.dashTimer) return;
+    this.dashTimer = setTimeout(() => { this.dashTimer = null; this.pushDashboard(); }, 300);
+  }
+
+  /** 換日:今天的用量、花費與任務統計重新起算,畫面跟著更新;順便清掉太舊的每日紀錄。 */
+  private dayTick(): void {
+    const today = localDate(Date.now());
+    if (today === this.dashDate) return;
+    this.dashDate = today;
+    this.store.pruneDaily(shiftDate(today, -DAILY_KEEP_DAYS));
+    this.pushDashboard();
+  }
+
+  /** 讀到新的額度後更新今天的每週額度起點;今天的用量第一次超過每日預算時念一次提醒(只提醒,不擋指令)。 */
+  private trackBudget(u: BackendUsage): void {
+    const bw = budgetWindow(u.windows);
+    if (!bw) return;
+    const now = Date.now();
+    const next = nextBaseline(this.store.latestBaseline(u.backend), u.backend, { date: localDate(now), used: bw.window.used, resetsAt: bw.window.resetsAt });
+    if (!next.warned && budgetStatus(u.backend, u, next, this.budgets.get(u.backend) ?? null, next.date, now).level === 'over') {
+      next.warned = true;
+      this.speak({ kind: 'failed', reason: 'budget', agentId: `budget:${u.backend}`, agentName: BACKEND_LABEL[u.backend], ts: now, queuePaused: false });
+    }
+    this.store.saveBaseline(next);
+    this.scheduleDashboard();
   }
 
   /**
@@ -337,6 +425,7 @@ export class Core {
       permissionMode: input.permissionMode,
       sessionId: resumeSessionId,
       state: 'planning',
+      stateSince: Date.now(),
       detail: resumeSessionId ? '續接中' : fork ? '分支中' : '啟動中',
       pendingApproval: null,
       pendingQuestion: null,
@@ -727,6 +816,8 @@ ${text}
   async shutdown(): Promise<void> {
     if (this.autopilotTimer) clearInterval(this.autopilotTimer);
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    if (this.dayTimer) clearInterval(this.dayTimer);
+    if (this.dashTimer) { clearTimeout(this.dashTimer); this.dashTimer = null; }
     closeAllTerminals();
     await Promise.all([...this.sessions.keys()].map(id => this.stopSession(id)));
   }
@@ -775,6 +866,7 @@ ${text}
     const event = this.store.appendEvent(agentId, e);
     switch (e.type) {
       case 'state':
+        if (agent.state !== e.state || !agent.stateSince) agent.stateSince = event.ts;
         agent.state = e.state;
         agent.detail = e.detail ?? '';
         // 要在 trackTask 清掉中斷標記之前判斷
@@ -888,11 +980,15 @@ ${text}
       this.usage.set(agent.backend, u);
       this.store.setSetting(`usage:${agent.backend}`, JSON.stringify(u));
       this.broadcast({ usage: u });
+      this.trackBudget(u);
     }
     if (e.spent && (e.spent.tokens > 0 || (e.spent.usd ?? 0) > 0)) {
       const add = { tokens: Math.max(0, e.spent.tokens), usd: Math.max(0, e.spent.usd ?? 0) };
       agent.spent = { tokens: agent.spent.tokens + add.tokens, usd: agent.spent.usd + add.usd };
       this.store.updateAgent(agent);
+      // 依日期累計,儀表才算得出今天與本週的花費
+      this.store.addSpend(localDate(Date.now()), agent.backend, agent.id, agent.name, add.tokens, add.usd);
+      this.scheduleDashboard();
       const task = this.tasks.get(this.current.get(agent.id) ?? '') ?? [...this.tasks.values()].filter(t => t.agentId === agent.id).sort((a, b) => b.startedAt - a.startedAt)[0];
       if (task) {
         task.cost = { tokens: (task.cost?.tokens ?? 0) + add.tokens, usd: (task.cost?.usd ?? 0) + add.usd };
@@ -1013,7 +1109,7 @@ ${text}
   }
 
   clearFinishedTasks(): void {
-    for (const [id, t] of this.tasks) if (t.endedAt !== null) this.tasks.delete(id);
+    for (const [id, t] of this.tasks) if (t.endedAt !== null) { this.tasks.delete(id); this.taskStatus.delete(id); }
     this.store.deleteFinishedTasks();
     this.broadcast({ tasks: [...this.tasks.values()] });
   }
@@ -1087,6 +1183,12 @@ ${text}
 
   private pushTask(task: TaskInfo): void {
     this.store.saveTask(task);
+    // 今天的任務統計:狀態有變才重算
+    if (this.taskStatus.get(task.id) !== task.status) {
+      this.taskStatus.set(task.id, task.status);
+      this.store.recordTask(task.id, localDate(task.startedAt), task.agentId, task.status);
+      this.scheduleDashboard();
+    }
     this.broadcast({ task: { ...task, steps: [...task.steps], subs: task.subs.map(s => ({ ...s })) } });
   }
 

@@ -3,14 +3,14 @@ import { BACKEND_COLOR, hex } from './theme';
 
 const SEGMENTS = 20;
 
-function when(ts: number): string {
+export function when(ts: number): string {
   const d = new Date(ts * 1000);
   const sameDay = d.toDateString() === new Date().toDateString();
   const time = d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
   return sameDay ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
 }
 
-function ago(ms: number): string {
+export function ago(ms: number): string {
   const m = Math.round((Date.now() - ms) / 60000);
   if (m < 1) return '剛剛';
   if (m < 60) return `${m} 分鐘前`;
@@ -38,18 +38,16 @@ function HpBar({ label, remaining, note, kind = 'hp' }: { label: string; remaini
  * 游標停在節點上時的資訊卡:以血量條顯示這個後台帳號的剩餘額度,以及這個節點的剩餘記憶空間。
  * 額度是整個帳號共用的,同一家後台的節點會顯示相同的數字。
  */
-export function HoverCard({ agent: a, usage, x, y, side }: { agent: AgentInfo; usage?: BackendUsage; x: number; y: number; side: 'right' | 'left' }) {
+export function HoverCard({ agent: a, usage, x, y }: { agent: AgentInfo; usage?: BackendUsage; x: number; y: number }) {
   const ctx = a.context;
   // 額度依模型分組的後台只顯示這個節點的模型所屬的那一組
   const windows = usageWindowsFor(a.model, usage?.windows ?? []);
   // 靠近右邊或下緣時把卡片翻到另一側,避免超出視窗
-  const flip = side === 'right' && x > window.innerWidth - 312 - 300;
+  const flip = x > window.innerWidth - 312 - 300;
   const up = y > window.innerHeight - 420;
-  const transform = side === 'right'
-    ? `translate(${flip ? 'calc(-100% - 44px)' : '44px'}, ${up ? 'calc(-100% + 34px)' : '-34px'})`
-    : `translate(calc(-100% - 10px), ${up ? 'calc(-100% + 40px)' : '-6px'})`;
+  const transform = `translate(${flip ? 'calc(-100% - 44px)' : '44px'}, ${up ? 'calc(-100% + 34px)' : '-34px'})`;
   return (
-    <div className={`hovercard ${side}`} style={{ left: x, top: y, transform }}>
+    <div className="hovercard right" style={{ left: x, top: y, transform }}>
       <div className="hc-head">
         <i style={{ background: hex(BACKEND_COLOR[a.backend]) }} />
         <b>{a.name}</b>

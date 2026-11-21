@@ -54,7 +54,7 @@
     log('甲 session', srcSession);
 
     // ---- 2. 從對話視窗按「分支對話」
-    [...document.querySelectorAll('.roster .row')].find(r => r.textContent.includes('甲')).click();
+    window.__nexusSelect('甲');
     await until('對話視窗', () => document.querySelector('.dlg-id'));
     const forkBtn = await until('分支對話按鈕', () => [...document.querySelectorAll('.dlg-id button')].find(b => b.textContent === '分支對話'));
     check('甲 的分支對話按鈕可用', !forkBtn.disabled);

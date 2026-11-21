@@ -47,6 +47,7 @@ const api: NexusApi = {
   mergeWorktree: id => ipcRenderer.invoke('nexus:mergeWorktree', id),
   openPullRequest: id => ipcRenderer.invoke('nexus:openPr', id),
   setQuotaStop: n => ipcRenderer.invoke('nexus:quotaStop', n),
+  setDailyBudget: (backend, percent) => ipcRenderer.invoke('nexus:setDailyBudget', backend, percent),
   remoteStatus: () => ipcRenderer.invoke('nexus:remoteStatus'),
   remoteSet: patch => ipcRenderer.invoke('nexus:remoteSet', patch),
   remoteNewCode: () => ipcRenderer.invoke('nexus:remoteNewCode'),

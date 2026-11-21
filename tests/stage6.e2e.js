@@ -19,7 +19,7 @@
     await until('兩個節點待命', async () => (await snap()).agents.every(a => a.state === 'idle'), 60000);
 
     // Claude:提問 → 在對話視窗作答
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Claude-6')).click();
+    window.__nexusSelect('Claude-6');
     await wait(500);
     await window.nexus.send(cl.id, '請用 AskUserQuestion 工具問我一個問題:「要用哪種顏色?」選項是紅色、藍色、綠色。我回答之後,用一句話告訴我你收到的答案。');
     await until('Claude 的提問出現在對話視窗', () => document.querySelector('.dlg-question'), 60000);

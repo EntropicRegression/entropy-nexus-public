@@ -17,7 +17,7 @@
     await wait(2500);
     await shot('sleep-1-three-asleep');
     // 打開、關閉對話視窗:面板高度改變,節點重新排位
-    [...document.querySelectorAll('.roster-list .row')].find(r => r.textContent.includes('claudia')).click();
+    window.__nexusSelect('claudia');
     await wait(1500);
     await shot('sleep-2-dialog-open');
     document.querySelector('.dlg-id button[aria-label="關閉"]').click();

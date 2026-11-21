@@ -19,7 +19,7 @@
 
     // 1. 對話視窗開啟時,被選取的節點仍在面板的可見範圍內
     const target = list[0];
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes(target.name)).click();
+    window.__nexusSelect(target.name);
     await wait(1400);
     const board = $('.board').getBoundingClientRect(), dlg = $('.dialog').getBoundingClientRect();
     const pos = window.__nexusBoard.positions().find(p => p.id === target.id);

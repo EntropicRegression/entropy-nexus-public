@@ -29,7 +29,7 @@ export function ObservePanel({ onClose, embedded = false }: { onClose: () => voi
     <div className={embedded ? 'remote-section observe' : 'remote observe'}>
       {!embedded && <div className="remote-head"><b>外部觀察</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>}
       {!st ? <div className="empty">讀取中…</div> : <>
-        <p className="remote-note">在主控台以外(例如 VS Code 或 Windows Terminal)執行的 Claude Code,裝上 hooks 後會即時回報狀態,顯示在右側節點清單的「外部」區塊。只能觀看,不能授權或下指令;要操作請按「接手」。</p>
+        <p className="remote-note">在主控台以外(例如 VS Code 或 Windows Terminal)執行的 Claude Code,裝上 hooks 後會即時回報狀態,顯示在右上角「總覽」儀表的「外部觀察」區塊(儀表的標題列會出現「外部 N」)。只能觀看,不能授權或下指令;要操作請按「接手」。</p>
         {st.listening
           ? <div className="remote-ok">接收端已啟動:127.0.0.1:{st.port}(只接受本機連線)</div>
           : <div className="remote-warn">{st.error || '接收端尚未啟動'}</div>}
@@ -54,7 +54,7 @@ export function ObservePanel({ onClose, embedded = false }: { onClose: () => voi
   );
 }
 
-/** 右側節點清單的「外部」區塊。 */
+/** 總覽儀表完整內容裡的「外部觀察」區塊:列出外部節點,可以接手。 */
 export function ObservedRows({ list, onOpened }: { list: ObservedSession[]; onOpened: (agentId: string) => void }) {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState('');

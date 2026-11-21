@@ -17,7 +17,7 @@
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, text);
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  const openDialog = async name => { [...document.querySelectorAll('.row')].find(r => r.textContent.includes(name)).click(); await wait(600); };
+  const openDialog = async name => { window.__nexusSelect(name); await wait(600); };
 
   try {
     const cwd = window.__TEST_CWD__;

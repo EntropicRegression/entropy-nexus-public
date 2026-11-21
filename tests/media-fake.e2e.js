@@ -54,7 +54,7 @@
     { const r = await fetch(url(a.id, 'pics/sample.png')); expect('回應標頭', r.headers.get('x-content-type-options') === 'nosniff' && /default-src 'none'/.test(r.headers.get('content-security-policy') ?? ''), `${r.headers.get('x-content-type-options')} | ${r.headers.get('content-security-policy')}`); }
 
     // ---------- 回覆裡的圖片與工具結果圖片事件
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Pixel')).click();
+    window.__nexusSelect('Pixel');
     await wait(500);
     const reply = [
       'Markdown 圖片語法:![範例圖](pics/sample.png)',

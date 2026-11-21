@@ -19,7 +19,7 @@ export function clipKindsFor(n: SpeechNotice): SpeechClipKind[] {
     case 'done': return ['done'];
     case 'approval': return ['approval'];
     case 'question': return ['question'];
-    case 'failed': return n.reason === 'lost' ? ['lost', 'failed'] : n.reason === 'quota' ? ['quota', 'failed'] : ['failed'];
+    case 'failed': return n.reason === 'lost' ? ['lost', 'failed'] : n.reason === 'quota' || n.reason === 'budget' ? ['quota', 'failed'] : ['failed'];
   }
 }
 

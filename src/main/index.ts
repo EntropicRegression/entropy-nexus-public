@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ApprovalDecision, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
+import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -108,6 +108,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     mergeWorktree: (id: string) => c.mergeWorktree(id),
     openPr: (id: string) => c.openPullRequest(id),
     quotaStop: (n: number) => c.setQuotaStop(n),
+    setDailyBudget: (backend: Backend, percent: number | null) => c.setDailyBudget(backend, percent),
     remoteStatus: () => remoteStatus(),
     remoteSet: (patch: { enabled?: boolean; lan?: boolean }) => remoteSet(patch),
     remoteNewCode: () => remoteNewCode(),

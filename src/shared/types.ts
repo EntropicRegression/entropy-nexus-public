@@ -1,5 +1,7 @@
 // 主行程、preload 與畫面共用的型別。畫面只認這裡定義的狀態與事件。
 
+import type { DashboardData } from './dashboard';
+
 export type Backend = 'claude' | 'codex' | 'antigravity';
 
 /** 統一的七種狀態;三家 CLI 的事件都由轉接器翻譯成這一組。 */
@@ -77,6 +79,8 @@ export interface AgentInfo {
   /** 後台 CLI 的 session 識別碼,用來續接。 */
   sessionId: string | null;
   state: AgentState;
+  /** 進入目前這個狀態的時間;儀表用來提醒「異常太久」。重開主控台後從還原的時間算起,舊資料沒有這個欄位。 */
+  stateSince?: number;
   /** 一行狀態讀數,例如目前的工具或錯誤原因。 */
   detail: string;
   pendingApproval: PendingApproval | null;
@@ -268,6 +272,8 @@ export interface Snapshot {
   access?: RemoteAccess;
   /** 總管節點(主控語音模式):使用者對它說的話由它分派給其他節點;null 表示沒有指定。 */
   chiefId: string | null;
+  /** 總覽儀表的資料:每日預算、花費與今天的任務統計。 */
+  dashboard: DashboardData;
 }
 
 /**
@@ -329,6 +335,8 @@ export interface Update {
   observedRemovedId?: string;
   /** 總管節點換了(null 表示解除)。 */
   chiefId?: string | null;
+  /** 總覽儀表的資料有變(花費、預算用量、任務統計、換日)。 */
+  dashboard?: DashboardData;
 }
 
 export interface CreateAgentInput {
@@ -472,10 +480,11 @@ export interface VoiceProfile { hasVoice: boolean; ms: number; promptText: strin
  * 語音播報的通知(Phase 2a),主行程只推給桌面畫面。
  * done:桌面發起的回合正常完成,summary 是規則摘要(null 表示找不到適合念的句子,畫面改念固定的完成通知);
  * failed:桌面發起的回合出錯、失聯,或排隊的指令被額度上限擋下;approval、question:節點在等使用者(不分來源)。
+ * failed 的 reason 是 budget 時不屬於任何節點:某家後台今天的用量超過每日預算(agentName 是後台名稱,agentId 是 budget:<後台>),一天最多念一次。
  */
 export type SpeechNotice =
   | { kind: 'done'; agentId: string; agentName: string; ts: number; taskId: string; summary: string | null }
-  | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota'; queuePaused: boolean; taskId?: string }
+  | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota' | 'budget'; queuePaused: boolean; taskId?: string }
   | { kind: 'approval' | 'question'; agentId: string; agentName: string; ts: number; requestId: string };
 
 /**
@@ -606,6 +615,8 @@ export interface NexusApi {
   mergeWorktree(id: string): Promise<string>;
   openPullRequest(id: string): Promise<string>;
   setQuotaStop(percent: number): Promise<void>;
+  /** 設定某家後台的每日預算(佔每週額度的百分比,0 到 100;0 表示不提醒);null 表示改回預設值(每週額度的 1/7)。超過只提醒,不擋指令。 */
+  setDailyBudget(backend: Backend, percent: number | null): Promise<void>;
   remoteStatus(): Promise<RemoteStatus>;
   remoteSet(patch: { enabled?: boolean; lan?: boolean }): Promise<void>;
   remoteNewCode(): Promise<void>;
