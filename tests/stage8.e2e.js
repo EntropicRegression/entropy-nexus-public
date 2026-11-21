@@ -21,7 +21,7 @@
     const cwd = window.__TEST_CWD__;
     const a = await window.nexus.createAgent({ name: 'Claude-8', character: '', model: 'haiku', backend: 'claude', cwd, permissionMode: 'ask' });
     await until('待命', async () => (await agentOf(a.id)).state === 'idle', 60000);
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Claude-8')).click();
+    window.__nexusSelect('Claude-8');
     await wait(600);
 
     // 1. 附加圖片:模型要真的看得到圖片內容

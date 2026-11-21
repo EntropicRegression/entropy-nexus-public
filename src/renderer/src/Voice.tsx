@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { VoiceProfile, VoiceStatus } from '../../shared/types';
-import { pauseSpeech, resumeSpeech } from './sound';
+import { SPEECH_ENGINES, type SpeechClipKind, type SpeechEngineId, type VoiceProfile, type VoiceStatus } from '../../shared/types';
+import { pauseSpeech, resumeSpeech, setSpeakOn, useSpeakOn } from './sound';
 
 /**
  * 語音模式(實驗性,Phase 1):按住說話 → 錄成 16 kHz 單聲道 WAV → 主控台的語音服務轉成文字 → 填進輸入框。
@@ -145,6 +145,7 @@ export function MicButton({ disabled, onText, onNote }: { disabled: boolean; onT
 /** 頂部「語音」的設定面板。 */
 export function VoicePanel({ onClose }: { onClose: () => void }) {
   const st = useVoice();
+  const speakOn = useSpeakOn();
   const [command, setCommand] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [ttsDir, setTtsDir] = useState<string | null>(null);
@@ -161,7 +162,7 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
   };
   const val = (draft: string | null, saved: string | undefined) => (draft !== null && draft !== saved);
   const dirty = !!st && (val(command, st.command) || val(model, st.model) || val(ttsDir, st.ttsDir) || val(ttsModel, st.ttsModel));
-  const TTS_TEXT = { off: '沒有設定', warming: '載入中', ready: '可以使用', error: '異常' } as const;
+  const TTS_TEXT = { off: '沒有設定', warming: '載入中', ready: '可以使用', unloaded: '已卸載', error: '異常' } as const;
   // 試聽:用這個角色的聲音念一句
   const listen = async (character: string) => {
     setPreview(character); setErr('');
@@ -177,8 +178,16 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="remote voice">
-      <div className="remote-head"><b>語音模式(實驗性)</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
-      {!st ? <div className="empty">讀取中…</div> : <>
+      <div className="remote-head"><b>語音</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
+      <div className="remote-sub first">語音播報(朗讀)</div>
+      <div className="speak-row">
+        <button className={`ghost mute speak-switch ${speakOn ? 'on' : ''}`} aria-pressed={speakOn} onClick={() => setSpeakOn(!speakOn)}>{speakOn ? '朗讀 開' : '朗讀 關'}</button>
+        <span className="remote-note">預設關閉,設定會記住。不需要啟用下面的語音模式就能用。</span>
+      </div>
+      <p className="remote-note">打開後,會念出:你從桌面交辦的回合正常完成時的一句重點;節點等你授權、有問題要問你,或你交辦的回合出錯、失聯、排隊的指令被額度上限擋住時的提醒。節點互相呼叫、會議、遠端送來的指令與被中斷的回合不念完成摘要;子代理的回覆不念。朗讀中頂部會出現「停止朗讀」,按下去會停掉目前這則並清空佇列。</p>
+      <SpeechEngines />
+      <div className="remote-sub">語音模式(實驗性)</div>
+      {!st ?<div className="empty">讀取中…</div> : <>
         <p className="remote-note">啟用後,對話視窗的輸入框旁會出現「說話」按鈕:按住說話,放開後由本機的語音服務轉成文字填進輸入框,你確認後再自己送出。語音不會上傳到網路,也不能用來回覆授權。需要先在這台電腦準備 Python 與 faster-whisper(見 tools/voice-server/README.md)。</p>
         <label className="toggle">
           <input type="checkbox" checked={st.enabled} disabled={busy} onChange={e => act({ enabled: e.target.checked })} />
@@ -198,7 +207,8 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
         <div className="remote-sub">節點自己的聲音(語音合成,選用)</div>
         <p className="remote-note">填入 CosyVoice 的資料夾後,語音播報會改用各角色的聲音:把一段 3 到 10 秒、只有一個人說話、沒有背景音的 16-bit WAV 存成角色資料夾裡的 voice.wav。可以另外放 voice.txt(錄音說的內容,沒有就自動辨識)與 style.txt(語氣指令,例如「用活潑、甜美的語氣說」)。沒有 voice.wav 的角色仍用系統語音。請只用自己錄的、或取得本人同意的聲音。</p>
         <div className={st.tts.state === 'ready' ? 'remote-ok' : st.tts.state === 'error' ? 'remote-warn' : 'remote-note'}>
-          語音合成:{TTS_TEXT[st.tts.state]}{st.tts.detail ? `:${st.tts.detail}` : ''}
+          語音合成:{TTS_TEXT[st.tts.state]}{st.tts.detail ? `:${st.tts.detail}` : ''}{st.tts.vramMB ? `(顯示卡記憶體 ${st.tts.vramMB} MB)` : ''}
+          <TtsPower st={st} />
         </div>
         <input className="voice-field" value={ttsDir ?? st.ttsDir} placeholder="CosyVoice 資料夾,例如 C:\Users\你\AppData\Local\entropy-nexus-tts\CosyVoice" onChange={e => setTtsDir(e.target.value)} spellCheck={false} />
         <input className="voice-field" value={ttsModel ?? st.ttsModel} placeholder="模型資料夾(空白表示 <資料夾>\pretrained_models\CosyVoice2-0.5B)" onChange={e => setTtsModel(e.target.value)} spellCheck={false} />
@@ -220,6 +230,94 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
         {st.log.length > 0 && <pre className="observe-preview voice-log">{st.log.join('\n')}</pre>}
       </>}
     </div>
+  );
+}
+
+const ENGINE_TEXT: Record<SpeechEngineId, { name: string; note: string }> = {
+  clips: { name: '固定語音', note: '角色資料夾 clips/ 裡預先錄好的短句(done.wav、approval.wav、question.wav、failed.wav,可另放 lost、quota;同一事件可以放 done-2.wav 等多條隨機播)。不需要語音服務、沒有延遲,但念不出完成的摘要。' },
+  local: { name: '本機語音合成', note: '用角色的 voice.wav 即時念出整句,包括完成的摘要;需要啟用下面的語音模式並設定語音合成。' },
+};
+const CLIP_TEXT: Record<SpeechClipKind, string> = { done: '完成', approval: '授權', question: '提問', failed: '出錯', lost: '失聯', quota: '額度' };
+type SpeechInfo = Awaited<ReturnType<typeof window.nexus.speechSettings>>;
+
+/** 播報的聲音來源(語音引擎):勾選、排順序,並列出各角色錄了哪些固定語音(點一下試聽)。 */
+function SpeechEngines() {
+  const voice = useVoice();
+  const [s, setS] = useState<SpeechInfo | null>(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    const load = () => void window.nexus.speechSettings().then(setS, e => setErr(clean(e)));
+    load();
+    // 語音合成載入完成、資料夾裡新增了錄音,都靠定時重新讀取
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, []);
+  if (!s) return null;
+  const on = s.settings.engines;
+  const order = [...on, ...SPEECH_ENGINES.filter(id => !on.includes(id))];
+  const save = (engines: SpeechEngineId[]) => { setErr(''); void window.nexus.speechSet({ engines }).then(setS, e => setErr(clean(e))); };
+  const toggle = (id: SpeechEngineId) => save(on.includes(id) ? on.filter(x => x !== id) : order.filter(x => x === id || on.includes(x)));
+  const up = (id: SpeechEngineId) => { const list = [...on]; const i = list.indexOf(id); if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; save(list); } };
+  const listen = async (character: string, kind: SpeechClipKind) => {
+    try {
+      const r = await window.nexus.speechClip(character, kind);
+      if (!r) return;
+      const url = URL.createObjectURL(new Blob([r.audio], { type: r.mime }));
+      const a = new Audio(url);
+      a.onended = () => URL.revokeObjectURL(url);
+      await a.play();
+    } catch (e) { setErr(clean(e)); }
+  };
+  return (
+    <>
+      <div className="remote-sub">播報的聲音來源</div>
+      <p className="remote-note">依序嘗試勾選的來源,第一個有聲音的就用它;都沒有(或節點沒有角色)時用系統語音。</p>
+      {order.map(id => {
+        const i = on.indexOf(id);
+        const st = s.engines.find(e => e.id === id);
+        return (
+          <div key={id} className="speech-engine">
+            <div className="speech-engine-row">
+              <label className="toggle"><input type="checkbox" checked={i >= 0} onChange={() => toggle(id)} />{i >= 0 ? `${i + 1}. ` : ''}{ENGINE_TEXT[id].name}</label>
+              <em className={st?.ready ? 'embed' : 'pathonly'}>{st?.ready ? '可以使用' : '尚未就緒'}{st?.detail ? `:${st.detail}` : ''}</em>
+              {id === 'local' && voice && <TtsPower st={voice} onError={setErr} />}
+              {i > 0 && <button className="ghost" onClick={() => up(id)} title="往前移,先試這個來源" aria-label={`${ENGINE_TEXT[id].name}往前移`}>↑</button>}
+            </div>
+            <div className="remote-note">{ENGINE_TEXT[id].note}</div>
+          </div>
+        );
+      })}
+      {s.clips.length > 0 && <div className="voice-chars">
+        {s.clips.map(c => (
+          <div key={c.character} className="voice-char">
+            <span>{c.character}</span>
+            {(Object.keys(CLIP_TEXT) as SpeechClipKind[]).filter(k => c.counts[k]).map(k => (
+              <button key={k} className="ghost" onClick={() => void listen(c.character, k)} title={`試聽「${CLIP_TEXT[k]}」的固定語音(共 ${c.counts[k]} 條)`}>{CLIP_TEXT[k]}{(c.counts[k] ?? 0) > 1 ? `×${c.counts[k]}` : ''}</button>
+            ))}
+          </div>
+        ))}
+      </div>}
+      {err && <div className="remote-warn">{err}</div>}
+    </>
+  );
+}
+
+/** 手動卸載或載入本機語音合成(釋放顯示卡記憶體);只在語音合成已設定、服務在執行時出現。 */
+function TtsPower({ st, onError }: { st: VoiceStatus; onError?: (msg: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const running = st.state === 'ready' || st.state === 'warming';
+  if (!running || st.tts.state === 'off') return null;
+  const load = st.tts.state === 'unloaded' || st.tts.state === 'error';
+  if (!load && st.tts.state !== 'ready') return null;
+  const click = () => {
+    setBusy(true);
+    void window.nexus.voiceTtsPower(load).catch(e => onError?.(clean(e))).finally(() => setBusy(false));
+  };
+  return (
+    <button className="ghost tts-power" disabled={busy} onClick={click}
+      title={load ? '重新載入本機語音合成(會佔用顯示卡記憶體,載入要一點時間)' : '卸載本機語音合成,釋放顯示卡記憶體;語音辨識照常,播報改用下一個聲音來源'}>
+      {busy ? (load ? '載入中' : '卸載中') : load ? '載入' : '卸載'}
+    </button>
   );
 }
 

@@ -2,14 +2,12 @@ import 'pixi.js/unsafe-eval';
 import { Application, Circle, Container, Graphics, Matrix, Text, Texture } from 'pixi.js';
 import { STATE_LABEL, STATE_ZONE, type AgentInfo, type Zone } from '../../shared/types';
 import { BACKEND_COLOR, COLOR, STATE_COLOR, ZONE_COLOR, ZONE_TITLE } from './theme';
+import { HEADER_COMPACT, MIN_ZOOM, ZONES, centerOf, planBoard, slotAt, type BoardPlan, type Rect } from './board-layout';
 
 const FONT = '"Segoe UI", "Microsoft JhengHei", sans-serif';
-const CELL_W = 124;
-const CELL_H = 96;
-const HEADER = 44;
-const ZONES: Zone[] = ['planning', 'active', 'chief', 'standby', 'auth', 'fault'];
 
-interface Rect { x: number; y: number; w: number; h: number }
+/** 區塊排不下、被收進「另外 N 個」的節點:哪個區塊、哪些節點、標記在面板上的位置與縮放。 */
+export interface BoardMore { zone: Zone; ids: string[]; x: number; y: number; zoom: number }
 
 const hexPoints = (r: number): number[] => {
   const pts: number[] = [];
@@ -46,6 +44,8 @@ class NodeView {
   zoom = 1;
   private subScale = 1;
   placed = false;
+  /** 區塊排不下時被收進「另外 N 個」:不畫出來,也點不到。 */
+  hidden = false;
 
   constructor(readonly id: string, onTap: (id: string) => void, onHover: (id: string | null) => void) {
     this.name.anchor.set(0.5, 0);
@@ -116,10 +116,18 @@ class NodeView {
     this.readout.style.fill = a.state === 'awaiting' ? COLOR.warn : a.state === 'error' || a.state === 'lost' ? COLOR.bad : COLOR.dim;
   }
 
+  /** 畫面上的縮放:子代理節點小一號,但不會比最小縮放還小(字會讀不出來)。 */
+  get scale(): number {
+    return Math.max(this.zoom * this.subScale, Math.min(this.zoom, MIN_ZOOM));
+  }
+
   tick(dt: number, t: number): void {
-    if (!this.placed) { this.root.position.set(this.tx, this.ty); this.placed = true; }
+    this.root.visible = !this.hidden;
+    // 收起來的節點重新出現時直接出現在新位置,不要從舊位置飛過來
+    if (this.hidden) { this.placed = false; return; }
+    if (!this.placed) { this.root.position.set(this.tx, this.ty); this.root.scale.set(this.scale); this.placed = true; }
     const k = 1 - Math.exp(-dt / 160);
-    const target = this.zoom * this.subScale;
+    const target = this.scale;
     this.root.scale.set(this.root.scale.x + (target - this.root.scale.x) * k);
     this.root.x += (this.tx - this.root.x) * k;
     this.root.y += (this.ty - this.root.y) * k;
@@ -137,7 +145,62 @@ class NodeView {
   }
 }
 
-/** 主面板:固定的格線圖,五個區塊,節點依狀態滑移到對應區塊。 */
+/** 區塊排不下時最後一格的「另外 N 個」:外型和節點一樣大,按下去列出被收起來的節點。 */
+class MoreView {
+  readonly root = new Container();
+  private hex = new Graphics();
+  private num = new Text({ text: '', style: { fontFamily: FONT, fontSize: 15, fontWeight: '700', fill: COLOR.text } });
+  private label = new Text({ text: '', style: { fontFamily: FONT, fontSize: 13, fontWeight: '600', fill: COLOR.text } });
+  private hint = new Text({ text: '點一下列出', style: { fontFamily: FONT, fontSize: 11, fill: COLOR.dim } });
+  private key = '';
+  count = 0;
+  zoom = 1;
+  /** 小標記:只有六角形和「+N」(區塊收合、或唯一的格子讓給選取中的節點時)。 */
+  badge = false;
+  /** 檢查用:標記佔的範圍換算成節點的縮放(節點的範圍是左右各 56、上 34、下 64 乘上縮放)。 */
+  get boxScale(): number { return this.badge ? 0.3 : this.zoom; }
+
+  constructor(private color: number, onTap: () => void) {
+    this.num.anchor.set(0.5, 0.5);
+    this.label.anchor.set(0.5, 0);
+    this.hint.anchor.set(0.5, 0);
+    this.label.y = 30;
+    this.hint.y = 48;
+    this.root.addChild(this.hex, this.num, this.label, this.hint);
+    this.root.eventMode = 'static';
+    this.root.cursor = 'pointer';
+    this.root.hitArea = new Circle(0, 8, 44);
+    this.root.visible = false;
+    this.root.on('pointertap', e => { e.stopPropagation(); onTap(); });
+    this.root.on('pointerover', () => { this.hex.alpha = 1; });
+    this.root.on('pointerout', () => { this.hex.alpha = 0.8; });
+    this.hex.alpha = 0.8;
+  }
+
+  set(count: number, x: number, y: number, zoom: number, open: boolean, badge = false): void {
+    this.count = count;
+    this.zoom = zoom;
+    this.badge = badge;
+    this.root.visible = count > 0;
+    if (!count) return;
+    this.root.position.set(x, y);
+    this.root.scale.set(badge ? 0.62 : zoom);
+    const key = `${count}|${open}|${badge}`;
+    if (key === this.key) return;
+    this.key = key;
+    this.label.visible = this.hint.visible = !badge;
+    this.num.style.fontSize = badge ? 19 : 15;
+    this.root.hitArea = badge ? new Circle(0, 0, 30) : new Circle(0, 8, 44);
+    // 疊起來的兩個六角形,表示後面還有節點
+    this.hex.clear()
+      .poly(hexPoints(24).map((v, i) => v + (i % 2 ? -4 : 5))).fill({ color: this.color, alpha: 0.05 }).stroke({ width: 1.25, color: this.color, alpha: 0.4 })
+      .poly(hexPoints(24)).fill({ color: COLOR.bg, alpha: 0.95 }).stroke({ width: open ? 2.5 : 1.75, color: this.color, alpha: 0.95 });
+    this.num.text = `+${count}`;
+    this.label.text = `另外 ${count} 個`;
+  }
+}
+
+/** 主面板:格線圖上的六個區塊,節點依狀態滑移到對應區塊;區塊大小依節點數分配(見 board-layout.ts)。 */
 export class BoardScene {
   private app = new Application();
   private grid = new Graphics();
@@ -147,6 +210,19 @@ export class BoardScene {
   private nodeLayer = new Container();
   private nodes = new Map<string, NodeView>();
   private rects = new Map<Zone, Rect>();
+  /** 目前畫在畫面上的區塊外框:區塊大小改變時和節點一起滑過去。 */
+  private drawn = new Map<Zone, Rect>();
+  private plan: BoardPlan | null = null;
+  /** 下一格直接把外框畫到定位(視窗大小改變時不做動畫)。 */
+  private snap = true;
+  private framesKey = '';
+  private mores = new Map<Zone, MoreView>();
+  private hiddenIds = new Map<Zone, string[]>();
+  /** 目前打開「另外 N 個」清單的區塊。 */
+  private moreZone: Zone | null = null;
+  private moreKey = '';
+  /** 區塊完整標題的寬度(量一次就記住)。 */
+  private titleWidths = new Map<Zone, number>();
   private agents: AgentInfo[] = [];
   private selectedId: string | null = null;
   private time = 0;
@@ -161,8 +237,10 @@ export class BoardScene {
   /** 總管節點;沒有指定時總管區塊顯示「+」六角形。 */
   private chiefId: string | null = null;
   private addChief = new Container();
+  private addChiefZoom = 1;
+  private addChiefHover = false;
 
-  constructor(private onSelect: (id: string | null) => void, private onHover: (hover: { id: string; x: number; y: number } | null) => void = () => {}, private onAddChief: () => void = () => {}) {}
+  constructor(private onSelect: (id: string | null) => void, private onHover: (hover: { id: string; x: number; y: number } | null) => void = () => {}, private onAddChief: () => void = () => {}, private onMore: (more: BoardMore | null) => void = () => {}) {}
 
   /** 總管區塊裡的「+」六角形:按下去開啟新增(或指定)總管節點。 */
   private buildAddChief(): void {
@@ -177,8 +255,8 @@ export class BoardScene {
     this.addChief.cursor = 'pointer';
     this.addChief.hitArea = new Circle(0, 8, 44);
     this.addChief.on('pointertap', e => { e.stopPropagation(); this.onAddChief(); });
-    this.addChief.on('pointerover', () => { g.alpha = 1; label.alpha = 1; this.addChief.scale.set(1.06); });
-    this.addChief.on('pointerout', () => { this.addChief.scale.set(1); });
+    this.addChief.on('pointerover', () => { g.alpha = 1; label.alpha = 1; this.addChiefHover = true; this.addChief.scale.set(this.addChiefZoom * 1.06); });
+    this.addChief.on('pointerout', () => { this.addChiefHover = false; this.addChief.scale.set(this.addChiefZoom); });
   }
 
   async init(host: HTMLElement): Promise<void> {
@@ -201,8 +279,14 @@ export class BoardScene {
     }
     this.buildAddChief();
     this.app.stage.addChild(this.addChief, this.nodeLayer);
+    for (const z of ZONES) {
+      if (z === 'chief') continue;
+      const more = new MoreView(ZONE_COLOR[z], () => this.toggleMore(z));
+      this.mores.set(z, more);
+      this.app.stage.addChild(more.root);
+    }
     this.app.stage.eventMode = 'static';
-    this.app.stage.on('pointertap', () => this.onSelect(null));
+    this.app.stage.on('pointertap', () => { this.closeMore(); this.onSelect(null); });
     this.app.renderer.on('resize', () => this.layout());
     // 對話視窗開關時面板的高度會變;視窗大小沒變,所以要自己偵測容器尺寸
     this.observer = new ResizeObserver(() => { if (this.ready) this.app.resize(); });
@@ -210,12 +294,28 @@ export class BoardScene {
     this.app.ticker.add(tk => {
       this.time += tk.deltaMS;
       for (const n of this.nodes.values()) n.tick(tk.deltaMS, this.time);
+      this.stepFrames(tk.deltaMS);
       this.checkHover();
     });
     this.ready = true;
     this.layout();
-    // 自我檢查用:回報各節點在畫面上的位置
-    (window as unknown as Record<string, unknown>).__nexusBoard = { positions: () => [...this.nodes.values()].map(n => ({ id: n.id, x: n.root.x, y: n.root.y })), avatars: () => [...this.avatars].map(([c, t]) => [c, t !== null]), chiefPlus: () => ({ x: this.addChief.x, y: this.addChief.y, visible: this.addChief.visible }), rect: (z: Zone) => this.rects.get(z) };
+    // 自我檢查用:回報各節點在畫面上的位置(被收進「另外 N 個」的節點不在 positions 裡,列在 hidden)、
+    // 各區塊的範圍與標題列高度、「另外 N 個」標記的位置
+    (window as unknown as Record<string, unknown>).__nexusBoard = {
+      positions: () => [...this.nodes.values()].filter(n => !n.hidden).map(n => ({ id: n.id, x: n.root.x, y: n.root.y, scale: n.root.scale.x })),
+      avatars: () => [...this.avatars].map(([c, t]) => [c, t !== null]),
+      chiefPlus: () => ({ x: this.addChief.x, y: this.addChief.y, visible: this.addChief.visible, scale: this.addChiefZoom }),
+      rect: (z: Zone) => this.rects.get(z),
+      size: () => ({ w: this.app.screen.width, h: this.app.screen.height }),
+      mode: () => ({ mode: this.plan?.mode ?? null, compact: this.plan?.compact ?? false }),
+      header: (z: Zone) => this.plan?.zones[z].header ?? 0,
+      hidden: () => ZONES.map(z => ({ zone: z, count: this.hiddenIds.get(z)?.length ?? 0, ids: this.hiddenIds.get(z) ?? [] })).filter(x => x.count > 0),
+      more: () => [...this.mores].filter(([, m]) => m.root.visible).map(([z, m]) => ({ zone: z, x: m.root.x, y: m.root.y, scale: m.boxScale, count: m.count, badge: m.badge })),
+      total: () => this.nodes.size,
+      // 節點都滑到定位了嗎(還在移動時,位置和區塊範圍對不起來是正常的)
+      settled: () => [...this.nodes.values()].every(n => n.hidden || (n.placed && Math.abs(n.root.x - n.tx) < 0.5 && Math.abs(n.root.y - n.ty) < 0.5 && Math.abs(n.root.scale.x - n.scale) < 0.005)),
+      openMore: (z: Zone) => this.toggleMore(z),
+    };
   }
 
   destroy(): void {
@@ -272,46 +372,91 @@ export class BoardScene {
     this.place();
   }
 
+  /** 打開或關掉某個區塊的「另外 N 個」清單。 */
+  private toggleMore(z: Zone): void {
+    this.moreZone = this.moreZone === z || !this.hiddenIds.get(z)?.length ? null : z;
+    this.place();
+  }
+
+  /** 關掉「另外 N 個」清單(點了面板空白處、選了節點、按 Esc)。 */
+  closeMore(): void {
+    if (!this.moreZone) return;
+    this.moreZone = null;
+    if (this.ready) this.place();
+  }
+
+  /** 把「另外 N 個」清單的內容通知外面;內容沒變就不重複通知。 */
+  private emitMore(): void {
+    const z = this.moreZone;
+    const ids = z ? this.hiddenIds.get(z) ?? [] : [];
+    const view = z ? this.mores.get(z) : undefined;
+    if (!z || !ids.length || !view) {
+      this.moreZone = null;
+      if (this.moreKey) { this.moreKey = ''; this.onMore(null); }
+      return;
+    }
+    const more: BoardMore = { zone: z, ids, x: view.root.x, y: view.root.y, zoom: view.zoom };
+    const key = JSON.stringify(more);
+    if (key === this.moreKey) return;
+    this.moreKey = key;
+    this.onMore(more);
+  }
+
+  /** 面板大小改變:重畫背景格線,區塊直接畫到新位置(不做動畫)。 */
   private layout(): void {
     const { width: w, height: h } = this.app.screen;
     this.app.stage.hitArea = this.app.screen;
-    const pad = 16, gap = 14;
-    const topH = Math.round((h - pad * 2 - gap) * 0.48);
-    const botH = h - pad * 2 - gap - topH;
-    const leftW = Math.round((w - pad * 2 - gap) * 0.26);
-    const restW = w - pad * 2 - gap - leftW;
-    const authW = Math.round((restW - gap) * 0.5);
-    const y2 = pad + topH + gap;
-    // 總管放在執行那一列的最右側,寬度約一個半節點
-    const chiefW = Math.max(170, Math.round(restW * 0.2));
-    this.rects.set('planning', { x: pad, y: pad, w: leftW, h: topH });
-    this.rects.set('active', { x: pad + leftW + gap, y: pad, w: restW - gap - chiefW, h: topH });
-    this.rects.set('chief', { x: pad + leftW + gap + restW - chiefW, y: pad, w: chiefW, h: topH });
-    this.rects.set('standby', { x: pad, y: y2, w: leftW, h: botH });
-    this.rects.set('auth', { x: pad + leftW + gap, y: y2, w: authW, h: botH });
-    this.rects.set('fault', { x: pad + leftW + gap + authW + gap, y: y2, w: restW - gap - authW, h: botH });
-
     this.grid.clear();
     for (let x = 0; x <= w; x += 32) this.grid.moveTo(x, 0).lineTo(x, h);
     for (let y = 0; y <= h; y += 32) this.grid.moveTo(0, y).lineTo(w, y);
     this.grid.stroke({ width: 1, color: COLOR.grid, alpha: 0.05 });
+    this.snap = true;
+    this.place();
+  }
 
+  /** 每一格讓區塊外框往目標位置靠近(和節點同一個速度),有變動才重畫。 */
+  private stepFrames(dt: number): void {
+    if (!this.plan) return;
+    const k = this.snap ? 1 : 1 - Math.exp(-dt / 160);
+    let key = `${this.plan.mode}|${this.plan.compact}`;
+    for (const z of ZONES) {
+      const target = this.rects.get(z)!;
+      let cur = this.drawn.get(z);
+      if (!cur) { cur = { ...target }; this.drawn.set(z, cur); }
+      for (const f of ['x', 'y', 'w', 'h'] as const) {
+        const d = target[f] - cur[f];
+        cur[f] = Math.abs(d) < 0.5 ? target[f] : cur[f] + d * k;
+      }
+      key += `|${cur.x},${cur.y},${cur.w},${cur.h}`;
+    }
+    this.snap = false;
+    if (key === this.framesKey) return;
+    this.framesKey = key;
+    this.drawFrames();
+  }
+
+  private drawFrames(): void {
     this.frames.clear();
     for (const z of ZONES) {
-      const r = this.rects.get(z)!;
+      const r = this.drawn.get(z)!;
       const c = ZONE_COLOR[z];
-      const cut = 12;
+      const compact = this.plan!.zones[z].header === HEADER_COMPACT;
+      const narrow = r.w < 80;
+      const cut = compact ? 9 : 12;
+      const inset = narrow ? 6 : compact ? 10 : 14;
       // 切角外框,右上與左下各切一角
       this.frames.poly([
         r.x, r.y, r.x + r.w - cut, r.y, r.x + r.w, r.y + cut,
         r.x + r.w, r.y + r.h, r.x + cut, r.y + r.h, r.x, r.y + r.h - cut,
       ]).fill({ color: c, alpha: z === 'auth' || z === 'fault' || z === 'chief' ? 0.06 : 0.03 }).stroke({ width: z === 'chief' ? 1.5 : 1.25, color: c, alpha: z === 'chief' ? 0.75 : 0.55 });
-      this.frames.moveTo(r.x + 14, r.y + 36).lineTo(r.x + r.w - 14, r.y + 36).stroke({ width: 1, color: c, alpha: 0.25 });
-      this.frames.rect(r.x + 14, r.y + 15, 3, 13).fill({ color: c, alpha: 0.9 });
-      this.titles.get(z)!.position.set(r.x + 24, r.y + 12);
-      this.counts.get(z)!.position.set(r.x + r.w - 16, r.y + 13);
+      const lineY = compact ? 27 : 36;
+      this.frames.moveTo(r.x + inset, r.y + lineY).lineTo(r.x + r.w - inset, r.y + lineY).stroke({ width: 1, color: c, alpha: 0.25 });
+      // 收合成窄條的區塊只放標題(沒有左邊的色條與右邊的數量)
+      if (!narrow) this.frames.rect(r.x + inset, r.y + (compact ? 8 : 15), 3, 13).fill({ color: c, alpha: 0.9 });
+      this.titles.get(z)!.position.set(r.x + inset + (narrow ? 1 : 10), r.y + (compact ? 5 : 12));
+      this.counts.get(z)!.visible = !narrow;
+      this.counts.get(z)!.position.set(r.x + r.w - inset - 2, r.y + (compact ? 6 : 13));
     }
-    this.place();
   }
 
   private setHover(id: string | null): void {
@@ -327,48 +472,95 @@ export class BoardScene {
     if (!this.hoverId) return;
     const view = this.nodes.get(this.hoverId);
     const p = this.app.renderer.events.pointer.global;
-    if (!view || Math.hypot(p.x - view.root.x, p.y - (view.root.y + 8 * view.root.scale.y)) > 46 * view.root.scale.x + 4) { this.setHover(null); return; }
+    if (!view || view.hidden || Math.hypot(p.x - view.root.x, p.y - (view.root.y + 8 * view.root.scale.y)) > 46 * view.root.scale.x + 4) { this.setHover(null); return; }
     if (Math.abs(view.root.x - this.hoverPos.x) + Math.abs(view.root.y - this.hoverPos.y) > 2) this.setHover(this.hoverId);
   }
 
-  /** 依狀態把節點排進所屬區塊的格位。 */
+  /** 依狀態把節點分到各區塊,依節點數分配區塊大小,再把節點排進格位;排不下的收進「另外 N 個」。 */
   private place(): void {
+    const { width: w, height: h } = this.app.screen;
+    if (w < 80 || h < 60) return;
     const byZone = new Map<Zone, AgentInfo[]>(ZONES.map(z => [z, []]));
     // 子節點排在呼叫它的節點後面
     const rootTime = (a: AgentInfo) => this.agents.find(x => x.id === a.parentId)?.createdAt ?? a.createdAt;
     const ordered = [...this.agents].sort((p, q) => rootTime(p) - rootTime(q) || Number(Boolean(p.parentId)) - Number(Boolean(q.parentId)) || p.createdAt - q.createdAt);
     const chief = this.agents.find(a => a.id === this.chiefId && !a.parentId);
     for (const a of ordered) byZone.get(a === chief ? 'chief' : STATE_ZONE[a.state])!.push(a);
-    // 沒有總管時顯示「+」六角形
-    const cr = this.rects.get('chief');
-    this.addChief.visible = !chief && !!cr;
-    if (cr) this.addChief.position.set(cr.x + cr.w / 2, cr.y + HEADER + (cr.h - HEADER) / 2 - 16);
+    const count = (z: Zone) => byZone.get(z)!.length;
+    const plan = planBoard(w, h, { planning: count('planning'), active: count('active'), chief: count('chief'), standby: count('standby'), auth: count('auth'), fault: count('fault') });
+    this.plan = plan;
     for (const z of ZONES) {
-      const r = this.rects.get(z);
+      const p = plan.zones[z];
       const list = byZone.get(z)!;
+      this.rects.set(z, p.rect);
       this.counts.get(z)!.text = String(list.length);
-      if (!r) continue;
-      // 節點太多排不下時整體縮小,確保都留在區塊裡、點得到
-      const room = r.h - HEADER - 8;
-      let zoom = 1, cols = 1;
-      for (; zoom >= 0.45; zoom -= 0.05) {
-        cols = Math.max(1, Math.floor((r.w - 16) / (CELL_W * zoom)));
-        if (Math.ceil(list.length / cols) * CELL_H * zoom <= room) break;
-      }
-      zoom = Math.max(zoom, 0.45);
-      // 總管只有一個:放在區塊正中間(和「+」同一個位置)
+      // 區塊太窄放不下完整標題時只留中文(「規劃 PLANNING」→「規劃」)
+      this.titles.get(z)!.text = this.titleWidth(z) + (list.length ? 58 : 50) > p.rect.w ? ZONE_TITLE[z].split(' ')[0] : ZONE_TITLE[z];
       if (z === 'chief') {
+        // 總管只有一個:放在區塊正中間(和「+」同一個位置);沒有總管時顯示「+」六角形
+        const c = centerOf(p);
+        this.addChief.visible = !chief;
+        this.addChief.position.set(c.x, c.y);
+        // 連總管區塊都只剩窄條時(視窗窄到不合理),把總管縮到放得進去
+        if (p.collapsed) p.zoom = Math.max(0.4, Math.min(1, (p.rect.w - 4) / 112));
+        this.addChiefZoom = p.zoom;
+        this.addChief.scale.set(p.zoom * (this.addChiefHover ? 1.06 : 1));
         const view = list[0] && this.nodes.get(list[0].id);
-        if (view) { view.zoom = 1; view.tx = r.x + r.w / 2; view.ty = r.y + HEADER + (r.h - HEADER) / 2 - 16; }
+        if (view) { view.hidden = false; view.zoom = p.zoom; view.tx = c.x; view.ty = c.y; }
         continue;
       }
+      const sel = list.findIndex(a => a.id === this.selectedId);
+      const more = this.mores.get(z)!;
+      if (p.collapsed) {
+        // 收合的區塊:節點全部收起來,標題下方放「+N」小標記
+        for (const a of list) { const view = this.nodes.get(a.id); if (view) view.hidden = true; }
+        this.hiddenIds.set(z, list.map(a => a.id));
+        more.set(list.length, p.rect.x + p.rect.w / 2, p.rect.y + p.header + 22, 1, this.moreZone === z, true);
+        continue;
+      }
+      if (p.hidden && p.shown === 0 && sel >= 0) {
+        // 只有一格、而選取中的節點在這個區塊:這一格給它,其他節點的「+N」縮成小標記放在它的右上角
+        const c = centerOf(p);
+        list.forEach((a, i) => {
+          const view = this.nodes.get(a.id);
+          if (!view) return;
+          view.hidden = i !== sel;
+          if (i === sel) { view.zoom = p.zoom; view.tx = c.x; view.ty = c.y; }
+        });
+        this.hiddenIds.set(z, list.filter((_, i) => i !== sel).map(a => a.id));
+        more.set(list.length - 1, c.x + 38 * p.zoom, c.y - 16 * p.zoom, p.zoom, this.moreZone === z, true);
+        continue;
+      }
+      // 選取中的節點如果排在會被收起來的位置,把它換到最後一個看得到的格子
+      if (p.hidden && p.shown > 0 && sel >= p.shown) list.splice(p.shown - 1, 0, ...list.splice(sel, 1));
+      const total = p.shown + (p.hidden ? 1 : 0);
       list.forEach((a, i) => {
         const view = this.nodes.get(a.id);
         if (!view) return;
-        view.zoom = zoom;
-        view.tx = r.x + 8 + (CELL_W * zoom) / 2 + (i % cols) * CELL_W * zoom;
-        view.ty = r.y + HEADER + 40 * zoom + Math.floor(i / cols) * CELL_H * zoom;
+        view.hidden = i >= p.shown;
+        if (view.hidden) return;
+        const s = slotAt(p, i, total);
+        view.zoom = p.zoom;
+        view.tx = s.x;
+        view.ty = s.y;
       });
+      this.hiddenIds.set(z, list.slice(p.shown).map(a => a.id));
+      const at = p.shown > 0 ? slotAt(p, p.shown, total) : centerOf(p);
+      more.set(p.hidden, at.x, at.y, p.zoom, this.moreZone === z);
     }
+    this.emitMore();
+  }
+
+  private titleWidth(z: Zone): number {
+    let width = this.titleWidths.get(z);
+    if (width === undefined) {
+      const t = this.titles.get(z)!;
+      const text = t.text;
+      t.text = ZONE_TITLE[z];
+      width = t.width;
+      t.text = text;
+      this.titleWidths.set(z, width);
+    }
+    return width;
   }
 }

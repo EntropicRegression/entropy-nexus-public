@@ -1,4 +1,5 @@
 import type { RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
+import type { DashboardData } from '../shared/dashboard';
 
 /**
  * 遠端裝置的權限。每支配對的裝置有一個角色與節點範圍:
@@ -116,12 +117,22 @@ export function denial(access: RemoteAccess, rule: Rule, inScope: boolean): stri
   return inScope ? '' : '這支裝置沒有這個節點的權限。';
 }
 
+/**
+ * 儀表資料裡依節點分開的部分(花費、今天的任務統計)只留這支裝置看得到的節點;
+ * 各後台的額度與每日預算是帳號層級的資料,和額度(usage)一樣所有角色都看得到。
+ * 這裡不匯入 shared/dashboard 的函式(只用型別),這個檔案才能被 node 直接載入做單元測試。
+ */
+function limitDashboard(d: DashboardData, see: (id: string) => boolean): DashboardData {
+  return { ...d, spend: d.spend.filter(r => see(r.agentId)), tasks: d.tasks.filter(r => see(r.agentId)) };
+}
+
 /** 狀態快照只留這支裝置看得到的節點;非完整角色不提供外部觀察節點與立繪資料夾的位置。 */
-export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
+export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
   if (access.role === 'full') return s;
   const see = (id: string) => visible(access, rootOf(id));
   const out = { ...s, agents: s.agents.filter(a => see(a.id)), tasks: s.tasks.filter(t => see(t.agentId)) };
   if (s.events) out.events = s.events.filter(e => see(e.agentId));
+  if (s.dashboard) out.dashboard = limitDashboard(s.dashboard, see);
   if ('observed' in s) out.observed = [];
   if ('portraitsDir' in s) out.portraitsDir = '';
   return out;
@@ -143,6 +154,7 @@ export function filterUpdate(u: Update, access: RemoteAccess, rootOf: (id: strin
   // 節點已經不在了,查不到它屬於誰;移除的通知只有 id,照送讓畫面清掉
   if (u.removedId !== undefined) out.removedId = u.removedId;
   if (u.usage) out.usage = u.usage;
+  if (u.dashboard) out.dashboard = limitDashboard(u.dashboard, see);
   if (u.maxActive !== undefined) out.maxActive = u.maxActive;
   if (u.quotaStop !== undefined) out.quotaStop = u.quotaStop;
   if (u.autopilot !== undefined) out.autopilot = u.autopilot;
@@ -161,6 +173,7 @@ export function auditDetail(action: string, input: Record<string, any>): string 
     case 'setPersona': return cut(input.character);
     case 'settings': return cut([Number.isInteger(input.maxActive) && `同時上限 ${input.maxActive}`, Number.isInteger(input.quotaStop) && `額度上限 ${input.quotaStop}%`].filter(Boolean).join(','));
     case 'commitTask': return cut(input.message);
+    case 'setDailyBudget': return cut(`${input.backend ?? ''} 每日預算 ${input.percent === null || input.percent === undefined ? '預設' : `${input.percent}%`}`);
     default: return '';
   }
 }

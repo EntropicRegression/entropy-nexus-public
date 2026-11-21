@@ -1,5 +1,7 @@
 // 主行程、preload 與畫面共用的型別。畫面只認這裡定義的狀態與事件。
 
+import type { DashboardData } from './dashboard';
+
 export type Backend = 'claude' | 'codex' | 'antigravity';
 
 /** 統一的七種狀態;三家 CLI 的事件都由轉接器翻譯成這一組。 */
@@ -77,6 +79,8 @@ export interface AgentInfo {
   /** 後台 CLI 的 session 識別碼,用來續接。 */
   sessionId: string | null;
   state: AgentState;
+  /** 進入目前這個狀態的時間;儀表用來提醒「異常太久」。重開主控台後從還原的時間算起,舊資料沒有這個欄位。 */
+  stateSince?: number;
   /** 一行狀態讀數,例如目前的工具或錯誤原因。 */
   detail: string;
   pendingApproval: PendingApproval | null;
@@ -268,6 +272,8 @@ export interface Snapshot {
   access?: RemoteAccess;
   /** 總管節點(主控語音模式):使用者對它說的話由它分派給其他節點;null 表示沒有指定。 */
   chiefId: string | null;
+  /** 總覽儀表的資料:每日預算、花費與今天的任務統計。 */
+  dashboard: DashboardData;
 }
 
 /**
@@ -329,6 +335,8 @@ export interface Update {
   observedRemovedId?: string;
   /** 總管節點換了(null 表示解除)。 */
   chiefId?: string | null;
+  /** 總覽儀表的資料有變(花費、預算用量、任務統計、換日)。 */
+  dashboard?: DashboardData;
 }
 
 export interface CreateAgentInput {
@@ -459,8 +467,8 @@ export interface VoiceStatus {
   ttsDir: string;
   /** CosyVoice 2 模型資料夾;空字串表示 <ttsDir>/pretrained_models/CosyVoice2-0.5B。 */
   ttsModel: string;
-  /** 語音合成的狀態:off 沒有設定、warming 載入中、ready 可以用、error 失敗(detail 是原因)。 */
-  tts: { state: 'off' | 'warming' | 'ready' | 'error'; detail: string };
+  /** 語音合成的狀態:off 沒有設定、warming 載入中、ready 可以用、unloaded 手動卸載了(釋放顯示卡記憶體)、error 失敗(detail 是原因)。vramMB 是語音服務的 PyTorch 佔用的顯示卡記憶體。 */
+  tts: { state: 'off' | 'warming' | 'ready' | 'unloaded' | 'error'; detail: string; vramMB?: number };
 }
 
 export interface VoiceTranscript { text: string; audioMs: number; durationMs: number }
@@ -472,14 +480,47 @@ export interface VoiceProfile { hasVoice: boolean; ms: number; promptText: strin
  * 語音播報的通知(Phase 2a),主行程只推給桌面畫面。
  * done:桌面發起的回合正常完成,summary 是規則摘要(null 表示找不到適合念的句子,畫面改念固定的完成通知);
  * failed:桌面發起的回合出錯、失聯,或排隊的指令被額度上限擋下;approval、question:節點在等使用者(不分來源)。
+ * failed 的 reason 是 budget 時不屬於任何節點:某家後台今天的用量超過每日預算(agentName 是後台名稱,agentId 是 budget:<後台>),一天最多念一次。
  */
 export type SpeechNotice =
   | { kind: 'done'; agentId: string; agentName: string; ts: number; taskId: string; summary: string | null }
-  | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota'; queuePaused: boolean; taskId?: string }
+  | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota' | 'budget'; queuePaused: boolean; taskId?: string }
   | { kind: 'approval' | 'question'; agentId: string; agentName: string; ts: number; requestId: string };
+
+/**
+ * 語音播報的引擎(聲音來源)。播報時依使用者排的順序逐一嘗試,第一個產生出聲音的就用它;全部都沒有聲音時改用系統語音。
+ * - clips:角色資料夾 clips/ 裡預先錄好的固定語音(依事件挑一條),不需要語音服務,沒有延遲;念不出完成摘要。
+ * - local:本機語音服務的語音合成(目前是 CosyVoice 2),用角色的參考錄音念出整句。
+ */
+export type SpeechEngineId = 'clips' | 'local';
+export const SPEECH_ENGINES: readonly SpeechEngineId[] = ['clips', 'local'];
+/** 固定語音的事件;檔名是 <事件>.wav 或 <事件>-<任意>.wav(也接受 .mp3;同一事件有多條時隨機挑)。lost、quota 沒有時改用 failed。 */
+export type SpeechClipKind = 'done' | 'approval' | 'question' | 'failed' | 'lost' | 'quota';
+export const SPEECH_CLIP_KINDS: readonly SpeechClipKind[] = ['done', 'approval', 'question', 'failed', 'lost', 'quota'];
+export interface SpeechSettings {
+  /** 啟用的引擎,依嘗試順序排列;空陣列表示只用系統語音。 */
+  engines: SpeechEngineId[];
+}
+export interface SpeechEngineState {
+  id: SpeechEngineId;
+  /** 目前能不能用:clips 看有沒有角色錄了固定語音,local 看語音合成的狀態。 */
+  ready: boolean;
+  detail: string;
+}
+/** 一個角色的固定語音:每個事件有幾條。 */
+export interface SpeechClipSet { character: string; counts: Partial<Record<SpeechClipKind, number>> }
 
 /** preload 暴露給畫面的介面。 */
 export interface NexusApi {
+  /**
+   * 播報用:依引擎順序產生這則通知的聲音,回傳 WAV 與實際用的引擎;都沒有聲音時回傳 null(呼叫端改用系統語音)。
+   * text 是要念的整句(local 引擎用);clips 引擎依 notice 的事件挑固定語音。瀏覽器版回傳 null。
+   */
+  speechRender(notice: SpeechNotice, text: string): Promise<{ audio: ArrayBuffer; mime: string; engine: SpeechEngineId } | null>;
+  speechSettings(): Promise<{ settings: SpeechSettings; engines: SpeechEngineState[]; clips: SpeechClipSet[] }>;
+  speechSet(patch: Partial<SpeechSettings>): Promise<{ settings: SpeechSettings; engines: SpeechEngineState[]; clips: SpeechClipSet[] }>;
+  /** 試聽一個角色某個事件的固定語音;沒有時回傳 null。 */
+  speechClip(character: string, kind: SpeechClipKind): Promise<{ audio: ArrayBuffer; mime: string } | null>;
   /** 指定總管節點;null 表示解除。總管會收到額外的「總管守則」,負責把使用者交代的事分派給其他節點。 */
   setChief(id: string | null): Promise<void>;
   /** 語音模式:只有桌面畫面能用;瀏覽器版的遠端介面回傳 state 為 unsupported。 */
@@ -490,6 +531,8 @@ export interface NexusApi {
    * 呼叫端改用系統語音。target 是節點 id,或 { character } 用來試聽。
    */
   voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null>;
+  /** 手動卸載本機語音合成(釋放顯示卡記憶體)或重新載入;語音辨識不受影響。卸載後播報改用下一個聲音來源。服務重新啟動時會再載入。 */
+  voiceTtsPower(load: boolean): Promise<VoiceStatus>;
   /** 角色的聲音設定(角色資料夾的 voice.wav、voice.txt、style.txt);只有桌面畫面能用,瀏覽器版回傳 null。 */
   voiceProfile(character: string): Promise<VoiceProfile | null>;
   /** 儲存角色的聲音:wav 是新的參考錄音(16-bit WAV,2 到 30 秒;null 表示移除),promptText、style 空字串表示刪除。 */
@@ -572,6 +615,8 @@ export interface NexusApi {
   mergeWorktree(id: string): Promise<string>;
   openPullRequest(id: string): Promise<string>;
   setQuotaStop(percent: number): Promise<void>;
+  /** 設定某家後台的每日預算(佔每週額度的百分比,0 到 100;0 表示不提醒);null 表示改回預設值(每週額度的 1/7)。超過只提醒,不擋指令。 */
+  setDailyBudget(backend: Backend, percent: number | null): Promise<void>;
   remoteStatus(): Promise<RemoteStatus>;
   remoteSet(patch: { enabled?: boolean; lan?: boolean }): Promise<void>;
   remoteNewCode(): Promise<void>;

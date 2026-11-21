@@ -25,7 +25,7 @@
     const queuedNote = h1.filter(e => e.type === 'note').slice(-1)[0];
     const second = (await agents()).find(a => a.id === list[1].id);
     log('上限 1:第二個節點狀態', second.state, '| 排隊中', JSON.stringify(second.queued.map(q => q.text)), '| 說明', JSON.stringify(queuedNote?.text), '| 錯誤數', h1.filter(e => e.type === 'error').length, '| 指令是否已送出', h1.some(e => e.type === 'message' && e.role === 'user'));
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes(list[1].name)).click();
+    window.__nexusSelect(list[1].name);
     await wait(600);
     await shot('1-limit-queued');
     // 調高上限後有名額,排隊的指令自動送出

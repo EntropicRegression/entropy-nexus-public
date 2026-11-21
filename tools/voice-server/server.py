@@ -15,14 +15,17 @@
 
 端點:
   GET  /health      {"status": "warming_up" | "ready" | "error", "model", "device", "error", "pid",
-                     "tts": {"status": "off" | "warming_up" | "ready" | "error", "error", "sampleRate"}}
+                     "tts": {"status": "off" | "warming_up" | "ready" | "unloaded" | "error", "error", "sampleRate", "vramMB"}}
   POST /transcribe  內容是 16 kHz、16-bit、單聲道的 WAV;標頭 X-Voice-Prompt(URL 編碼)可帶提示詞,
                     例如節點名稱,幫助辨識專有名詞。回傳 {"text", "audioMs", "durationMs", "language"}
   POST /tts         JSON {"text", "wav"(參考錄音的路徑), "promptText"(錄音的內容,可省略,省略時自動辨識), "style"(語氣指令,可省略)};
                     回傳 16-bit 單聲道 WAV(取樣率見 health 的 tts.sampleRate),標頭 X-Voice-Ms 是合成耗時
+  POST /tts/unload  手動卸載語音合成、釋放顯示卡記憶體(語音辨識照常);回傳 {"tts": ...}
+  POST /tts/load    重新載入語音合成(背景載入,查 health 的 tts.status);回傳 {"tts": ...}
 """
 from __future__ import annotations
 
+import gc
 import hmac
 import io
 import json
@@ -53,7 +56,10 @@ if TTS_DIR:
     # Intel OpenMP 會直接結束行程;這是兩者並用時的通行做法(實測辨識與合成結果正常)
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 TTS_MODEL = os.environ.get("NEXUS_VOICE_TTS_MODEL", "").strip() or (os.path.join(TTS_DIR, "pretrained_models", "CosyVoice2-0.5B") if TTS_DIR else "")
-tts_state = {"status": "warming_up" if TTS_DIR else "off", "error": "", "sampleRate": 0}
+# status:off 沒有設定、warming_up 載入中、ready 可以用、unloaded 使用者手動卸載(釋放顯示卡記憶體)、error 失敗
+# vramMB:語音合成載入後 PyTorch 佔用的顯示卡記憶體(MB),卸載後應該接近 0
+tts_state = {"status": "warming_up" if TTS_DIR else "off", "error": "", "sampleRate": 0, "vramMB": 0}
+tts_switch = threading.Lock()  # 載入與卸載不同時進行
 tts = None
 # 參考錄音的內容文字(沒有 voice.txt 時自動辨識一次);鍵是 (路徑, 修改時間)
 prompt_cache: dict = {}
@@ -127,24 +133,62 @@ def load_model() -> None:
         log(state["error"])
 
 
+def vram_mb() -> int:
+    """PyTorch 目前向顯示卡保留的記憶體(MB);沒有載入 torch 或沒有 CUDA 時是 0。"""
+    torch = sys.modules.get("torch")
+    try:
+        return round(torch.cuda.memory_reserved() / 1048576) if torch is not None and torch.cuda.is_available() else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def load_tts() -> None:
     global tts
     if not TTS_DIR:
         return
-    try:
-        # python -I 不會把腳本所在的資料夾放進 sys.path
-        here = os.path.dirname(os.path.abspath(__file__))
-        if here not in sys.path:
-            sys.path.insert(0, here)
-        from tts_cosyvoice import CosyVoiceEngine
+    with tts_switch:
+        if tts is not None:
+            return
+        tts_state.update(status="warming_up", error="")
+        try:
+            # python -I 不會把腳本所在的資料夾放進 sys.path
+            here = os.path.dirname(os.path.abspath(__file__))
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            from tts_cosyvoice import CosyVoiceEngine
 
-        t0 = time.time()
-        tts = CosyVoiceEngine(TTS_DIR, TTS_MODEL)
-        tts_state.update(status="ready", error="", sampleRate=tts.sample_rate)
-        log(f"語音合成已載入(CosyVoice 2,{tts.device},{time.time() - t0:.1f} 秒)")
-    except Exception as err:  # noqa: BLE001
-        tts_state.update(status="error", error=f"語音合成載入失敗:{err}")
-        log(tts_state["error"])
+            t0 = time.time()
+            tts = CosyVoiceEngine(TTS_DIR, TTS_MODEL)
+            tts_state.update(status="ready", error="", sampleRate=tts.sample_rate, vramMB=vram_mb())
+            log(f"語音合成已載入(CosyVoice 2,{tts.device},{time.time() - t0:.1f} 秒,顯示卡記憶體 {tts_state['vramMB']} MB)")
+        except Exception as err:  # noqa: BLE001
+            tts_state.update(status="error", error=f"語音合成載入失敗:{err}", vramMB=vram_mb())
+            log(tts_state["error"])
+
+
+def unload_tts() -> None:
+    """手動卸載語音合成,釋放顯示卡記憶體;正在合成的那一句會先做完。語音辨識不受影響。"""
+    global tts
+    with tts_switch:
+        engine = tts
+        if engine is None:
+            if tts_state["status"] in ("ready", "error"):
+                tts_state.update(status="unloaded", error="")
+            return
+        tts_state.update(status="unloaded", error="")
+        tts = None
+        with engine.lock:  # 等正在進行的合成結束
+            pass
+        del engine
+        gc.collect()
+        torch = sys.modules.get("torch")
+        try:
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+        tts_state.update(vramMB=vram_mb())
+        log(f"語音合成已卸載,顯示卡記憶體剩 {tts_state['vramMB']} MB")
 
 
 def to_wav(audio, rate: int) -> bytes:
@@ -185,7 +229,10 @@ def synthesize(body: dict) -> tuple[bytes, int]:
     style = str(body.get("style") or "").strip()[:200]
     prompt = str(body.get("promptText") or "").strip()[:500] or ("" if style else prompt_text_of(ref))
     t0 = time.time()
-    audio, rate = tts.synth(text, ref, prompt, style)
+    engine = tts
+    if engine is None:
+        raise RuntimeError("語音合成已卸載")
+    audio, rate = engine.synth(text, ref, prompt, style)
     return to_wav(audio, rate), round((time.time() - t0) * 1000)
 
 
@@ -263,6 +310,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tts":
             self.do_tts()
             return
+        if self.path in ("/tts/unload", "/tts/load"):
+            if not TTS_DIR:
+                self.send_json(409, {"error": "沒有設定語音合成"})
+                return
+            if self.path == "/tts/unload":
+                unload_tts()
+            elif tts is None and tts_state["status"] != "warming_up":
+                tts_state.update(status="warming_up", error="")
+                threading.Thread(target=load_tts, daemon=True).start()
+            self.send_json(200, {"tts": tts_state})
+            return
         if self.path != "/transcribe":
             self.send_json(404, {"error": "not found"})
             return
@@ -286,7 +344,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def _tts_handler(self) -> None:
     if tts_state["status"] != "ready":
-        self.send_json(503, {"error": "語音合成沒有啟用" if tts_state["status"] == "off" else "語音合成還在載入" if tts_state["status"] == "warming_up" else tts_state["error"]})
+        st = tts_state["status"]
+        self.send_json(503, {"error": "語音合成沒有啟用" if st == "off" else "語音合成還在載入" if st == "warming_up" else "語音合成已卸載" if st == "unloaded" else tts_state["error"]})
         return
     size = int(self.headers.get("Content-Length") or 0)
     if size <= 0 or size > 64 * 1024:
@@ -297,6 +356,9 @@ def _tts_handler(self) -> None:
         wav, ms = synthesize(body if isinstance(body, dict) else {})
     except ValueError as err:
         self.send_json(400, {"error": str(err)})
+        return
+    except RuntimeError as err:
+        self.send_json(503, {"error": str(err)})
         return
     except Exception as err:  # noqa: BLE001
         log("合成失敗:", err)

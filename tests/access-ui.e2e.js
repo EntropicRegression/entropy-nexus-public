@@ -1,4 +1,4 @@
-// 權限的畫面驗收(主控台這一側,假資料模式):在「手機」面板把下一支配對裝置設成唯讀、只看一個節點,截圖面板,
+// 權限的畫面驗收(主控台這一側,假資料模式):在「遠端」面板把下一支配對裝置設成唯讀、只看一個節點,截圖面板,
 // 印出配對碼;tests/access-ui-browser.cjs 當成唯讀的瀏覽器連進來檢查畫面。裝置配對後再等一段時間就結束。見 tests/access-ui.sh。
 (async () => {
   const log = (...a) => console.log('[test]', ...a);
@@ -10,7 +10,7 @@
     await window.nexus.remoteSet({ enabled: true });
     const snap = await window.nexus.getSnapshot();
     const a = snap.agents.find(x => !x.parentId);
-    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '手機').click();
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '遠端').click();
     await wait(1500);
     // 經畫面操作:選「唯讀」→「只有指定的節點」→ 勾第一個節點
     const click = async el => { el.click(); await wait(3600); };
@@ -25,7 +25,15 @@
     while (Date.now() - t0 < 60000 && (await window.nexus.remoteStatus()).devices.length === 0) await wait(500);
     await wait(14000);
     // 裝置清單與操作紀錄
-    [...document.querySelectorAll('.remote-log-head button')][0].click();
+    // 偶爾在這裡找不到按鈕(約五次一次,原因未明):等一下再找,找不到就留下畫面狀態與截圖以便追查
+    let logBtn = null;
+    for (let i = 0; i < 50 && !logBtn; i++) { logBtn = document.querySelector('.remote-log-head button'); if (!logBtn) await wait(200); }
+    if (!logBtn) {
+      log('不符', '遠端面板的操作紀錄按鈕不見了', JSON.stringify({ hub: !!document.querySelector('.remote.hub'), tab: document.querySelector('.hub-tabs .on')?.textContent, remoteBtnOn: [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '遠端')?.className, body: document.body.innerText.slice(0, 300) }));
+      await shot('panel-missing');
+      throw new Error('找不到操作紀錄按鈕');
+    }
+    logBtn.click();
     await wait(1500);
     const dev = document.querySelector('.remote-dev')?.textContent ?? '';
     const rows = [...document.querySelectorAll('.remote-log-row')].map(r => r.textContent);

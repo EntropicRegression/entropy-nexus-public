@@ -49,7 +49,7 @@
     expect('找不到時回報錯誤', await window.nexus.revealPath(a.id, 'src/nope.ts').then(() => false, () => true));
 
     // 對話視窗裡的呈現
-    [...document.querySelectorAll('.roster-list .row')].find(r => r.textContent.includes('Path')).click();
+    window.__nexusSelect('Path');
     await wait(600);
     await window.nexus.send(a.id, '圖片測試\n改了 `src/main.ts` 與 `src/nope.ts`,說明在 `docs/guide.md`,資料夾是 `src`,指令是 `npm run build`。\n\n- 清單裡的 `app/src/main.ts:12`');
     const links = await until('路徑變成連結', () => { const l = [...document.querySelectorAll('.md code.md-path')].map(e => e.textContent); return l.length >= 3 ? l : null; }, 15000).catch(() => [...document.querySelectorAll('.md code')].map(e => e.className + '|' + e.textContent).concat('對話視窗:' + !!document.querySelector('.dlg-portrait')));

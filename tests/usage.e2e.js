@@ -27,8 +27,6 @@
     }
     return false;
   };
-  const hoverRow = name => { const row = [...document.querySelectorAll('.row')].find(x => x.textContent.includes(name)); row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); return Boolean(row); };
-  const leaveRow = name => [...document.querySelectorAll('.row')].find(x => x.textContent.includes(name))?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
 
   try {
     let s = await snap();
@@ -67,12 +65,9 @@
     document.querySelector('.board canvas').dispatchEvent(new PointerEvent('pointermove', { clientX: 4, clientY: 60, bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
     await wait(300);
     log('游標離開後', card() ? '資訊卡還在' : '資訊卡消失');
-    // 節點清單也有同樣的資訊卡
-    hoverRow(names[0]);
-    await wait(300);
-    log('懸浮在節點清單', readCard());
-    await shot('hover-roster');
-    leaveRow(names[0]);
+    // 右上角的總覽儀表也顯示各後台的額度(已用百分比)
+    log('總覽儀表的額度', [...document.querySelectorAll('.dash .dq')].map(e => e.textContent.replace(/\s+/g, ' ').trim()).join(' | '));
+    await shot('dashboard');
     log('全部步驟完成');
   } catch (err) {
     log('失敗', err.message);

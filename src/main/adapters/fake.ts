@@ -161,6 +161,34 @@ class FakeSession implements AdapterSession {
         return;
       }
     }
+    // 【只給驗收測試用】指定這個回合回報的用量,讓儀表的數字可以預期:
+    //   〔測試用量:{"windows":[{"label":"每週","used":0.3,"resetsAt":1790000000}],"spent":{"tokens":12000,"usd":0.05}}〕
+    //   約 0.3 秒後回報用量(windows、spent 都可以省略)並回到待命,不經過其他隨機的步驟。
+    const usageMark = /〔測試用量:(.*?)〕/s.exec(_text);
+    if (usageMark) {
+      let u: { windows?: Array<{ label: string; used: number; resetsAt?: number | null; group?: string; match?: string[] }>; spent?: { tokens: number; usd?: number } } = {};
+      try { u = JSON.parse(usageMark[1]); } catch { /* 格式不對就當成沒有用量 */ }
+      await this.wait(300);
+      this.emit({ type: 'usage', ...(u.windows ? { windows: u.windows.map(w => ({ ...w, resetsAt: w.resetsAt ?? null })) } : {}), ...(u.spent ? { spent: u.spent } : {}) });
+      this.emit({ type: 'message', role: 'agent', text: '用量已回報。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    // 〔測試執行:毫秒〕:停在「執行中」這麼久再完成(不回報用量);〔測試出錯〕:這個回合直接出錯
+    const runMark = /〔測試執行:(\d+)〕/.exec(_text);
+    if (runMark) {
+      this.emit({ type: 'state', state: 'working', detail: '測試執行' });
+      await this.wait(Number(runMark[1]));
+      this.emit({ type: 'message', role: 'agent', text: '完成。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    if (_text.includes('〔測試出錯〕')) {
+      await this.wait(300);
+      this.emit({ type: 'error', message: '模擬錯誤:測試指定的失敗' });
+      this.emit({ type: 'state', state: 'error', detail: '測試出錯' });
+      return;
+    }
     await this.wait(between(1500, 3200));
     // 指令開頭是「圖片測試」時:先模擬一個回傳圖片的工具結果,再把指令第二行以後的內容當成回覆,方便測試圖片顯示
     if (_text.startsWith('圖片測試')) {

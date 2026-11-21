@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AgentInfo, AuditEntry, RemoteAccess, RemoteRole, RemoteStatus } from '../../shared/types';
+import { ObservePanel } from './Observe';
 
 const ROLE_LABEL: Record<RemoteRole, string> = { full: '完整', operator: '操作', viewer: '唯讀' };
 const ROLE_HINT: Record<RemoteRole, string> = {
@@ -60,7 +61,7 @@ function AccessEditor({ value, agents, onChange }: { value: RemoteAccess; agents
 }
 
 /** 手機遠端的設定面板:開關、配對用的 QR code 與權限、已配對的裝置(改權限、撤銷)、操作紀錄。 */
-export function RemotePanel({ onClose }: { onClose: () => void }) {
+export function RemotePanel({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }) {
   const [st, setSt] = useState<RemoteStatus | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [editing, setEditing] = useState<{ id: string; access: RemoteAccess } | null>(null);
@@ -91,8 +92,8 @@ export function RemotePanel({ onClose }: { onClose: () => void }) {
   const shown = log.filter(e => (!who || e.device === who) && (!deniedOnly || !e.ok));
 
   return (
-    <div className="remote">
-      <div className="remote-head"><b>手機遠端</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
+    <div className={embedded ? 'remote-section' : 'remote'}>
+      {!embedded && <div className="remote-head"><b>手機遠端</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>}
       {!st ? <div className="empty">讀取中…</div> : <>
         <label className="remote-toggle">
           <input type="checkbox" checked={st.enabled} onChange={e => act(window.nexus.remoteSet({ enabled: e.target.checked }))} />
@@ -174,6 +175,21 @@ export function RemotePanel({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </>}
+    </div>
+  );
+}
+
+/** 頂部「遠端」的面板:兩個分頁,手機與瀏覽器遠端、外部觀察(各自的內容與行為和原本的獨立面板相同)。 */
+export function RemoteHub({ onClose }: { onClose: () => void }) {
+  const [tab, setTab] = useState<'remote' | 'observe'>('remote');
+  return (
+    <div className="remote hub">
+      <div className="remote-head"><b>遠端</b><span className="spacer" /><button className="ghost" onClick={onClose} aria-label="關閉">✕</button></div>
+      <div className="hub-tabs" role="tablist">
+        <button role="tab" aria-selected={tab === 'remote'} className={`ghost ${tab === 'remote' ? 'on' : ''}`} onClick={() => setTab('remote')} title="讓手機或另一台電腦的瀏覽器透過 Tailscale 連進來操作">手機與瀏覽器遠端</button>
+        <button role="tab" aria-selected={tab === 'observe'} className={`ghost ${tab === 'observe' ? 'on' : ''}`} onClick={() => setTab('observe')} title="觀察在主控台以外執行的 Claude Code(hooks)">外部觀察</button>
+      </div>
+      {tab === 'remote' ? <RemotePanel embedded onClose={onClose} /> : <ObservePanel embedded onClose={onClose} />}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 {
   "name": "entropy-nexus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "多家 AI CLI 的科技風主控台",
   "main": "./out/main/index.js",
@@ -9,6 +9,11 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node tools/run-tests.mjs unit",
+    "test:core": "node tools/run-tests.mjs core",
+    "test:e2e": "node tools/run-tests.mjs e2e",
+    "test:local": "node tools/run-tests.mjs local",
+    "test:real": "node tools/run-tests.mjs real",
     "postinstall": "node node_modules/electron/install.js",
     "dist": "electron-vite build && electron-builder --win nsis"
   },

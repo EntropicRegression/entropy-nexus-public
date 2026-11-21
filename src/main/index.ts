@@ -1,7 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ApprovalDecision, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
+import type { ApprovalDecision, Backend, CreateAgentInput, ForkAgentInput, OpenOldSessionInput, RemoteAccess, ReviewComment, SpeechSource, Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -9,11 +9,13 @@ import { FILE_SCHEME, handleFileRequests, initMedia } from './media';
 import { Interop } from './interop';
 import { initProcs, reapStale } from './procs';
 import { resolveLocal, revealLocal } from './reveal';
+import { windowSizes } from './window-size';
 import { initRemote, remoteAudit, remoteNewCode, remotePairAccess, remotePush, remotePushFull, remoteRevoke, remoteSet, remoteSetDevice, remoteStatus, stopRemote } from './remote';
 import { initObserver, observedList, observeInstall, observeNewToken, observerSawAgent, observeStatus, observeTakeover, observeUninstall, stopObserver } from './hooks-observer';
 import { initWorktrees, inspectDir } from './worktree';
 import { Store } from './store';
-import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts } from './voice';
+import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
+import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
 app.setPath('userData', process.env.NEXUS_DATA_DIR || join(app.getPath('appData'), 'entropy-nexus'));
@@ -36,11 +38,11 @@ let quitting = false;
 let interopRef: Interop | null = null;
 
 function createWindow(): void {
+  // 初始大小與最小尺寸不超過螢幕的可用範圍(1366×768 開 125% 縮放時只有約 1093×580),視窗才不會比螢幕大。
+  // 測試模式不看螢幕:驗收腳本需要固定的 1440×900,大小由 SIZE: 自己調整。
+  const size = windowSizes(testMode ? null : screen.getPrimaryDisplay().workAreaSize);
   win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1100,
-    minHeight: 700,
+    ...size,
     backgroundColor: '#060a12',
     autoHideMenuBar: true,
     title: 'Entropy Nexus',
@@ -106,6 +108,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     mergeWorktree: (id: string) => c.mergeWorktree(id),
     openPr: (id: string) => c.openPullRequest(id),
     quotaStop: (n: number) => c.setQuotaStop(n),
+    setDailyBudget: (backend: Backend, percent: number | null) => c.setDailyBudget(backend, percent),
     remoteStatus: () => remoteStatus(),
     remoteSet: (patch: { enabled?: boolean; lan?: boolean }) => remoteSet(patch),
     remoteNewCode: () => remoteNewCode(),
@@ -147,6 +150,11 @@ function registerIpc(methods: Methods): void {
   ipcMain.handle('nexus:voiceTranscribe', (_e, wav: ArrayBuffer) => voiceTranscribe(wav));
   ipcMain.handle('nexus:voiceTts', (_e, target: string | { character: string }, text: string) => voiceTts(target, String(text ?? '')));
   ipcMain.handle('nexus:voiceCharacters', () => voiceCharacters());
+  ipcMain.handle('nexus:voiceTtsPower', (_e, load: boolean) => voiceTtsPower(load === true));
+  ipcMain.handle('nexus:speechRender', (_e, notice, text: string) => speechRender(notice, String(text ?? '')));
+  ipcMain.handle('nexus:speechSettings', () => speechSettings());
+  ipcMain.handle('nexus:speechSet', (_e, patch) => speechSet(patch && typeof patch === 'object' ? patch : {}));
+  ipcMain.handle('nexus:speechClip', (_e, character: string, kind) => speechClip(String(character ?? ''), kind));
   // 角色的聲音:檔案都在主行程讀寫,畫面只送錄好的內容;選檔用主行程的對話框,畫面不能指定任意路徑
   ipcMain.handle('nexus:voiceProfile', (_e, character: string) => voiceProfile(String(character ?? '')));
   ipcMain.handle('nexus:voiceProfileSave', (_e, character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }) => {
@@ -251,6 +259,14 @@ function scheduleScreenshot(): void {
         })().catch(err => console.error('[test] 設定檔案失敗', err));
         return;
       }
+      // SIZE:寬,高:調整視窗內容區的大小(測試小視窗的版面;會暫時放寬最小尺寸);ZOOM:倍率:模擬 Windows 的顯示縮放
+      if (title.startsWith('SIZE:')) {
+        const [cw, ch] = title.slice(5).split(',').map(Number);
+        w.setMinimumSize(400, 300);
+        w.setContentSize(cw, ch);
+        return;
+      }
+      if (title.startsWith('ZOOM:')) { w.webContents.setZoomFactor(Number(title.slice(5)) || 1); return; }
       if (title.startsWith('SHOT:')) void w.webContents.capturePage().then(img => writeFileSync(join(testDir, `${title.slice(5)}.png`), img.toPNG()));
     });
     w.webContents.once('did-finish-load', () => {
@@ -314,6 +330,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       const names = core?.snapshot().agents.filter(a => !a.parentId).map(a => a.name) ?? [];
       return names.length ? `節點名稱:${names.join('、')}。` : '';
     }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
+    initSpeechEngines(store, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
     if (!devUrl) Menu.setApplicationMenu(null);

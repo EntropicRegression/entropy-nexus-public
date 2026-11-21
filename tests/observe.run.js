@@ -126,6 +126,8 @@ async function main() {
   check('SessionStart → UserPromptSubmit → PreToolUse → PermissionRequest → Stop → SessionEnd 狀態依序變化並移除', true);
   const chime = lines.find(l => /\[test\] chime/.test(l));
   check('外部節點待授權時響提示音、沒有授權按鈕', /chime 1 /.test(chime) && /有授權按鈕 false/.test(chime), chime);
+  const mark = lines.find(l => /儀表的外部標記/.test(l)) ?? '';
+  check('外部節點列在總覽儀表:標題列有「外部 1」(警示色),展開後列出這個節點', /"外部 1"/.test(mark) && /warn/.test(mark) && /外部列 1 /.test(chime), `${mark} | ${chime}`);
 
   // 去重:主控台自己的 session,以及帶著 NEXUS_HOOK_MANAGED 標頭的請求
   await ev(ownSid, 'PreToolUse', { tool_name: 'Read' });

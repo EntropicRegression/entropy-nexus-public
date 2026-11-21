@@ -2,21 +2,22 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
+import type { DashboardData } from '../../shared/dashboard';
+import { Dashboard, DashboardFull } from './Dashboard';
 import { HoverCard } from './Hover';
-import { ObservedRows, ObservePanel } from './Observe';
 import { VoicePanel } from './Voice';
 import { OldSessions } from './OldSessions';
 import { PersonaEditor } from './PersonaEditor';
-import { RemotePanel } from './Remote';
+import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
-import { BoardScene } from './board';
-import { chime, enqueueSpeech, initSpeech, isMuted, isSpeakOn, setMuted, setSpeakOn, stopSpeaking } from './sound';
-import { BACKEND_COLOR, STATE_COLOR, hex } from './theme';
+import { BoardScene, type BoardMore } from './board';
+import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
+import { BACKEND_COLOR, ZONE_TITLE, hex } from './theme';
 
 const MAX_EVENTS = 80;
-// 「需要你」的排最上面
+// Alt+N 依序跳到需要你的節點:待授權的排最前面
 const ATTENTION: Record<AgentState, number> = { awaiting: 0, error: 1, lost: 1, working: 2, planning: 2, idle: 3, sleeping: 4 };
 
 /** 瀏覽器版的遠端裝置可能不是完整權限(操作或唯讀);桌面視窗一律是完整。 */
@@ -40,14 +41,20 @@ export function App() {
   const [showOld, setShowOld] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
-  const [showObserve, setShowObserve] = useState(false);
+  const [showView, setShowView] = useState(false);
+  const [showLimitHelp, setShowLimitHelp] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
+  // 頂部列的「更多」選單:視窗窄的時候,較少用的按鈕收進這裡(寬度夠時這些按鈕直接排在頂部列,見 styles.css)
+  const [showMore, setShowMore] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
   const [observed, setObserved] = useState<Record<string, ObservedSession>>({});
-  const [hover, setHover] = useState<{ id: string; x: number; y: number; side: 'right' | 'left' } | null>(null);
+  // 總覽儀表:需要資料庫才算得出來的部分(預算、花費、任務統計)由主行程推送;showDash 是完整內容有沒有展開
+  const [dash, setDash] = useState<DashboardData | null>(null);
+  const [showDash, setShowDash] = useState(false);
+  const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null);
   const [muted, setMutedState] = useState(isMuted());
   // 主面板的節點在六角形裡顯示角色的 Q 版頭像(角色資料夾裡有 avatar 圖檔時);預設開啟,設定會記住
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
-  const [speakOn, setSpeakOnState] = useState(isSpeakOn());
   const [speaking, setSpeaking] = useState(false);
   // 語音播報播之前要用最新的節點狀態確認:授權或提問還在等、故障還沒恢復
   const agentsRef = useRef(agents);
@@ -63,7 +70,7 @@ export function App() {
         const a = agentsRef.current[n.agentId];
         if (n.kind === 'approval' || n.kind === 'question') return !resolvedRef.current.has(n.requestId) && (!a || a.state !== 'sleeping');
         // 故障:剛發生的照念;排了一陣子才輪到的,節點已經恢復就不念
-        if (n.kind === 'failed' && n.reason !== 'quota' && Date.now() - n.ts > 3000) return !!a && (a.state === 'error' || a.state === 'lost');
+        if (n.kind === 'failed' && n.reason !== 'quota' && n.reason !== 'budget' && Date.now() - n.ts > 3000) return !!a && (a.state === 'error' || a.state === 'lost');
         return true;
       },
     });
@@ -84,6 +91,7 @@ export function App() {
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
+      setDash(prev => prev ?? s.dashboard ?? null);
     });
     const off = window.nexus.onUpdate(u => {
       if (u.agent) { const a = u.agent; setAgents(prev => ({ ...prev, [a.id]: a })); }
@@ -108,6 +116,7 @@ export function App() {
       if (u.task) { const t = u.task; setTasks(prev => (prev.some(x => x.id === t.id) ? prev.map(x => (x.id === t.id ? t : x)) : [...prev, t])); }
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
+      if (u.dashboard) setDash(u.dashboard);
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
       if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
@@ -120,8 +129,27 @@ export function App() {
     return () => { alive = false; off(); };
   }, []);
 
+  // 「更多」選單打開時,點選單以外的地方就收起來
+  useEffect(() => {
+    if (!showMore) return;
+    const close = (e: PointerEvent) => { if (!moreRef.current?.contains(e.target as Node)) setShowMore(false); };
+    window.addEventListener('pointerdown', close, true);
+    return () => window.removeEventListener('pointerdown', close, true);
+  }, [showMore]);
+
   const list = useMemo(() => Object.values(agents), [agents]);
-  // 節點清單:需要你的排最上面;子節點緊跟在呼叫它的節點後面
+  const observedList = useMemo(() => Object.values(observed).sort((a, b) => a.startedAt - b.startedAt), [observed]);
+  // 自我檢查用:依名稱(或 id)打開節點的對話視窗,效果和在主面板上點那個節點相同
+  useEffect(() => {
+    const dbg = window as unknown as Record<string, unknown>;
+    dbg.__nexusSelect = (key: string) => {
+      const a = agentsRef.current[key] ?? Object.values(agentsRef.current).find(x => x.name === key) ?? Object.values(agentsRef.current).find(x => x.name.includes(key));
+      if (a) setSelectedId(a.id);
+      return !!a;
+    };
+    return () => { delete dbg.__nexusSelect; };
+  }, []);
+  // Alt+N 的順序:需要你的排最前面;子節點緊跟在呼叫它的節點後面
   const roster = useMemo(() => {
     const roots = list.filter(a => !a.parentId || !agents[a.parentId]).sort((a, b) => ATTENTION[a.state] - ATTENTION[b.state] || a.createdAt - b.createdAt);
     return roots.flatMap(r => [r, ...list.filter(a => a.parentId === r.id).sort((a, b) => a.createdAt - b.createdAt)]);
@@ -137,7 +165,7 @@ export function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'n') { e.preventDefault(); if (fullAccess) setAdding(true); return; }
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); if (fullAccess) setShowOld(true); return; }
       if (e.key === 'Escape' && !reviewId && !showOld) {
-        if (showKeys) setShowKeys(false); else if (selectedId) setSelectedId(null);
+        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (showDash) setShowDash(false); else if (selectedId) setSelectedId(null);
         return;
       }
       if (!e.altKey || e.ctrlKey) return;
@@ -159,7 +187,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agents, roster, selectedId, reviewId, showOld, showKeys]);
+  }, [agents, roster, selectedId, reviewId, showOld, showKeys, showMore, showDash]);
   const reviewTask = reviewId ? tasks.find(t => t.id === reviewId) ?? null : null;
   // 對話視窗的「變更」按鈕:這個節點最近一個有變更資料的任務
   const latestTask = (agentId: string) => tasks.filter(t => t.agentId === agentId && t.changes).sort((a, b) => b.startedAt - a.startedAt)[0]?.id ?? null;
@@ -170,44 +198,89 @@ export function App() {
       <header className="topbar">
         <div className="brand">ENTROPY NEXUS</div>
         <div className="caps">
-          {caps.map(c => (
-            <span key={c.backend} className="chip" title={c.note}>
-              <i style={{ background: hex(BACKEND_COLOR[c.backend]) }} />
-              {BACKEND_LABEL[c.backend]}
-              <em>{c.simulated ? '模擬' : c.available ? c.version ?? '已連線' : '未安裝'}</em>
-            </span>
-          ))}
+          {caps.map(c => {
+            const status = c.simulated ? '模擬' : c.available ? c.version ?? '已連線' : '未安裝';
+            // 視窗窄的時候標籤縮成圓點,名稱與狀態改從提示文字看
+            return (
+              <span key={c.backend} className={`chip ${c.simulated || c.available ? '' : 'off'}`} title={`${BACKEND_LABEL[c.backend]}:${status}${c.note ? `
+${c.note}` : ''}`}>
+                <i style={{ background: hex(BACKEND_COLOR[c.backend]) }} />
+                <span className="chip-text">{BACKEND_LABEL[c.backend]}</span>
+                <em>{status}</em>
+              </span>
+            );
+          })}
         </div>
         <div className="spacer" />
         <span className="stat">節點 <b>{list.filter(a => !a.parentId).length}</b></span>
         <span className={`stat ${needYou ? 'warn' : ''}`}>需要你 <b>{needYou}</b></span>
-        <label className="limit need-full" title="同時執行中的節點數上限;超過時新的指令不會送出">
-          同時上限
-          <input type="number" min={1} max={32} value={maxActive} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 32) void window.nexus.setMaxActive(n); }} />
-        </label>
-        <label className="limit need-full" title="某家後台的額度用到這個百分比,就不再送出新指令;0 表示不限制">
-          額度上限
-          <input type="number" min={0} max={100} value={quotaStop} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 0 && n <= 100) void window.nexus.setQuotaStop(n); }} />%
-        </label>
-        <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="讓手機透過 Tailscale 連進來操作">手機</button>
-        <button className={`ghost mute need-full ${showObserve ? 'on' : ''}`} onClick={() => setShowObserve(v => !v)} title="觀察在主控台以外執行的 Claude Code(hooks)">外部觀察</button>
-        <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音模式(實驗性):按住說話,轉成文字填進輸入框">語音</button>
-        <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
-        <button className={`ghost mute ${avatarsOn ? 'on' : ''}`} onClick={() => { localStorage.setItem('nexus.avatars', avatarsOn ? '0' : '1'); setAvatarsOn(!avatarsOn); }} title="在節點的六角形裡顯示角色的 Q 版頭像(角色資料夾裡的 avatar.png);關閉時顯示原本的六角形">{avatarsOn ? '頭像 開' : '頭像 關'}</button>
-        <button className={`ghost mute ${muted ? '' : 'on'}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }} title="待授權與異常時的提示音">{muted ? '提示音 關' : '提示音 開'}</button>
-        <button className={`ghost mute ${speakOn ? 'on' : ''}`} onClick={() => { setSpeakOn(!speakOn); setSpeakOnState(!speakOn); if (speakOn) setSpeaking(false); }} title="念出語音播報:你從桌面交辦的回合完成時念一句重點,節點等你授權、有問題要問你或出錯時提醒你">{speakOn ? '朗讀 開' : '朗讀 關'}</button>
-        {speaking && <button className="ghost mute" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀">停止朗讀</button>}
-        {caps.some(c => c.simulated) && (
-          <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
-            <input type="checkbox" checked={autopilot} onChange={e => void window.nexus.setAutopilot(e.target.checked)} />
-            模擬自動運作
+        <div className="limits need-full">
+          <label className="limit" title="同時執行中的節點數上限(1 到 32)。計入規劃中、執行中、等待授權的頂層節點;子代理不計。已達上限時,新送出的指令會排進節點的佇列,有名額時自動送出。按右邊的「?」看完整說明。">
+            <span>同時<span className="tb-long">上限</span></span>
+            <input type="number" min={1} max={32} value={maxActive} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 1 && n <= 32) void window.nexus.setMaxActive(n); }} />
           </label>
-        )}
+          <label className="limit" title="某家後台的額度用到這個百分比,就不再對它的節點送出新指令,排隊中的指令會暫停(0 表示不限制)。按右邊的「?」看完整說明。">
+            <span>額度<span className="tb-long">上限</span></span>
+            <input type="number" min={0} max={100} value={quotaStop} onChange={e => { const n = Number(e.target.value); if (Number.isInteger(n) && n >= 0 && n <= 100) void window.nexus.setQuotaStop(n); }} />%
+          </label>
+          <button className={`ghost help ${showLimitHelp ? 'on' : ''}`} onClick={() => setShowLimitHelp(v => !v)} title="說明:同時上限與額度上限" aria-label="說明:同時上限與額度上限">?</button>
+        </div>
+        <span className="topbar-sep" aria-hidden />
+        <button className={`ghost mute need-full ${showVoice ? 'on' : ''}`} onClick={() => setShowVoice(v => !v)} title="語音:朗讀(語音播報)開關,以及語音輸入(實驗性)的設定">語音</button>
+        <button className={`ghost mute need-full ${showRemote ? 'on' : ''}`} onClick={() => setShowRemote(v => !v)} title="遠端:讓手機或另一台電腦的瀏覽器連進來操作,以及觀察在主控台以外執行的 Claude Code">遠端</button>
+        {speaking && <button className="ghost mute stop-speak" onClick={() => { stopSpeaking(); setSpeaking(false); }} title="停止目前的朗讀(並清空還沒念的)">停止朗讀</button>}
+        {/* 較少用的按鈕:寬度夠時直接排在頂部列;視窗窄的時候收進「更多」選單(同一組按鈕,只是換位置) */}
+        <div className={`topbar-more ${showMore ? 'open' : ''}`} ref={moreRef}>
+          <button className={`ghost mute more-btn ${showMore || showKeys || showView ? 'on' : ''}`} onClick={() => setShowMore(v => !v)} title="更多:快捷鍵、顯示與提示" aria-label="更多" aria-haspopup="menu" aria-expanded={showMore}>⋯</button>
+          <div className="more-items" role="group" aria-label="更多" onClick={e => { if ((e.target as HTMLElement).closest('button')) setShowMore(false); }}>
+            <button className={`ghost mute ${showKeys ? 'on' : ''}`} onClick={() => setShowKeys(v => !v)} title="顯示快捷鍵(F1)">快捷鍵</button>
+            <button className={`ghost mute ${showView ? 'on' : ''}`} onClick={() => setShowView(v => !v)} title="顯示與提示:節點頭像、提示音">顯示</button>
+            {caps.some(c => c.simulated) && (
+              <label className="toggle need-full" title="假資料節點在待命時自動收到指令">
+                <input type="checkbox" checked={autopilot} onChange={e => void window.nexus.setAutopilot(e.target.checked)} />
+                模擬自動運作
+              </label>
+            )}
+          </div>
+        </div>
       </header>
 
-      {showRemote && <RemotePanel onClose={() => setShowRemote(false)} />}
-      {showObserve && <ObservePanel onClose={() => setShowObserve(false)} />}
+      {showDash && <DashboardFull agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
+      {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
+      {showView && (
+        <div className="topbar-pop view-pop">
+          <div className="remote-head"><b>顯示與提示</b><span className="spacer" /><button className="ghost" onClick={() => setShowView(false)} aria-label="關閉">✕</button></div>
+          <div className="pop-row">
+            <button className={`ghost mute ${avatarsOn ? 'on' : ''}`} onClick={() => { localStorage.setItem('nexus.avatars', avatarsOn ? '0' : '1'); setAvatarsOn(!avatarsOn); }} title="在節點的六角形裡顯示角色的 Q 版頭像(角色資料夾裡的 avatar.png);關閉時顯示原本的六角形">{avatarsOn ? '頭像 開' : '頭像 關'}</button>
+            <span className="remote-note">節點的六角形裡顯示角色的 Q 版頭像;關閉時顯示原本的六角形。</span>
+          </div>
+          <div className="pop-row">
+            <button className={`ghost mute ${muted ? '' : 'on'}`} onClick={() => { setMuted(!muted); setMutedState(!muted); }} title="待授權與異常時的提示音">{muted ? '提示音 關' : '提示音 開'}</button>
+            <span className="remote-note">節點進入待授權或異常時響一聲,其他狀態保持安靜。</span>
+          </div>
+          <p className="remote-note">朗讀(語音播報)的開關在「語音」面板。</p>
+        </div>
+      )}
+      {showLimitHelp && (
+        <div className="topbar-pop limit-pop">
+          <div className="remote-head"><b>同時上限與額度上限</b><span className="spacer" /><button className="ghost" onClick={() => setShowLimitHelp(false)} aria-label="關閉">✕</button></div>
+          <div className="remote-sub first">同時上限(目前 {maxActive})</div>
+          <p className="remote-note">同時「執行中」的節點最多幾個(1 到 32,預設 4),用來避免一次開太多節點把訂閱額度用完。</p>
+          <ul className="help-list">
+            <li>計入:規劃中、執行中、等待你授權的頂層節點,以及正在送出第一句的節點。子代理不計;待命、休眠、失聯、出錯的節點不計。</li>
+            <li>已達上限時,你再對待命的節點送指令,不會送出,而是排進那個節點的佇列(對話裡會出現「已達同時執行上限」),等有節點停下來空出名額時,依排入時間先後自動送出。</li>
+            <li>已在執行的節點中途插話不受影響。模擬自動運作的指令達上限時直接略過,不排隊。</li>
+          </ul>
+          <div className="remote-sub">額度上限(目前 {quotaStop === 0 ? '不限制' : `${quotaStop}%`})</div>
+          <p className="remote-note">某家後台的額度用到這個百分比,主控台就不再對那家後台的節點送出新指令。0 表示不限制(範圍 0 到 100)。</p>
+          <ul className="help-list">
+            <li>看的是該後台各額度視窗(例如每五小時、每週)裡用量最高的一個;依模型分組的額度只看節點使用的模型所屬的那一組;還沒有額度資料的後台不受限制。</li>
+            <li>已達上限時:你直接送出的指令不會送出,對話裡顯示錯誤;排隊中的指令留在佇列並暫停,調高上限或等額度重置後,按佇列的「繼續」才會恢復。</li>
+            <li>只擋新指令,已經在執行的回合不會被中斷;其他後台不受影響。</li>
+          </ul>
+        </div>
+      )}
       {showKeys && (
         <div className="keys">
           <b>快捷鍵</b>
@@ -227,31 +300,16 @@ export function App() {
         </div>
       )}
       <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={h => setHover(h ? { ...h, side: 'right' } : null)} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
-        {hover && agents[hover.id] && hover.side === 'right' && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} side="right" />}
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
+        {hover && agents[hover.id] && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} />}
         {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
         {showOld && <OldSessions onOpened={id => { setShowOld(false); setSelectedId(id); }} onClose={() => setShowOld(false)} />}
       </main>
 
-      {hover && agents[hover.id] && hover.side === 'left' && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} side="left" />}
-      <aside className="roster">
-        <div className="panel-title">節點清單</div>
-        <div className="roster-list">
-          {roster.map(a => (
-            <button key={a.id} className={`row ${a.id === selectedId ? 'on' : ''} s-${a.state} ${a.parentId ? 'sub' : ''}`} onClick={() => setSelectedId(a.id)}
-              onMouseEnter={e => { const r = e.currentTarget.getBoundingClientRect(); setHover({ id: a.id, x: r.left, y: r.top, side: 'left' }); }} onMouseLeave={() => setHover(null)}>
-              <span className="dot" style={{ borderColor: hex(BACKEND_COLOR[a.backend]), background: hex(STATE_COLOR[a.state]) }} />
-              <span className="row-main">
-                <span className="row-name">{a.name}</span>
-                <span className="row-sub">{a.parentId ? `子代理 · ${agents[a.parentId]?.name ?? ''}` : `${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''}${a.simulated ? ' · 模擬' : ''}`}</span>
-              </span>
-              <span className="row-state">{STATE_LABEL[a.state]}</span>
-            </button>
-          ))}
-          {list.length === 0 && <div className="empty">還沒有節點。按下方按鈕新增。</div>}
-          <ObservedRows list={Object.values(observed).sort((a, b) => a.startedAt - b.startedAt)} onOpened={setSelectedId} />
-        </div>
+      {/* 右側欄:最上面是常駐的總覽儀表(原本節點清單的位置),下面是任務面板與新增節點 */}
+      <aside className="sidebar">
+        <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => setShowDash(v => !v)} onSelect={setSelectedId} />
         {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
@@ -304,10 +362,23 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
   const scene = useRef<BoardScene | null>(null);
   const latest = useRef({ agents, selectedId, avatars, chiefId });
   latest.current = { agents, selectedId, avatars, chiefId };
+  // 區塊排不下時「另外 N 個」的清單:點面板上的標記打開,列出被收起來的節點
+  const [more, setMore] = useState<BoardMore | null>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!more) return;
+    const close = () => scene.current?.closeMore();
+    // 點清單和面板以外的地方、或按 Esc 就關掉(面板上的點擊由面板自己處理)
+    const onDown = (e: PointerEvent) => { if (e.target instanceof Node && !moreRef.current?.contains(e.target) && !host.current?.contains(e.target)) close(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    return () => { document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('keydown', onKey, true); };
+  }, [more !== null]);
 
   useEffect(() => {
     let dead = false;
-    const s = new BoardScene(onSelect, h => hoverRef.current(h), () => addChiefRef.current());
+    const s = new BoardScene(id => { s.closeMore(); onSelect(id); }, h => hoverRef.current(h), () => addChiefRef.current(), setMore);
     void s.init(host.current!).then(() => {
       if (dead) { s.destroy(); return; }
       scene.current = s;
@@ -320,7 +391,40 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
   useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
 
-  return <div className="board" ref={host} />;
+  // 清單放在標記的上方或下方(看哪邊空間大),不超出面板
+  const box = host.current?.parentElement;
+  const zoneName = more ? ZONE_TITLE[more.zone].split(' ')[0] : '';
+  const moreStyle = (() => {
+    if (!more || !box) return undefined;
+    const W = box.clientWidth, H = box.clientHeight, width = Math.min(232, W - 16);
+    const top = more.y - 34 * more.zoom, bottom = more.y + 64 * more.zoom;
+    const left = Math.max(8, Math.min(more.x - width / 2, W - width - 8));
+    return H - bottom >= top
+      ? { left, width, top: bottom + 4, maxHeight: Math.max(96, Math.min(360, H - bottom - 12)) }
+      : { left, width, bottom: `calc(100% - ${Math.round(top - 4)}px)`, maxHeight: Math.max(96, Math.min(360, top - 12)) };
+  })();
+  return (
+    <>
+      <div className="board" ref={host} />
+      {more && moreStyle && (
+        <div className="board-more" ref={moreRef} style={moreStyle} role="dialog" aria-label={`${zoneName}區塊的其他節點`}>
+          <div className="bm-head">
+            <b>{zoneName}</b><span>另外 {more.ids.length} 個</span>
+            <button className="ghost" aria-label="關閉清單" onClick={() => scene.current?.closeMore()}>×</button>
+          </div>
+          <div className="bm-list">
+            {more.ids.map(id => agents.find(a => a.id === id)).filter((a): a is AgentInfo => !!a).map(a => (
+              <button key={a.id} className={`bm-row s-${a.state}`} onClick={() => { scene.current?.closeMore(); onSelect(a.id); }} title={`打開「${a.name}」的對話視窗`}>
+                <i style={{ background: hex(BACKEND_COLOR[a.backend]) }} />
+                <span className="bm-name">{a.parentId ? '↳ ' : ''}{a.name}</span>
+                <span className="bm-state">{a.detail || STATE_LABEL[a.state]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; agents: AgentInfo[]; chief?: boolean; onDone: () => void }) {
@@ -363,6 +467,8 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
   return (
     <div className={`addform ${chief ? 'chief' : ''}`}>
       <div className="panel-title">{chief ? '指定總管節點' : '新增節點'}</div>
+      {/* 欄位放在自己的捲動區;標題、錯誤訊息和「取消、新增」固定在外面,視窗再矮也按得到 */}
+      <div className="addform-body">
       {chief && <>
         <p className="note">總管負責接收你交代的事(可以在它的對話視窗用語音說),判斷交給哪個節點,再用節點互相呼叫分派出去。建議用「每次詢問」模式:每次分派前會先問你。</p>
         {candidates.length > 0 && <div className="chief-pick">
@@ -420,6 +526,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
             {mode === 'auto' && <span className="note warn">修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。節點上會標示 AUTO。</span>}
           </label>
         )}
+      </div>
       {error && <div className="form-error">{error}</div>}
       <div className="addform-actions">
         <button onClick={onDone}>取消</button>

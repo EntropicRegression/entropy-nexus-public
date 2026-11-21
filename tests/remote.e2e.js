@@ -11,7 +11,7 @@
     let st = await window.nexus.remoteStatus();
     log('REMOTE', JSON.stringify({ enabled: st.enabled, lan: st.lan, port: st.port, tailscaleIp: st.tailscaleIp, listening: st.listening, hasQr: Boolean(st.qr), url: st.url }));
     // 桌面面板的畫面
-    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '手機').click();
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '遠端').click();
     await wait(1200);
     log('面板內容', document.querySelector('.remote')?.textContent.replace(/\s+/g, ' ').slice(0, 150));
     document.title = 'SHOT:1-panel'; await wait(900); document.title = 'SHOT:1-panel-b'; await wait(900);

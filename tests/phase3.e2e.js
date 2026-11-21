@@ -18,7 +18,7 @@
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   };
   const say = async text => { type(text); await wait(200); button('送出').click(); };
-  const openDialog = async name => { [...document.querySelectorAll('.row')].find(r => r.textContent.includes(name)).click(); await wait(600); };
+  const openDialog = async name => { window.__nexusSelect(name); await wait(600); };
   const lastReply = async id => (await window.nexus.getHistory(id)).filter(e => e.type === 'message' && e.role === 'agent').slice(-1)[0]?.text;
   const DONE = ['idle', 'error', 'lost'];
 

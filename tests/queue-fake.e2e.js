@@ -20,7 +20,7 @@
   const settled = (id, what) => until(what, async () => { const a = await ag(id); return a.state === 'idle' && a.queued.length === 0 && !(await snap()).tasks.some(t => t.agentId === id && t.endedAt === null); }, 60000);
   let fails = 0;
   const check = (name, ok, extra = '') => { if (!ok) fails++; log(ok ? '通過' : '不符', name, extra); };
-  const openDialog = async name => { [...document.querySelectorAll('.row')].find(r => r.textContent.includes(name)).click(); await wait(500); };
+  const openDialog = async name => { window.__nexusSelect(name); await wait(500); };
   const closeDialog = async () => { const b = $('.dlg-id .ghost[aria-label="關閉"]'); if (b) b.click(); await wait(300); };
 
   try {

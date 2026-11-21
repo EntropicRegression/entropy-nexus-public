@@ -100,7 +100,7 @@
       document.title = 'SHOT:1-addnode-persona'; await wait(900);
     } else check('新增節點面板有角色欄位', false);
     [...document.querySelectorAll('.addform-actions button')].find(b => b.textContent.includes('取消'))?.click();
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('乙'))?.click();
+    window.__nexusSelect('乙');
     await wait(800);
     [...document.querySelectorAll('button')].find(b => b.textContent === '設定')?.click();
     await wait(600);

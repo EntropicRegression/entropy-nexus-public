@@ -1,47 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-
-type Block =
-  | { t: 'code'; lang: string; text: string }
-  | { t: 'h'; level: number; text: string }
-  | { t: 'list'; ordered: boolean; items: string[] }
-  | { t: 'p'; text: string };
-
-/** 把回覆文字切成區塊:程式碼區塊、標題、清單、段落。只處理常見語法,其餘原樣顯示。 */
-function parse(src: string): Block[] {
-  const blocks: Block[] = [];
-  const lines = src.replace(/\r\n/g, '\n').split('\n');
-  let para: string[] = [];
-  const flush = () => { if (para.length) { blocks.push({ t: 'p', text: para.join('\n') }); para = []; } };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const fence = /^\s*```(.*)$/.exec(line);
-    if (fence) {
-      flush();
-      const body: string[] = [];
-      i++;
-      // 還在生成中的回覆可能沒有結尾的 ```,就收到最後一行
-      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++]);
-      blocks.push({ t: 'code', lang: fence[1].trim(), text: body.join('\n') });
-      continue;
-    }
-    const h = /^(#{1,4})\s+(.*)$/.exec(line);
-    if (h) { flush(); blocks.push({ t: 'h', level: h[1].length, text: h[2] }); continue; }
-    const li = /^\s*([-*•]|\d+[.)])\s+(.*)$/.exec(line);
-    if (li) {
-      flush();
-      const ordered = /\d/.test(li[1]);
-      const last = blocks[blocks.length - 1];
-      if (last?.t === 'list' && last.ordered === ordered) last.items.push(li[2]);
-      else blocks.push({ t: 'list', ordered, items: [li[2]] });
-      continue;
-    }
-    if (!line.trim()) { flush(); continue; }
-    para.push(line);
-  }
-  flush();
-  return blocks;
-}
+import { parseBlocks, parseInline, type Block, type Inline } from './markdown-parse';
+import './markdown.css';
 
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
@@ -146,7 +106,7 @@ function InlineCode({ text, agentId }: { text: string; agentId?: string }) {
  * Markdown 連結。目標是這台電腦上存在的檔案或資料夾時(Antigravity 習慣把檔名寫成 [檔名](file:///路徑)),
  * 點一下在檔案總管中顯示;其他連結只顯示文字與網址,不會開啟。
  */
-function MdLink({ text, href, agentId }: { text: string; href: string; agentId?: string }) {
+function MdLink({ children, href, agentId }: { children: ReactNode; href: string; agentId?: string }) {
   const local = !!agentId && href.length <= 1000 && !/^(https?|mailto|data|javascript):/i.test(href);
   const key = local ? `${agentId}\n${href}` : '';
   const [ok, setOk] = useState(() => !!key && revealCache.get(key)?.ok === true);
@@ -157,8 +117,7 @@ function MdLink({ text, href, agentId }: { text: string; href: string; agentId?:
     void canReveal(agentId!, href).then(v => { if (alive) setOk(v); });
     return () => { alive = false; };
   }, [agentId, href]);
-  // 連結文字常常又包了一層行內程式碼的反引號
-  const label = text.replace(/^`([^`]+)`$/, '$1');
+  const label = children;
   if (!ok) return <span className="md-link" title={href}>{label}</span>;
   const open = () => {
     if (window.getSelection()?.toString()) return;
@@ -168,22 +127,26 @@ function MdLink({ text, href, agentId }: { text: string; href: string; agentId?:
     onClick={open} onKeyDown={e => { if (e.key === 'Enter') open(); }}>{label}</span>;
 }
 
-/** 行內語法:`程式碼`、**粗體**、[文字](連結)、![說明](圖片);圖片路徑有空白時可寫成 ![說明](<路徑>)。連結的目標是本機存在的檔案或資料夾時可以點開檔案總管,其他連結只顯示文字與網址,不會開啟。 */
+/** 把行內語法的解析結果(markdown-parse.ts)轉成 React 元素;只產生元素,不輸出原始 HTML。連結裡的行內程式碼不再另外做成路徑連結。 */
+function renderInline(nodes: Inline[], agentId?: string, inLink = false): ReactNode[] {
+  return nodes.map((n, k) => {
+    if (typeof n === 'string') return n;
+    switch (n.t) {
+      case 'code': return inLink ? <code key={k}>{n.text}</code> : <InlineCode key={k} text={n.text} agentId={agentId} />;
+      case 'strong': return <strong key={k}>{renderInline(n.c, agentId, inLink)}</strong>;
+      case 'em': return <em key={k}>{renderInline(n.c, agentId, inLink)}</em>;
+      case 'strongem': return <strong key={k}><em>{renderInline(n.c, agentId, inLink)}</em></strong>;
+      case 'del': return <del key={k}>{renderInline(n.c, agentId, inLink)}</del>;
+      case 'br': return <br key={k} />;
+      case 'img': return <MdImage key={k} src={n.src.trim()} alt={n.alt} agentId={agentId} />;
+      case 'a': return <MdLink key={k} href={n.href} agentId={agentId}>{renderInline(n.c, agentId, true)}</MdLink>;
+    }
+  });
+}
+
+/** 行內語法:`程式碼`、**粗體**、*斜體*、~~刪除線~~、[文字](連結)、![說明](圖片)、網址。圖片路徑有空白時可寫成 ![說明](<路徑>)。連結的目標是本機存在的檔案或資料夾時可以點開檔案總管,其他連結只顯示文字與網址,不會開啟。 */
 function inline(text: string, agentId?: string): ReactNode[] {
-  const out: ReactNode[] = [];
-  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(!\[([^\]\n]*)\]\((<[^>\n]+>|[^)\s]+)\))|(\[[^\]\n]+\]\((?:<[^>\n]+>|[^)\s]+)\))/g;
-  let last = 0, m: RegExpExecArray | null, k = 0;
-  while ((m = re.exec(text))) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    const s = m[0];
-    if (s.startsWith('`')) out.push(<InlineCode key={k++} text={s.slice(1, -1)} agentId={agentId} />);
-    else if (s.startsWith('**')) out.push(<b key={k++}>{s.slice(2, -2)}</b>);
-    else if (s.startsWith('![')) out.push(<MdImage key={k++} src={m[5].replace(/^<(.*)>$/, '$1').trim()} alt={m[4]} agentId={agentId} />);
-    else { const mm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(s)!; out.push(<MdLink key={k++} text={mm[1]} href={mm[2].replace(/^<(.*)>$/, '$1').trim()} agentId={agentId} />); }
-    last = m.index + s.length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
+  return renderInline(parseInline(text), agentId);
 }
 
 /** 段落下方的圖片預覽;沒有 agentId(不知道工作目錄)時不顯示。 */
@@ -211,25 +174,56 @@ function CodeBlock({ lang, text }: { lang: string; text: string }) {
   );
 }
 
+/** 區塊裡最後能接上「生成中」游標的位置(段落、標題、清單、引用);表格與程式碼區塊不行。 */
+function tailable(b: Block): boolean {
+  if (b.t === 'p' || b.t === 'h') return true;
+  if (b.t === 'quote') return b.blocks.length > 0 && tailable(b.blocks[b.blocks.length - 1]);
+  if (b.t === 'list') return b.items.length > 0;
+  return false;
+}
+
+function renderBlocks(blocks: Block[], agentId: string | undefined, tail?: ReactNode): ReactNode[] {
+  const lastTail = blocks.length > 0 && tailable(blocks[blocks.length - 1]);
+  const out = blocks.map((b, i) => renderBlock(b, i, agentId, i === blocks.length - 1 && lastTail ? tail : null));
+  if (!lastTail && tail) out.push(<Fragment key="tail">{tail}</Fragment>);
+  return out;
+}
+
+function renderBlock(b: Block, key: number, agentId: string | undefined, end: ReactNode): ReactNode {
+  switch (b.t) {
+    case 'code': return <CodeBlock key={key} lang={b.lang} text={b.text} />;
+    case 'hr': return <hr key={key} className="md-hr" />;
+    case 'h': return <div key={key} className={`md-h md-h${b.level}`} role="heading" aria-level={b.level}>{inline(b.text, agentId)}{end}</div>;
+    case 'quote': return <blockquote key={key} className="md-quote">{renderBlocks(b.blocks, agentId, end)}</blockquote>;
+    case 'table': {
+      const cell = (t: string) => inline(t, agentId);
+      return (
+        <div key={key} className="md-table-wrap">
+          <table className="md-table">
+            <thead><tr>{b.head.map((c, j) => <th key={j} style={b.align[j] ? { textAlign: b.align[j]! } : undefined}>{cell(c)}</th>)}</tr></thead>
+            {b.rows.length > 0 && <tbody>{b.rows.map((r, j) => <tr key={j}>{r.map((c, k) => <td key={k} style={b.align[k] ? { textAlign: b.align[k]! } : undefined}>{cell(c)}</td>)}</tr>)}</tbody>}
+          </table>
+        </div>
+      );
+    }
+    case 'list': {
+      const items = b.items.map((it, j) => (
+        <li key={j} className={it.task ? `md-task-item ${it.task}` : undefined}>
+          {it.task && <span className="md-task" role="checkbox" aria-checked={it.task === 'done'} aria-label={it.task === 'done' ? '已完成' : '未完成'}>{it.task === 'done' ? '☑' : '☐'}</span>}
+          {it.blocks.length ? renderBlocks(it.blocks, agentId, j === b.items.length - 1 ? end : null) : (j === b.items.length - 1 ? end : null)}
+        </li>
+      ));
+      return b.ordered ? <ol key={key} className="md-ol" start={b.start !== 1 ? b.start : undefined}>{items}</ol> : <ul key={key} className="md-ul">{items}</ul>;
+    }
+    default: return <Fragment key={key}><p>{inline(b.text, agentId)}{end}</p><Previews text={b.text} agentId={agentId} /></Fragment>;
+  }
+}
+
 /**
- * 回覆的排版:程式碼區塊(等寬字、可複製)、標題、清單、粗體、行內程式碼與圖片。
+ * 回覆的排版:程式碼區塊(等寬字、可複製)、標題、清單(可巢狀、核取方塊)、表格(可左右捲動)、引用、分隔線、
+ * 粗體、斜體、刪除線、連結、行內程式碼與圖片。解析在 markdown-parse.ts。
  * agentId 用來讀取該節點工作目錄裡的圖片;不給就只顯示路徑文字。
  */
 export function Markdown({ text, tail, agentId }: { text: string; tail?: ReactNode; agentId?: string }) {
-  const blocks = parse(text);
-  return (
-    <div className="md">
-      {blocks.map((b, i) => {
-        const end = i === blocks.length - 1 ? tail : null;
-        if (b.t === 'code') return <CodeBlock key={i} lang={b.lang} text={b.text} />;
-        if (b.t === 'h') return <div key={i} className={`md-h md-h${b.level}`}>{inline(b.text, agentId)}{end}</div>;
-        if (b.t === 'list') {
-          const items = b.items.map((it, j) => <li key={j}>{inline(it, agentId)}{j === b.items.length - 1 ? end : null}</li>);
-          return <Fragment key={i}>{b.ordered ? <ol>{items}</ol> : <ul>{items}</ul>}<Previews text={b.items.join('\n')} agentId={agentId} /></Fragment>;
-        }
-        return <Fragment key={i}><p>{inline(b.text, agentId)}{end}</p><Previews text={b.text} agentId={agentId} /></Fragment>;
-      })}
-      {blocks.length === 0 || blocks[blocks.length - 1].t === 'code' ? tail : null}
-    </div>
-  );
+  return <div className="md">{renderBlocks(parseBlocks(text), agentId, tail)}</div>;
 }

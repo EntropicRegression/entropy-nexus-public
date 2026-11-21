@@ -17,7 +17,7 @@
     await wait(2500);
     await shot('sleep-1-three-asleep');
     // 打開、關閉對話視窗:面板高度改變,節點重新排位
-    [...document.querySelectorAll('.roster-list .row')].find(r => r.textContent.includes('claudia')).click();
+    window.__nexusSelect('claudia');
     await wait(1500);
     await shot('sleep-2-dialog-open');
     document.querySelector('.dlg-id button[aria-label="關閉"]').click();
@@ -27,7 +27,9 @@
     await window.nexus.sleep(b.id); await wait(2500);
     await shot('sleep-4-swapped');
     // 關掉再打開頭像
-    const btn = () => [...document.querySelectorAll('.topbar button')].find(x => x.textContent.startsWith('頭像'));
+    // 頭像開關在頂部「顯示」的小面板裡
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '顯示').click(); await wait(300);
+    const btn = () => [...document.querySelectorAll('.view-pop button')].find(x => x.textContent.startsWith('頭像'));
     btn().click(); await wait(1000); btn().click(); await wait(1500);
     await shot('sleep-5-toggled');
     // 節點被移除(子代理結束、終止節點)之後,其他節點的頭像不能壞掉

@@ -12,7 +12,7 @@
     while (Date.now() - t0 < timeout) { const v = await fn(); if (v) return v; await wait(250); }
     throw new Error(`等不到:${what}`);
   };
-  const openDialog = async name => { const row = [...document.querySelectorAll('.row')].find(r => r.textContent.includes(name)); if (row) { row.click(); await wait(600); } return Boolean(row); };
+  const openDialog = async name => { const found = window.__nexusSelect(name); if (found) await wait(600); return found; };
   const lastReply = async id => (await window.nexus.getHistory(id)).filter(e => e.type === 'message' && e.role === 'agent').slice(-1)[0]?.text;
 
   // 讓一個節點呼叫子代理,邊跑邊觀察子節點;有授權請求一律允許

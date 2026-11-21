@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { AdapterEvent, AgentInfo, AuditEntry, NexusEvent, QueuedPrompt, TaskInfo } from '../shared/types';
+import type { AdapterEvent, AgentInfo, AuditEntry, Backend, NexusEvent, QueuedPrompt, TaskInfo } from '../shared/types';
+import type { QuotaBaseline, SpendRow } from '../shared/dashboard';
 
 function parseJson<T>(v: unknown): T | null {
   if (typeof v !== 'string' || !v) return null;
@@ -53,6 +54,29 @@ export class Store {
         detail TEXT NOT NULL DEFAULT '',
         ok INTEGER NOT NULL
       );
+      -- 總覽儀表:每天、每個後台、每個節點的花費累計
+      CREATE TABLE IF NOT EXISTS spend_daily (
+        date TEXT NOT NULL,
+        backend TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_name TEXT NOT NULL DEFAULT '',
+        tokens INTEGER NOT NULL DEFAULT 0,
+        usd REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (date, backend, agent_id)
+      );
+      -- 總覽儀表:各後台每天的每週額度起點(今天的用量 = last − base)
+      CREATE TABLE IF NOT EXISTS quota_baseline (
+        date TEXT NOT NULL,
+        backend TEXT NOT NULL,
+        base REAL NOT NULL,
+        last REAL NOT NULL,
+        resets_at INTEGER,
+        warned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (date, backend)
+      );
+      -- 總覽儀表:每個任務是哪一天交辦的、最後的狀態;任務面板清除已結束的任務後,今天的統計仍然算得出來
+      CREATE TABLE IF NOT EXISTS task_daily (id TEXT PRIMARY KEY, date TEXT NOT NULL, agent_id TEXT NOT NULL, status TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS task_daily_date ON task_daily (date);
     `);
     // 舊版資料庫沒有 character 欄位
     const cols = this.db.prepare('PRAGMA table_info(agents)').all() as Array<{ name: string }>;
@@ -204,6 +228,50 @@ export class Store {
 
   deleteFinishedTasks(): void {
     this.db.exec('DELETE FROM tasks WHERE ended_at IS NOT NULL');
+  }
+
+  /** 把一筆花費加進當天的累計(同一天、同一個後台、同一個節點一筆);節點名稱記最新的。 */
+  addSpend(date: string, backend: Backend, agentId: string, agentName: string, tokens: number, usd: number): void {
+    this.db.prepare(`INSERT INTO spend_daily (date, backend, agent_id, agent_name, tokens, usd) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date, backend, agent_id) DO UPDATE SET tokens = tokens + excluded.tokens, usd = usd + excluded.usd, agent_name = excluded.agent_name`)
+      .run(date, backend, agentId, agentName, Math.max(0, Math.round(tokens)), Math.max(0, usd));
+  }
+
+  /** from(含)之後每天的花費,依日期排序。 */
+  spendSince(from: string): SpendRow[] {
+    const rows = this.db.prepare('SELECT * FROM spend_daily WHERE date >= ? ORDER BY date, backend, agent_id').all(from) as Array<Record<string, unknown>>;
+    return rows.map(r => ({ date: String(r.date), backend: r.backend as Backend, agentId: String(r.agent_id), agentName: String(r.agent_name), tokens: Number(r.tokens), usd: Number(r.usd) }));
+  }
+
+  /** 某個後台最近一天的額度起點紀錄;還沒有任何紀錄時是 null。 */
+  latestBaseline(backend: Backend): QuotaBaseline | null {
+    const r = this.db.prepare('SELECT * FROM quota_baseline WHERE backend = ? ORDER BY date DESC LIMIT 1').get(backend) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return { date: String(r.date), backend, base: Number(r.base), last: Number(r.last), resetsAt: r.resets_at === null ? null : Number(r.resets_at), warned: Number(r.warned) === 1 };
+  }
+
+  saveBaseline(b: QuotaBaseline): void {
+    this.db.prepare(`INSERT INTO quota_baseline (date, backend, base, last, resets_at, warned) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(date, backend) DO UPDATE SET base = excluded.base, last = excluded.last, resets_at = excluded.resets_at, warned = excluded.warned`)
+      .run(b.date, b.backend, b.base, b.last, b.resetsAt, b.warned ? 1 : 0);
+  }
+
+  /** 記下任務是哪一天交辦的與目前的狀態(任務每次更新都會呼叫;日期以第一次記下的為準)。 */
+  recordTask(id: string, date: string, agentId: string, status: string): void {
+    this.db.prepare('INSERT INTO task_daily (id, date, agent_id, status) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status').run(id, date, agentId, status);
+  }
+
+  /** 某一天交辦的任務(節點與狀態)。 */
+  tasksOn(date: string): Array<{ agentId: string; status: string }> {
+    const rows = this.db.prepare('SELECT agent_id, status FROM task_daily WHERE date = ?').all(date) as Array<Record<string, unknown>>;
+    return rows.map(r => ({ agentId: String(r.agent_id), status: String(r.status) }));
+  }
+
+  /** 儀表的每日紀錄只保留一段時間(before 之前的日期刪掉)。 */
+  pruneDaily(before: string): void {
+    this.db.prepare('DELETE FROM spend_daily WHERE date < ?').run(before);
+    this.db.prepare('DELETE FROM quota_baseline WHERE date < ?').run(before);
+    this.db.prepare('DELETE FROM task_daily WHERE date < ?').run(before);
   }
 
   getSetting(key: string): string | null {

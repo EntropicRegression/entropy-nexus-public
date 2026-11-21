@@ -13,7 +13,7 @@
     log('起始狀態', JSON.stringify({ stored: localStorage.getItem('nexus.dlgFull'), dialogOpen: !!document.querySelector('.dialog'), origin: location.origin }));
     localStorage.removeItem('nexus.dlgFull');
     const a = (await window.nexus.getSnapshot()).agents.find(x => !x.parentId);
-    const open = async () => { [...document.querySelectorAll('.roster-list .row')].find(r => r.textContent.includes(a.name)).click(); await wait(900); };
+    const open = async () => { window.__nexusSelect(a.name); await wait(900); };
     await open();
     const stage = document.querySelector('.stage').getBoundingClientRect();
     const dlg = () => document.querySelector('.dialog').getBoundingClientRect();

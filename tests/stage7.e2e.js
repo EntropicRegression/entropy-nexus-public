@@ -43,7 +43,7 @@
     log('工作區狀態 A', JSON.stringify(await window.nexus.worktreeStatus(a.id)), '| B', JSON.stringify(await window.nexus.worktreeStatus(b.id)));
 
     // 畫面:對話視窗的工作區列、變更檢視的操作列
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Iso-A')).click();
+    window.__nexusSelect('Iso-A');
     await wait(700);
     log('對話視窗工作區列', document.querySelector('.dlg-worktree')?.textContent?.replace(/\s+/g, ' ').slice(0, 90));
     await shot('1-worktree-bar');

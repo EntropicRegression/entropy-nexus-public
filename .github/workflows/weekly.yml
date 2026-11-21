@@ -1,0 +1,38 @@
+# 每週一次跑完整的假資料驗收腳本(也可以在 Actions 頁面手動執行)。
+# 不跑需要本機語音環境(local)或真正 CLI(real)的測試。
+name: Weekly full e2e
+
+on:
+  schedule:
+    - cron: '0 18 * * 0' # 每週日 18:00 UTC(台灣時間週一凌晨 2 點)
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+        env:
+          NEXUS_TEST_LOGS: ${{ runner.temp }}/nexus-test-runs
+      - name: 完整驗收腳本(假資料模式)
+        run: npm run test:e2e
+        env:
+          NEXUS_TEST_LOGS: ${{ runner.temp }}/nexus-test-runs
+      - name: 上傳測試紀錄
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-e2e
+          path: ${{ runner.temp }}/nexus-test-runs/
+          if-no-files-found: ignore

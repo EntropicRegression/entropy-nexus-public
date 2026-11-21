@@ -32,13 +32,16 @@
 
     let st = await window.nexus.observeStatus();
     log('status-initial', st.listening, st.port, st.installed, JSON.stringify(st.error), st.settingsPath);
-    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '外部觀察').click();
+    // 頂部「遠端」的面板有兩個分頁,外部觀察在第二個
+    [...document.querySelectorAll('.topbar button')].find(b => b.textContent === '遠端').click();
+    await wait(300);
+    [...document.querySelectorAll('.hub-tabs button')].find(b => b.textContent === '外部觀察').click();
     await wait(600);
-    log('panel', !!document.querySelector('.remote.observe'), document.querySelector('.remote.observe .primary')?.textContent);
+    log('panel', !!document.querySelector('.remote.hub .observe'), document.querySelector('.remote.hub .observe .primary')?.textContent);
     await shot('1-panel-before');
 
     // 安裝兩次:第二次不應該重複新增(由 run.js 檢查檔案內容)
-    [...document.querySelectorAll('.remote.observe button')].find(b => b.textContent === '安裝 hooks').click();
+    [...document.querySelectorAll('.remote.hub .observe button')].find(b => b.textContent === '安裝 hooks').click();
     st = await until('安裝完成', async () => { const s = await window.nexus.observeStatus(); return s.installed === 'current' ? s : null; }, 10000);
     log('installed', st.installed);
     await wait(1500);
@@ -46,12 +49,16 @@
     log('installed2', st.installed);
     await wait(1500);
     await shot('2-panel-installed');
-    document.querySelector('.remote.observe .remote-head button').click();
+    document.querySelector('.remote.hub .remote-head button').click();
 
     // 模擬的 hook 事件由 run.js 送進來;等外部節點進入待授權時截圖並確認提示音有響
     await until('ext-1 待授權', () => seen.get('ext-1')?.state === 'awaiting', 60000);
     await wait(500);
-    log('chime', (window.__nexusChimes?.count ?? 0) - chimesBefore, '| 外部列', document.querySelectorAll('.observed-row').length, '| 外部列有授權按鈕', !!document.querySelector('.observed-row .approve, .observed-row [data-approve]'));
+    // 外部節點列在總覽儀表的完整內容裡:儀表標題列出現「外部 N」,點一下展開
+    log('儀表的外部標記', JSON.stringify(document.querySelector('.dash .dash-ext')?.textContent ?? ''), document.querySelector('.dash .dash-ext')?.className);
+    document.querySelector('.dash .dash-ext')?.click();
+    await wait(500);
+    log('chime', (window.__nexusChimes?.count ?? 0) - chimesBefore, '| 外部列', document.querySelectorAll('.dash-full .observed-row').length, '| 外部列有授權按鈕', !!document.querySelector('.observed-row .approve, .observed-row [data-approve]'));
     document.querySelector('.observed')?.scrollIntoView();
     await shot('3-awaiting');
 

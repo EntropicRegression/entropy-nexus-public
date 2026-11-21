@@ -23,7 +23,7 @@
     const snap = await until('假資料節點待命', async () => { const s = await window.nexus.getSnapshot(); return s.agents.length >= 6 && s.agents.every(a => a.state === 'idle') ? s : null; });
     log('能力宣告', JSON.stringify(snap.capabilities.map(c => [c.backend, c.attachments])));
     const atlas = snap.agents.find(a => a.name === 'Atlas');
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Atlas')).click();
+    window.__nexusSelect('Atlas');
     await until('對話視窗', () => document.querySelector('.dlg-input textarea'));
 
     // 1. 從剪貼簿貼上一張截圖(沒有路徑的圖片)
@@ -109,7 +109,7 @@
       return false;
     }, 120000);
     const vega = (await window.nexus.getSnapshot()).agents.find(a => a.name === 'Vega');
-    [...document.querySelectorAll('.row')].find(r => r.textContent.includes('Vega')).click();
+    window.__nexusSelect('Vega');
     await wait(800);
     await shot('6-remote-sent');
     await window.nexus.remoteSet({ enabled: false });
