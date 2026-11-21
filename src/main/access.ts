@@ -73,7 +73,7 @@ const RPC: Record<string, Rule> = {
   // 角色的 Q 版頭像:只是畫面上的圖,看得到節點的角色就能讀
   getAvatar: read(),
   // 只有完整角色能用,而且只是讀取或太頻繁,不寫紀錄
-  remoteStatus: ADMIN_QUIET, remoteAudit: ADMIN_QUIET, observeStatus: ADMIN_QUIET, getPersona: ADMIN_QUIET, oldSessions: ADMIN_QUIET,
+  remoteStatus: ADMIN_QUIET, remoteAudit: ADMIN_QUIET, observeStatus: ADMIN_QUIET, getPersona: ADMIN_QUIET, oldSessions: ADMIN_QUIET, getAgyAllow: ADMIN_QUIET,
   findMemoryArchive: ADMIN_QUIET,
   inspectDir: ADMIN_QUIET, termAttach: ADMIN_QUIET, termWrite: ADMIN_QUIET, termResize: ADMIN_QUIET,
 };

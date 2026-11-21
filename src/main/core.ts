@@ -22,6 +22,7 @@ import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } 
 import { removeMedia } from './media';
 import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
+import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, writeArchive, type SummarySource } from './memory-archive';
 import { safeName } from './memory-write';
 import type { Store } from './store';
@@ -83,6 +84,8 @@ export class Core {
   /** 記憶庫(長期記憶);沒有設定時記憶工具不可用。 */
   private vault: MemoryVault | null = null;
   /** 要在下一則指令前告訴總管的記憶相關通知(例如專案知識超過上限)。 */
+  /** Antigravity 的工具白名單(見 shared/agy-allow.ts)。 */
+  private agyAllow: string[] = [];
   private chiefNotes: string[] = [];
   private interrupted = new Set<string>();
   /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
@@ -168,6 +171,7 @@ export class Core {
     }
     const chief = this.store.getSetting('chief');
     if (chief && this.agents.has(chief)) this.chiefId = chief;
+    try { this.agyAllow = normalizeAgyAllow(JSON.parse(this.store.getSetting('agyAllow') ?? '[]')).rules; } catch { /* 設定壞了就當作沒有 */ }
     const stop = Number(this.store.getSetting('quotaStop'));
     if (Number.isInteger(stop) && stop >= 0 && stop <= 100) this.quotaStop = stop;
     const saved = Number(this.store.getSetting('maxActive'));
@@ -925,6 +929,16 @@ ${text}
   termWrite(id: string, data: string): void { writeTerminal(id, data); }
   termResize(id: string, cols: number, rows: number): void { resizeTerminal(id, cols, rows); }
 
+  /** Antigravity 的工具白名單(所有 Antigravity 節點共用);改了之後,節點要重新啟動才會套用。 */
+  getAgyAllow(): string[] { return [...this.agyAllow]; }
+  setAgyAllow(input: unknown): { rules: string[]; invalid: string[] } {
+    const r = normalizeAgyAllow(input);
+    if (r.invalid.length) throw new Error(`這些規則的格式不對:${r.invalid.join('、')}。格式是「工具名稱」或「工具名稱(目標)」,例如 mcp(StitchMCP/*)。`);
+    this.agyAllow = r.rules;
+    this.store.setSetting('agyAllow', JSON.stringify(r.rules));
+    return r;
+  }
+
   setQuotaStop(n: number): void {
     if (!Number.isInteger(n) || n < 0 || n > 100) return;
     this.quotaStop = n;
@@ -960,7 +974,7 @@ ${text}
 
   private startSession(agent: AgentInfo): void {
     const session = this.adapters[agent.backend].start(
-      { agentId: agent.id, cwd: agent.cwd, permissionMode: agent.permissionMode, model: agent.model, sessionId: agent.sessionId, forkFrom: agent.sessionId ? null : this.forks.get(agent.id) ?? null, interop: agent.parentId ? null : this.interop?.(agent.id) ?? null, persona: this.persona(agent) },
+      { agentId: agent.id, cwd: agent.cwd, permissionMode: agent.permissionMode, model: agent.model, sessionId: agent.sessionId, forkFrom: agent.sessionId ? null : this.forks.get(agent.id) ?? null, interop: agent.parentId ? null : this.interop?.(agent.id) ?? null, persona: this.persona(agent), ...(agent.backend === 'antigravity' ? { agyAllow: [...this.agyAllow] } : {}) },
       (e, subId) => this.onAdapterEvent(agent.id, e, subId),
     );
     this.sessions.set(agent.id, session);

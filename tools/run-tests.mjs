@@ -28,6 +28,7 @@ const SUITES = [
   { name: 'markdown', group: 'unit', min: 0.1, ...node('tests/markdown.test.mjs') },
   { name: 'board-layout', group: 'unit', min: 0.1, ...node('tests/board-layout.test.mjs') },
   { name: 'voice-summary', group: 'unit', min: 0.1, ...node('tests/voice-summary.test.mjs') },
+  { name: 'agy-allow', group: 'unit', min: 0.1, ...node('tests/agy-allow.test.mjs') },
   { name: 'mcp-schema', group: 'unit', min: 0.1, ...node('tests/mcp-schema.test.mjs') },
   { name: 'memory-write', group: 'unit', min: 0.1, ...node('tests/memory-write.test.mjs') },
   { name: 'speech-clips-unit', group: 'unit', min: 0.1, ...node('tests/speech-clips.test.mjs') },

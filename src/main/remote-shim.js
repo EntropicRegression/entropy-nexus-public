@@ -153,7 +153,7 @@
     getSnapshot: 'snapshot', getHistory: 'history', createAgent: 'create', removeAgent: 'remove', send: 'send', updateAgent: 'updateAgent',
     attachmentPreview: 'attachmentPreview', openTerminal: 'openTerminal', closeTerminal: 'closeTerminal', termAttach: 'termAttach', termWrite: 'termWrite', termResize: 'termResize',
     respondApproval: 'approval', interrupt: 'interrupt', enqueue: 'enqueue', cancelQueued: 'cancelQueued', editQueued: 'editQueued', resumeQueue: 'resumeQueue',
-    answerQuestion: 'answer', sleep: 'sleep', wake: 'wake', setAutopilot: 'autopilot', setMaxActive: 'maxActive', getAvatar: 'getAvatar', getPersona: 'getPersona', setPersona: 'setPersona',
+    answerQuestion: 'answer', sleep: 'sleep', wake: 'wake', setAutopilot: 'autopilot', setMaxActive: 'maxActive', getAvatar: 'getAvatar', getPersona: 'getPersona', setPersona: 'setPersona', getAgyAllow: 'getAgyAllow', setAgyAllow: 'setAgyAllow',
     clearFinishedTasks: 'clearTasks', setTaskVerdict: 'taskVerdict', markCase: 'markCase', getTaskChanges: 'taskChanges', listOldSessions: 'oldSessions', inspectDir: 'inspectDir', revertTask: 'revertTask', commitTask: 'commitTask',
     sendReviewComments: 'sendReviewComments', requestReview: 'requestReview', worktreeStatus: 'worktreeStatus', mergeWorktree: 'mergeWorktree', openPullRequest: 'openPr',
     setQuotaStop: 'quotaStop', setDailyBudget: 'setDailyBudget', remoteStatus: 'remoteStatus', remoteSet: 'remoteSet', remoteNewCode: 'remoteNewCode', remoteRevoke: 'remoteRevoke', remotePairAccess: 'remotePairAccess', remoteSetDevice: 'remoteSetDevice', remoteAudit: 'remoteAudit',

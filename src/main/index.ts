@@ -145,6 +145,8 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     forkAgent: (input: ForkAgentInput) => c.forkAgent(input),
     getAvatar: (character: string) => avatarDataUrl(String(character ?? '')),
     getPersona: (character: string) => c.getPersona(String(character ?? '')),
+    getAgyAllow: () => c.getAgyAllow(),
+    setAgyAllow: (rules: unknown) => c.setAgyAllow(rules).rules,
     setPersona: (character: string, text: string) => c.setPersona(String(character ?? ''), String(text ?? '')),
     setChief: (id: string | null) => c.setChief(typeof id === 'string' && id ? id : null),
   };

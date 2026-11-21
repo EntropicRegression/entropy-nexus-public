@@ -671,6 +671,10 @@ export interface NexusApi {
   getAvatar(character: string): Promise<string | null>;
   /** 讀取角色卡(立繪資料夾\<角色>\persona.md);超過 max 字的部分會截掉,truncated 為 true。 */
   getPersona(character: string): Promise<{ text: string; truncated: boolean; max: number }>;
+  /** Antigravity 的工具白名單(所有 Antigravity 節點共用,agy 的 permissions.allow 規則);只有完整權限。 */
+  getAgyAllow(): Promise<string[]>;
+  /** 儲存白名單(一行一條或字串陣列);格式不對的規則會丟出說明。節點要重新啟動才會套用。回傳整理後的清單。 */
+  setAgyAllow(rules: string[] | string): Promise<string[]>;
   /** 儲存角色卡;使用這個角色的節點會在下一則指令前收到新的角色設定。 */
   setPersona(character: string, text: string): Promise<void>;
   clearFinishedTasks(): Promise<void>;

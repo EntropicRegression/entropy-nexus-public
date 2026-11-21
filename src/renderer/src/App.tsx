@@ -12,6 +12,7 @@ import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
 import { Dialog } from './Dialog';
+import { AgyAllowEditor } from './AgyAllow';
 import { BoardScene, type BoardMore } from './board';
 import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
 import { BACKEND_COLOR, ZONE_TITLE, hex } from './theme';
@@ -528,6 +529,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
         </select>
         {cap && <span className="note">{cap.note}</span>}
       </label>
+      {backend === 'antigravity' && <AgyAllowEditor />}
       <label>模型
         <input list="model-options" value={model} onChange={e => setModel(e.target.value)} placeholder="預設(使用 CLI 的設定)" />
         <datalist id="model-options">{(cap?.models ?? []).map(m => <option key={m} value={m} />)}</datalist>

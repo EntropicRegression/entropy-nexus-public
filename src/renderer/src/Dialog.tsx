@@ -5,6 +5,7 @@ import { PersonaEditor } from './PersonaEditor';
 import { Portrait } from './Portrait';
 import { TerminalView } from './Terminal';
 import { QuestionPanel } from './Question';
+import { AgyAllowEditor } from './AgyAllow';
 import { ForkPanel } from './Fork';
 import { MicButton } from './Voice';
 
@@ -303,6 +304,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             warn={busy ? '節點正在執行:分支點是目前已寫入紀錄的對話,進行中的這一回合可能不完整或沒有包含在內。' : undefined}
             onCancel={() => setForking(false)} onDone={n => { setForking(false); onOpen?.(n.id); }} />
         )}
+        {editing && a.backend === 'antigravity' && <AgyAllowEditor />}
         {editing && form.character && <PersonaEditor character={form.character} />}
         {note && <div className="line err">{note}</div>}
 

@@ -756,3 +756,15 @@ button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px
 .df-dispatch .df-dstatus { white-space: nowrap; font-size: 11px; }
 .df-dispatch .df-dstatus.s-running { color: var(--accent); }
 .df-dispatch .df-dstatus.s-failed, .df-dispatch .df-dstatus.s-timeout { color: var(--bad); }
+
+/* Antigravity 允許的工具(新增節點與節點設定裡,平常收合) */
+.agy-allow { margin: 0 16px 10px; padding: 6px 8px; border: 1px solid var(--line-soft); background: rgba(63, 216, 230, 0.03); }
+.dlg-main .agy-allow, .dialog .agy-allow { margin: 6px 0; }
+.agy-allow-head { padding: 0; font-size: 12px; color: var(--accent); }
+.agy-allow .note { margin: 6px 0; font-size: 11.5px; color: var(--dim); }
+.agy-allow code { font: 11px var(--mono); color: var(--text); }
+.agy-allow textarea { width: 100%; box-sizing: border-box; font: 12px var(--mono); color: var(--text); background: rgba(6, 10, 18, 0.85); border: 1px solid var(--line); border-radius: 2px; padding: 5px 8px; resize: vertical; user-select: text; }
+.agy-allow-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11.5px; }
+.agy-allow-actions button { padding: 2px 14px; font-size: 12px; }
+.agy-allow-ok { color: var(--ok, #6fe08d); }
+.agy-allow-err { color: var(--bad); }
