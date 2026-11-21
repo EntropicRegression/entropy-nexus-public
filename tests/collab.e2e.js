@@ -72,6 +72,7 @@
     const row = (from, to) => d.find(x => x.fromName === from && x.toName === to);
     ok(row('Alpha', 'Beta')?.status === 'done' && row('Alpha', 'Beta').endedAt >= row('Alpha', 'Beta').startedAt, '分派紀錄:Alpha → Beta 完成', d);
     ok(row('Beta', 'Gamma')?.status === 'done', '分派紀錄:Beta → Gamma 完成');
+    ok(row('Alpha', 'Beta')?.fromChief === true && row('Beta', 'Gamma')?.fromChief === undefined, '分派紀錄在建立當下標記「由總管發出」(Alpha 是總管,Beta 不是)', d);
     ok(row('Alpha', 'Beta')?.title.includes('請 Beta 看一下設計') && snap.tasks.some(t => t.id === row('Alpha', 'Beta').taskId), '分派紀錄有簡短標題,且對得到被呼叫節點的任務');
     ok(d.length === 3 && d[0].startedAt >= d[1].startedAt && d[1].startedAt >= d[2].startedAt, '分派紀錄新的在前;會議不列入', d.map(x => `${x.fromName}→${x.toName}`));
 

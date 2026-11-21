@@ -22,7 +22,8 @@ import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } 
 import { characterImages } from './vault-images';
 import { readArchives, type MeetingRecord, type StatsInput } from './vault-stats';
 import { removeMedia } from './media';
-import { projectOf } from './project';
+import { projectKindFromPath, projectOf } from './project';
+import { parseChiefTerms, updateChiefTerms, type ChiefTerm } from './chief-tenure';
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
 import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
@@ -181,6 +182,7 @@ export class Core {
     }
     const chief = this.store.getSetting('chief');
     if (chief && this.agents.has(chief)) this.chiefId = chief;
+    this.recordChief();
     try { this.agyAllow = normalizeAgyAllow(JSON.parse(this.store.getSetting('agyAllow') ?? '[]')).rules; } catch { /* 設定壞了就當作沒有 */ }
     const stop = Number(this.store.getSetting('quotaStop'));
     if (Number.isInteger(stop) && stop >= 0 && stop <= 100) this.quotaStop = stop;
@@ -325,12 +327,34 @@ export class Core {
     const prev = this.chiefId;
     this.chiefId = next;
     this.store.setSetting('chief', next ?? '');
+    this.recordChief();
     for (const a of [prev, next]) if (a && this.agents.has(a)) {
       this.addNotice(a, 'persona');
       this.onAdapterEvent(a, { type: 'note', text: a === next ? '已指定為總管節點:使用者交代的事會由你判斷交給哪個節點。' : '已解除總管節點。' });
     }
     this.broadcast({ chiefId: next });
   }
+
+  /** 總管任期(設定 chiefTerms);第一次讀時從設定載入。 */
+  private chiefTerms: ChiefTerm[] | null = null;
+  private terms(): ChiefTerm[] {
+    if (!this.chiefTerms) this.chiefTerms = parseChiefTerms(this.store.getSetting('chiefTerms'));
+    return this.chiefTerms;
+  }
+
+  /** 依現任總管更新任期紀錄:換人時結束舊任期、開新任期;沒有變化就不寫。 */
+  private recordChief(): void {
+    const now = this.chiefId ? this.agents.get(this.chiefId) : undefined;
+    const before = this.terms();
+    const after = updateChiefTerms(before, now ? { id: now.id, name: now.name } : null, Date.now());
+    if (after.length === before.length && after.every((t, i) => t.to === before[i].to)) return;
+    this.chiefTerms = after;
+    this.store.setSetting('chiefTerms', JSON.stringify(after));
+    this.onStatsDirty?.();
+  }
+
+  /** 這個節點現在是不是總管(交辦與會議紀錄在建立當下記下)。 */
+  isChief(id: string): boolean { return !!id && id === this.chiefId; }
 
   /** 這個 session 是不是面板上的節點;外部觀察用來排除主控台自己啟動的 CLI。 */
   hasSession(backend: Backend, sessionId: string): boolean {
@@ -517,7 +541,7 @@ export class Core {
     // 環境初始化做了什麼(複製的環境檔、連結的 node_modules、失敗項目)顯示在節點對話裡;分支時排在複製來的紀錄與分支說明之後
     if (setup) this.onAdapterEvent(agent.id, { type: 'note', text: setup });
     // 要在啟動 session 之前指定,第一個身分設定就會帶著總管守則
-    if (input.chief) { this.chiefId = agent.id; this.store.setSetting('chief', agent.id); this.broadcast({ chiefId: agent.id }); }
+    if (input.chief) { this.chiefId = agent.id; this.store.setSetting('chief', agent.id); this.recordChief(); this.broadcast({ chiefId: agent.id }); }
     this.startSession(agent);
     return agent;
   }
@@ -618,7 +642,7 @@ export class Core {
     if (!this.agents.get(id)?.sessionId) removeMedia(id);
     this.store.markRemoved(id);
     this.agents.delete(id);
-    if (this.chiefId === id) { this.chiefId = null; this.store.setSetting('chief', ''); this.broadcast({ chiefId: null }); }
+    if (this.chiefId === id) { this.chiefId = null; this.store.setSetting('chief', ''); this.recordChief(); this.broadcast({ chiefId: null }); }
     this.broadcast({ removedId: id });
     this.schedulePump();
   }
@@ -665,7 +689,7 @@ export class Core {
       try {
         // 專案在交辦的這一刻依節點目前的工作目錄決定,之後不再重算
         const project = await projectOf(agent.cwd).catch(() => null);
-        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name } : undefined, from);
+        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name, ...(typeof project.isGit === 'boolean' ? { git: project.isGit } : {}) } : undefined, from);
         await this.captureBase(agent, task);
       } finally {
         this.starting.delete(id);
@@ -1298,6 +1322,9 @@ ${text}
       cliSessions: this.cliSessionKeys(),
       dirExists: p => existsSync(p),
       images: c => (c ? characterImages(portraitsDir(), c) : { avatar: null, portrait: null }),
+      chiefId: this.chiefId,
+      chiefTerms: this.terms(),
+      projectKind: id => projectKindOf(id),
     };
   }
 
@@ -1461,7 +1488,7 @@ ${section}
     this.broadcast({ tasks: [...this.tasks.values()] });
   }
 
-  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: { id: string; name: string }, from?: TaskFrom): TaskInfo {
+  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: TaskInfo['project'], from?: TaskFrom): TaskInfo {
     const task: TaskInfo = {
       id: randomUUID(),
       agentId: agent.id,
@@ -1690,6 +1717,14 @@ ${section}
       }
     }
   }
+}
+
+/** 專案類型的快取(只有專案ID、任務沒記下類型時用);程式執行期間不重算。 */
+const projectKinds = new Map<string, 'git' | '資料夾'>();
+function projectKindOf(id: string): 'git' | '資料夾' {
+  let kind = projectKinds.get(id);
+  if (!kind) { kind = projectKindFromPath(id); projectKinds.set(id, kind); }
+  return kind;
 }
 
 /** 節點目前側寫(依節點 ID 找,見 nodeProfilePath)裡「特長」一段;沒有側寫或讀不到就是空字串。 */

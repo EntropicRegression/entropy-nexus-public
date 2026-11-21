@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { realpathSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 
 /**
  * 專案識別:把工作目錄對應到「專案」,記憶與統計都依專案歸類。
@@ -8,7 +8,7 @@ import { basename, dirname, resolve } from 'node:path';
  * - 不是 git 版本庫:用正規化後的工作目錄(實際路徑、斜線統一、去掉結尾斜線、Windows 不分大小寫)。
  * id 就是正規化後的專案根目錄路徑(可讀、同一個資料夾永遠得到同一個值、不必另外存對照表);name 是根目錄的資料夾名稱。
  */
-export interface Project { id: string; name: string; root: string }
+export interface Project { id: string; name: string; root: string; /** 根目錄是不是 git 版本庫;快取還沒算出來之前是 undefined。 */ isGit?: boolean }
 
 /** 路徑正規化:實際路徑(解開符號連結與短檔名,資料夾不存在時用原路徑)、反斜線改斜線、去掉結尾斜線;Windows 另外轉小寫。 */
 export function normalizePath(p: string, caseFold = process.platform === 'win32'): string {
@@ -59,7 +59,7 @@ export function projectOf(cwd: string): Promise<Project> {
   const hit = cache.get(key);
   if (hit && (hit.isGit || Date.now() - hit.at < NON_GIT_TTL)) return hit.p;
   const entry = { at: Date.now(), isGit: false, p: Promise.resolve({ id: key, name: basename(key), root: key }) };
-  const p = resolveProject(cwd).then(r => { entry.isGit = r.isGit; return { id: r.id, name: r.name, root: r.root }; });
+  const p = resolveProject(cwd).then(r => { entry.isGit = r.isGit; return { id: r.id, name: r.name, root: r.root, isGit: r.isGit }; });
   entry.p = p;
   cache.set(key, entry);
   p.catch(() => cache.delete(key));
@@ -67,3 +67,14 @@ export function projectOf(cwd: string): Promise<Project> {
 }
 
 export function clearProjectCache(): void { cache.clear(); }
+
+/**
+ * 只有專案ID(根目錄路徑)時判斷它是不是 git 版本庫,給沒有記下類型的舊任務用:根目錄有 .git(資料夾或檔案),
+ * 或本身是 bare 版本庫(有 HEAD 與 objects)就是 git;其餘、或路徑已經不存在,都算資料夾。不執行 git,只看檔案。
+ */
+export function projectKindFromPath(id: string, exists: (p: string) => boolean = existsSync): 'git' | '資料夾' {
+  try {
+    if (exists(join(id, '.git')) || (exists(join(id, 'HEAD')) && exists(join(id, 'objects')))) return 'git';
+  } catch { /* 讀不到就當資料夾 */ }
+  return '資料夾';
+}

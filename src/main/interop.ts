@@ -76,6 +76,8 @@ interface Pending {
   title?: string;
   /** 這筆呼叫在被呼叫節點上產生的任務 id。 */
   taskId?: string;
+  /** 建立當下呼叫者是不是總管。 */
+  fromChief?: boolean;
 }
 
 /** 一場會議:由主控台主持,參與者輪流發言。 */
@@ -87,6 +89,8 @@ interface Meeting {
   participants: Array<{ id: string; name: string }>;
   rounds: number;
   createdAt: number;
+  /** 召開當下主持人是不是總管。 */
+  chiefHost?: boolean;
   /** 會議紀錄;round 為 0 的是主控台的說明(略過、失敗、散會)。 */
   transcript: Array<{ round: number; name: string; text: string }>;
   status: 'running' | 'done' | 'failed';
@@ -376,7 +380,7 @@ export class Interop {
     const name = (id: string, fallback: string) => this.agents().find(a => a.id === id)?.name ?? fallback;
     return {
       id: p.id, startedAt: p.createdAt, endedAt: status === 'running' ? null : Date.now(), fromId: p.callerId, fromName: name(p.callerId, '(已移除)'),
-      toId: p.targetId, toName: p.targetName, title: p.title ?? '', status, ...(p.taskId ? { taskId: p.taskId } : {}),
+      toId: p.targetId, toName: p.targetName, title: p.title ?? '', status, ...(p.taskId ? { taskId: p.taskId } : {}), ...(p.fromChief ? { fromChief: true } : {}),
     };
   }
 
@@ -540,7 +544,7 @@ export class Interop {
       if (!again) throw new Error(`節點「${target.name}」已經不在了。`);
       this.checkReady(again);
     }
-    const p: Pending = { id: randomUUID().slice(0, 8), callerId, targetId: target.id, targetName: target.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set(), title: dispatchTitle(prompt) };
+    const p: Pending = { id: randomUUID().slice(0, 8), callerId, targetId: target.id, targetName: target.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set(), title: dispatchTitle(prompt), fromChief: this.core?.isChief(callerId) ?? false };
     this.pending.set(p.id, p);
     core.recordDispatch(this.dispatchOf(p, 'running'));
     this.publish();
@@ -613,7 +617,7 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
       const decision = await core.requestApproval(callerId, '召開會議', `${members.map(a => a.name).join('、')}(最多 ${total} 輪):${topic.replace(/\s+/g, ' ').slice(0, 80)}`, `要召開一場會議,參與的節點:${who}。最多 ${total} 輪,每輪每個節點發言一次(各算一個回合,會用到它們的額度)${hostTurns ? ',每輪之間由召開者主持發言' : ''};允許後整場會議不再逐次詢問。\n\n主題:\n${topic}`);
       if (decision === 'deny') throw new Error('使用者拒絕召開這場會議。');
     }
-    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0 };
+    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0, chiefHost: this.core?.isChief(callerId) ?? false };
     this.meetings.set(m.id, m);
     this.publish();
     core.note(callerId, `會議開始(${m.id}):參與者 ${who};最多 ${total} 輪${hostTurns ? ',每輪之間輪到主持人發言' : ''}。中斷這個節點就會散會。`);
@@ -739,7 +743,7 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
     m.current = null;
     m.hostTurn?.resolve(true);
     // 有人發過言才算一場會議,記下同席的節點(給記憶庫統計與判例的參與節點用)
-    if (m.transcript.some(t => t.round > 0)) this.core?.recordMeeting({ id: m.id, startedAt: m.createdAt, endedAt: Date.now(), ids: [m.callerId, ...m.participants.map(x => x.id)] });
+    if (m.transcript.some(t => t.round > 0)) this.core?.recordMeeting({ id: m.id, startedAt: m.createdAt, endedAt: Date.now(), ids: [m.callerId, ...m.participants.map(x => x.id)], ...(m.chiefHost ? { chiefHost: true } : {}) });
     this.publish();
     this.core?.note(m.callerId, status === 'done' ? `會議結束(${m.id}),共 ${m.transcript.filter(t => t.round > 0).length} 則發言。` : `會議中止(${m.id}):${error}`);
     for (const w of m.waiters) w();

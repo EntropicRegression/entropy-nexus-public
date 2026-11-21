@@ -5,6 +5,7 @@ import { BACKEND_LABEL } from '../shared/types.ts';
 import { computeNodeStats, isWorkTask } from '../shared/node-stats.ts';
 import { parseFrontMatter } from './memory-vault.ts';
 import type { CharacterImages } from './vault-images.ts';
+import { wasChief, type ChiefTerm } from './chief-tenure.ts';
 
 /**
  * .nexus-stats.json:寫在記憶庫根目錄、給記憶庫管理 app 讀的節點統計(設計見 docs/記憶設計討論.md「第二輪定案」10、11)。
@@ -14,9 +15,14 @@ import type { CharacterImages } from './vault-images.ts';
 export const STATS_FILE = '.nexus-stats.json';
 export const STATS_MIN_INTERVAL_MS = 5000;
 export const COLLAB_DAYS = 30;
+/** 每個節點的「專案任務數」只算這麼多天內的任務(主星系判定用)。 */
+export const PROJECT_TASK_DAYS = 90;
 const DAY = 24 * 3600 * 1000;
 
-export interface MeetingRecord { id: string; startedAt: number; endedAt: number; /** 主持人加參與者的節點 id。 */ ids: string[] }
+export interface MeetingRecord {
+  id: string; startedAt: number; endedAt: number; /** 主持人加參與者的節點 id。 */ ids: string[];
+  /** 召開時主持人是不是總管(記錄當下決定);舊紀錄沒有這個欄位。 */ chiefHost?: boolean;
+}
 export interface NodeLite { id: string; name: string; character: string; backend: Backend | null; sessionId: string | null; cwd: string }
 /** 從封存檔讀回來的資料(節點已經不在資料庫、或資料庫的任務紀錄已被清掉時的來源)。 */
 export interface ArchiveInfo {
@@ -39,6 +45,12 @@ export interface StatsInput {
   cliSessions: Set<string> | null;
   dirExists(p: string): boolean;
   images(character: string): CharacterImages;
+  /** 現任總管;沒有是 null。 */
+  chiefId?: string | null;
+  /** 總管任期(見 chief-tenure.ts)。 */
+  chiefTerms?: ChiefTerm[];
+  /** 專案根目錄是 git 版本庫還是一般資料夾;任務沒記下時才會問(路徑不存在算資料夾)。 */
+  projectKind?(id: string): 'git' | '資料夾';
 }
 
 const round2 = (r: number | null): number | null => (r === null ? null : Math.round(r * 100) / 100);
@@ -52,6 +64,23 @@ const round2 = (r: number | null): number | null => (r === null ? null : Math.ro
  */
 export function buildVaultStats(i: StatsInput) {
   const stats = computeNodeStats(i.tasks, isWorkTask);
+  const chiefId = i.chiefId ?? null;
+  const terms = i.chiefTerms ?? [];
+  // 近 90 天每個節點在各專案的任務數;專案的類型以最近一筆有記下的任務為準
+  const recentSince = i.now - PROJECT_TASK_DAYS * DAY;
+  const recent = new Map<string, Map<string, number>>();
+  const kinds = new Map<string, { at: number; git: boolean }>();
+  const projectNames = new Map<string, { at: number; name: string }>();
+  for (const t of i.tasks) {
+    if (!isWorkTask(t) || !t.project) continue;
+    const p = t.project;
+    if (typeof p.git === 'boolean' && t.startedAt >= (kinds.get(p.id)?.at ?? -Infinity)) kinds.set(p.id, { at: t.startedAt, git: p.git });
+    if (t.startedAt >= (projectNames.get(p.id)?.at ?? -Infinity)) projectNames.set(p.id, { at: t.startedAt, name: p.name });
+    if (t.startedAt < recentSince) continue;
+    const m = recent.get(t.agentId) ?? new Map<string, number>();
+    m.set(p.id, (m.get(p.id) ?? 0) + 1);
+    recent.set(t.agentId, m);
+  }
   const caseCount = new Map<string, number>();
   for (const c of i.cases) if (c.kind === 'case' && c.nodeId) caseCount.set(c.nodeId, (caseCount.get(c.nodeId) ?? 0) + 1);
   const latest = new Map<string, ArchiveInfo>();
@@ -79,6 +108,9 @@ export function buildVaultStats(i: StatsInput) {
       專案: (s?.projects ?? []).map(p => p.name),
       // 和「專案」同序同長度;ID 是主控台的專案識別(git 版本庫與它的 worktree 共用,其他資料夾是正規化後的路徑),同名不同專案的 ID 不同
       專案ID: (s?.projects ?? []).map(p => p.id),
+      // 和「專案ID」同序同長度:近 90 天(PROJECT_TASK_DAYS)在該專案的任務數,沒有就是 0
+      專案任務數: (s?.projects ?? []).map(p => recent.get(n.id)?.get(p.id) ?? 0),
+      總管: n.id === chiefId,
       頭像路徑: imgs.avatar, 立繪路徑: imgs.portrait,
       session: {
         後台: backend, sessionId, 主控台有紀錄: known, CLI有紀錄: cli, 工作目錄存在: dirOk,
@@ -111,12 +143,45 @@ export function buildVaultStats(i: StatsInput) {
     e.次數++;
     seats.set(k, e);
   }
+  // 不含總管:交辦紀錄標記為總管發出、或任何一端在當時是總管的交辦不算;會議由總管召開的不算,其餘會議把當時的總管從參與者拿掉
+  const chiefThen = (id: string, at: number) => wasChief(terms, chiefId, id, at);
+  const collabNoChief = new Map<string, { 從: string; 到: string; 次數: number; last: number }>();
+  for (const d of i.dispatches) {
+    if (d.startedAt < since || d.fromChief || chiefThen(d.fromId, d.startedAt) || chiefThen(d.toId, d.startedAt)) continue;
+    const k = `${d.fromId}\n${d.toId}`;
+    const c = collabNoChief.get(k) ?? { 從: d.fromId, 到: d.toId, 次數: 0, last: 0 };
+    c.次數++; c.last = Math.max(c.last, d.startedAt);
+    collabNoChief.set(k, c);
+  }
+  const seatsNoChief = new Map<string, { 節點: string[]; 次數: number }>();
+  for (const m of i.meetings) {
+    if (m.startedAt < since || m.chiefHost || chiefThen(m.ids[0] ?? '', m.startedAt)) continue;
+    const ids = [...new Set(m.ids)].filter(id => !chiefThen(id, m.startedAt)).sort();
+    if (ids.length < 2) continue;
+    const k = ids.join('\n');
+    const e = seatsNoChief.get(k) ?? { 節點: ids, 次數: 0 };
+    e.次數++;
+    seatsNoChief.set(k, e);
+  }
+  // 專案表:節點清單與判例裡出現過的專案;類型以任務記下的為準,舊任務沒記就問 projectKind(路徑不存在算資料夾)
+  const table: Record<string, { 名稱: string; 類型: 'git' | '資料夾' }> = {};
+  const addProject = (id: string, name: string) => {
+    if (!id || table[id]) return;
+    const known = kinds.get(id);
+    table[id] = { 名稱: projectNames.get(id)?.name || name || id, 類型: known ? (known.git ? 'git' : '資料夾') : (i.projectKind?.(id) ?? '資料夾') };
+  };
+  for (const s of stats.values()) for (const p of s.projects) addProject(p.id, p.name);
+  for (const c of i.cases) if (c.kind === 'case' && c.scope === '專案' && c.projectId) addProject(c.projectId, c.projectId.split('/').pop() ?? c.projectId);
   return {
     更新時間: new Date(i.now).toISOString(),
     圖像目錄: i.portraitsDir,
     節點: nodes,
     協作: [...collab.values()].sort((a, b) => b.last - a.last).map(c => ({ 從: c.從, 到: c.到, 次數: c.次數, 最後: new Date(c.last).toISOString() })),
     同席: [...seats.values()].sort((a, b) => b.次數 - a.次數),
+    協作不含總管: [...collabNoChief.values()].sort((a, b) => b.last - a.last).map(c => ({ 從: c.從, 到: c.到, 次數: c.次數, 最後: new Date(c.last).toISOString() })),
+    同席不含總管: [...seatsNoChief.values()].sort((a, b) => b.次數 - a.次數),
+    專案表: table,
+    總管任期: terms.map(t => ({ 節點: t.id, 名稱: t.name, 開始: new Date(t.from).toISOString(), 結束: t.to === null ? null : new Date(t.to).toISOString() })),
   };
 }
 

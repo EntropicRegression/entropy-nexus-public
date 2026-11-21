@@ -10,6 +10,8 @@ import { MemoryVault, README, entryFromFile, parseFrontMatter, readmeUpdate } fr
 import { characterImages, snapshotDir } from '../src/main/vault-images.ts';
 import { atomicWriteJson, buildVaultStats, readArchives, StatsWriter } from '../src/main/vault-stats.ts';
 import { findWakeUrl, parseWakeUrl } from '../src/main/wake.ts';
+import { parseChiefTerms, updateChiefTerms, wasChief } from '../src/main/chief-tenure.ts';
+import { projectKindFromPath } from '../src/main/project.ts';
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log('[ok]', name); };
@@ -103,7 +105,8 @@ await test('統計:節點的數字、狀態、圖像路徑、session 狀態、�
     ],
     meetings: [{ id: 'm1', startedAt: now - 1000, endedAt: now, ids: ['n1', 'n2', 'n3'] }, { id: 'm2', startedAt: now - 2000, endedAt: now, ids: ['n3', 'n2', 'n1'] }, { id: 'm0', startedAt: now - 40 * 86400000, endedAt: now - 40 * 86400000, ids: ['n1', 'n2'] }],
   }));
-  assert.deepEqual(Object.keys(out).sort(), ['協作', '同席', '圖像目錄', '更新時間', '節點'].sort());
+  // 舊欄位都在;2026-11-22 起另有專案表、總管任期與不含總管的協作、同席(只新增,不改舊欄位)
+  assert.deepEqual(Object.keys(out).sort(), ['協作', '同席', '圖像目錄', '更新時間', '節點', '專案表', '總管任期', '協作不含總管', '同席不含總管'].sort());
   assert.equal(out.圖像目錄, portraits);
   assert.equal(out.更新時間, NOW.toISOString());
   const a = out.節點.n1;
@@ -177,6 +180,102 @@ await test('說明檔:新版提到熱度檔與 .vault-awards.json;主控台寫�
   writeFileSync(join(d2, '說明.md'), `${v2}\n我的註記\n`);
   new MemoryVault(d2, store).init();
   assert.equal(readFileSync(join(d2, '說明.md'), 'utf8'), `${v2}\n我的註記\n`);
+});
+
+await test('專案星系第一版:專案表兩種類型、總管旗標、專案任務數(近 90 天,和專案ID同序同長度)', () => {
+  const now = NOW.getTime();
+  const D = 86400000;
+  const git = { id: 'c:/work/app', name: 'app', git: true };
+  const folder = { id: 'c:/shared/test', name: 'test', git: false };
+  const old = { id: 'c:/old/legacy', name: 'legacy' }; // 舊任務:沒有記下類型
+  const tasks3 = [
+    task('a1', 'done', { project: git, startedAt: now - 10 * D }),
+    task('a1', 'done', { project: git, startedAt: now - 20 * D }),
+    task('a1', 'done', { project: folder, startedAt: now - 5 * D }),
+    task('a1', 'done', { project: old, startedAt: now - 120 * D }), // 超過 90 天:列在專案,任務數 0
+    task('a1', 'done', { project: git, startedAt: now - 1 * D, source: 'archive' }), // 不是工作任務,不算
+    task('b2', 'done', { project: folder, startedAt: now - 2 * D }),
+  ];
+  const asked = [];
+  const mk = o => ({ now, portraitsDir: portraits, live: [{ id: 'a1', name: '甲', character: '', backend: 'claude', sessionId: null, cwd: 'C:/w', state: 'idle' }, { id: 'b2', name: '乙', character: '', backend: 'claude', sessionId: null, cwd: 'C:/w', state: 'idle' }],
+    removed: [], archives: [], tasks: tasks3, cases: [{ path: 'cases/x/1.md', kind: 'case', scope: '專案', projectId: 'd:/repo/other', nodeId: 'a1' }], dispatches: [], meetings: [], cliSessions: null, dirExists: () => true,
+    images: () => ({ avatar: null, portrait: null }), projectKind: id => { asked.push(id); return id === 'd:/repo/other' ? 'git' : '資料夾'; }, ...o });
+  const out = buildVaultStats(mk({ chiefId: 'b2' }));
+  const a = out.節點.a1;
+  assert.equal(a.專案ID.length, a.專案.length);
+  assert.equal(a.專案任務數.length, a.專案ID.length, '專案任務數和專案ID同長度');
+  const count = Object.fromEntries(a.專案ID.map((id, k) => [id, a.專案任務數[k]]));
+  assert.deepEqual(count, { 'c:/work/app': 2, 'c:/shared/test': 1, 'c:/old/legacy': 0 });
+  assert.deepEqual(out.專案表['c:/work/app'], { 名稱: 'app', 類型: 'git' });
+  assert.deepEqual(out.專案表['c:/shared/test'], { 名稱: 'test', 類型: '資料夾' });
+  assert.equal(out.專案表['c:/old/legacy'].類型, '資料夾', '舊任務沒記類型:問 projectKind');
+  assert.equal(out.專案表['d:/repo/other'].類型, 'git', '判例裡的專案也列進專案表');
+  assert.ok(asked.includes('c:/old/legacy') && !asked.includes('c:/work/app'), '任務已記下類型的不再判斷');
+  // 總管旗標:換總管前後
+  assert.equal(out.節點.b2.總管, true);
+  assert.equal(a.總管, false);
+  const after = buildVaultStats(mk({ chiefId: 'a1' }));
+  assert.equal(after.節點.a1.總管, true);
+  assert.equal(after.節點.b2.總管, false);
+  // 沒有總管、也沒傳新欄位時(舊呼叫方式)不會壞:舊欄位照舊
+  const plain = buildVaultStats(mk({ projectKind: undefined }));
+  assert.equal(plain.節點.a1.總管, false);
+  assert.deepEqual(plain.總管任期, []);
+  for (const k of ['名稱', '角色', '狀態', '任務數', '完成數', '完成率', '驗收數', '退回數', '判例數', '專案', '專案ID', '頭像路徑', '立繪路徑', 'session']) assert.ok(k in plain.節點.a1, k);
+  for (const k of ['更新時間', '圖像目錄', '節點', '協作', '同席']) assert.ok(k in plain, k);
+});
+
+await test('總管任期:換人時結束舊任期、開新任期;依任期判斷當時是不是總管', () => {
+  let terms = updateChiefTerms([], { id: 'c1', name: '總管一' }, 1000);
+  assert.deepEqual(terms, [{ id: 'c1', name: '總管一', from: 1000, to: null }]);
+  assert.deepEqual(updateChiefTerms(terms, { id: 'c1', name: '總管一' }, 1500), terms, '同一個人不變:不開新任期');
+  terms = updateChiefTerms(terms, { id: 'c2', name: '總管二' }, 2000);
+  assert.deepEqual(terms, [{ id: 'c1', name: '總管一', from: 1000, to: 2000 }, { id: 'c2', name: '總管二', from: 2000, to: null }]);
+  terms = updateChiefTerms(terms, null, 3000);
+  assert.equal(terms[1].to, 3000);
+  assert.deepEqual(parseChiefTerms(JSON.stringify(terms)), terms);
+  assert.deepEqual(parseChiefTerms('壞掉'), []);
+  assert.deepEqual(parseChiefTerms('[{"id":1}]'), []);
+  assert.equal(wasChief(terms, null, 'c1', 1500), true);
+  assert.equal(wasChief(terms, null, 'c1', 2500), false, '換人之後不是');
+  assert.equal(wasChief(terms, null, 'c2', 2500), true);
+  assert.equal(wasChief(terms, null, 'c2', 3500), false, '解除之後不是');
+  assert.equal(wasChief(terms, 'c9', 'c9', 500), true, '任期紀錄開始之前,以現任總管判斷');
+  assert.equal(wasChief([], 'c9', 'c9', 99999), true);
+});
+
+await test('不含總管的協作與同席:標記為總管發出、或當時一端是總管的不算;舊欄位照舊全部算', () => {
+  const now = NOW.getTime();
+  const terms = [{ id: 'old', name: '前任', from: now - 20000, to: now - 10000 }, { id: 'cur', name: '現任', from: now - 10000, to: null }];
+  const out = buildVaultStats({ now, portraitsDir: portraits, live: [], removed: [], archives: [], tasks: [], cases: [], cliSessions: null, dirExists: () => true,
+    images: () => ({ avatar: null, portrait: null }), chiefId: 'cur', chiefTerms: terms,
+    dispatches: [
+      { id: 'd1', startedAt: now - 1000, fromId: 'x', toId: 'y' },
+      { id: 'd2', startedAt: now - 1000, fromId: 'cur', toId: 'y' }, // 現任總管發出(依任期)
+      { id: 'd3', startedAt: now - 15000, fromId: 'old', toId: 'y' }, // 前任在任時發出
+      { id: 'd4', startedAt: now - 1000, fromId: 'old', toId: 'y' }, // 前任卸任後發出:算
+      { id: 'd5', startedAt: now - 1000, fromId: 'x', toId: 'z', fromChief: true }, // 記錄當下標記為總管發出
+      { id: 'd6', startedAt: now - 1000, fromId: 'y', toId: 'cur' }, // 交辦給總管:不算
+    ],
+    meetings: [
+      { id: 'm1', startedAt: now - 1000, endedAt: now, ids: ['x', 'y', 'cur'] }, // 總管只是參與者:拿掉總管後 x、y 仍算
+      { id: 'm2', startedAt: now - 1000, endedAt: now, ids: ['cur', 'x', 'y'] }, // 總管召開:不算
+      { id: 'm3', startedAt: now - 1000, endedAt: now, ids: ['x', 'y'], chiefHost: true }, // 標記為總管召開:不算
+    ] });
+  assert.equal(out.協作.length, 6 - 1, '舊欄位 協作 不變(依 從→到 彙總,old→y 兩筆合併)');
+  assert.deepEqual(out.協作不含總管.map(c => [c.從, c.到, c.次數]).sort(), [['old', 'y', 1], ['x', 'y', 1]]);
+  assert.deepEqual(out.同席.map(s => s.節點.join()), ['cur,x,y', 'x,y']);
+  assert.deepEqual(out.同席不含總管, [{ 節點: ['x', 'y'], 次數: 1 }]);
+  assert.deepEqual(out.總管任期.map(t => [t.節點, t.結束 === null]), [['old', false], ['cur', true]]);
+});
+
+await test('專案類型只看檔案:有 .git 或是 bare 版本庫算 git,其餘與不存在的路徑算資料夾', () => {
+  const has = set => p => set.has(p.replace(/\\/g, '/'));
+  assert.equal(projectKindFromPath('c:/r', has(new Set(['c:/r/.git']))), 'git');
+  assert.equal(projectKindFromPath('c:/bare', has(new Set(['c:/bare/HEAD', 'c:/bare/objects']))), 'git');
+  assert.equal(projectKindFromPath('c:/plain', has(new Set(['c:/plain/HEAD']))), '資料夾');
+  assert.equal(projectKindFromPath('c:/gone', () => false), '資料夾');
+  assert.equal(projectKindFromPath('c:/err', () => { throw new Error('x'); }), '資料夾');
 });
 
 await test('喚醒網址:解析與驗證', () => {

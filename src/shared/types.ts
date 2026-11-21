@@ -190,7 +190,7 @@ export interface TaskInfo {
   /** source 為 interop 時:是哪個節點交辦的(任務卡顯示「由 … 交辦」);舊資料沒有這個欄位。 */
   from?: TaskFrom;
   /** 交辦當下節點所在的專案(之後不會依節點目前的工作目錄重算);舊資料沒有這個欄位。 */
-  project?: { id: string; name: string };
+  project?: { id: string; name: string; /** 專案根目錄是不是 git 版本庫(交辦當下記下);舊資料沒有這個欄位。 */ git?: boolean };
   /**
    * 使用者驗收:accepted 已驗收、rejected 退回、null 或沒有 = 尚未判斷。和 status 分開:
    * status 只代表回合有沒有正常結束,驗收才代表結果對不對。使用者按任務卡的按鈕、或把審查評論送回節點時(自動退回)會設定。
@@ -348,6 +348,8 @@ export interface DispatchEntry {
   status: DispatchStatus;
   /** 被呼叫節點因此產生的任務(花費從任務查);沒有時為空。 */
   taskId?: string;
+  /** 交辦當下發起者是不是總管;舊資料沒有這個欄位。 */
+  fromChief?: boolean;
 }
 
 /**
