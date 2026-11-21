@@ -184,6 +184,32 @@ export interface TaskInfo {
   changes?: TaskChanges | null;
   /** 這個任務的指令是從哪裡送出的;舊資料沒有這個欄位。 */
   source?: SpeechSource;
+  /** 交辦當下節點所在的專案(之後不會依節點目前的工作目錄重算);舊資料沒有這個欄位。 */
+  project?: { id: string; name: string };
+  /**
+   * 使用者驗收:accepted 已驗收、rejected 退回、null 或沒有 = 尚未判斷。和 status 分開:
+   * status 只代表回合有沒有正常結束,驗收才代表結果對不對。使用者按任務卡的按鈕、或把審查評論送回節點時(自動退回)會設定。
+   */
+  verdict?: TaskVerdict;
+}
+export type TaskVerdict = 'accepted' | 'rejected' | null;
+
+/** 記憶庫裡一筆記憶(一個 .md 檔)在資料庫索引中的樣子。 */
+export interface MemoryEntry {
+  /** 相對於記憶庫資料夾的路徑,一律用 /。 */
+  path: string;
+  kind: 'node' | 'case' | 'knowledge' | 'preference';
+  scope: '全域' | '專案';
+  projectId: string;
+  nodeId: string;
+  title: string;
+  /** 記憶自己標的更新時間(front matter 的「更新時間」),沒有就用檔案修改時間。 */
+  updatedAt: number;
+  /** 檔案修改時間(毫秒),用來判斷檔案有沒有被改過。 */
+  mtime: number;
+  size: number;
+  /** 例如 未確認 / 已確認 / 退回;沒寫就是空字串。 */
+  status: string;
 }
 
 /** 轉接器送給核心服務的事件。 */
@@ -600,6 +626,10 @@ export interface NexusApi {
   /** 儲存角色卡;使用這個角色的節點會在下一則指令前收到新的角色設定。 */
   setPersona(character: string, text: string): Promise<void>;
   clearFinishedTasks(): Promise<void>;
+  /** 使用者驗收或退回一個已結束的任務(再按一次同樣的結果即取消);null 表示清除判斷。 */
+  setTaskVerdict(taskId: string, verdict: TaskVerdict): Promise<void>;
+  /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
+  getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
   /** 取得一個任務期間的檔案變更;任務還在執行時回傳到目前為止的變更。 */
   getTaskChanges(taskId: string): Promise<ChangeSet>;
   listOldSessions(): Promise<OldSession[]>;
