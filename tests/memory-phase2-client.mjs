@@ -31,7 +31,10 @@ try {
   // 總管寫:節點特長、偏好、專案知識(上限 3,寫 4 則)
   const n = await call(C, 'memory_write', { kind: 'node', title: 'Worker', content: '擅長圖表渲染與前端除錯\n其他' });
   check('總管寫節點特長', !n.error && n.text.includes('Worker'), n.text);
-  const profile = join(vault, 'nodes', 'Worker.md');
+  // 側寫依節點 ID 命名(nodes/Worker-<ID 前 8 碼>.md),路徑從回覆取得
+  const profileRel = /路徑:(nodes\/[^;\s]+\.md)/.exec(n.text)?.[1] ?? '';
+  check('新的側寫檔名帶節點 ID', /^nodes\/Worker-[^/]+\.md$/.test(profileRel), n.text);
+  const profile = profileRel ? join(vault, ...profileRel.split('/')) : join(vault, 'nodes', 'Worker.md');
   const ptext = existsSync(profile) ? readFileSync(profile, 'utf8') : '';
   check('側寫檔有特長與流程章節', /## 特長\s+擅長圖表渲染/.test(ptext) && ptext.includes('## 解決問題的流程'), ptext);
   check('總管寫使用者偏好', !(await call(C, 'memory_write', { kind: 'preference', title: '回報要精簡', content: '一兩句講完圖表結果' })).error);

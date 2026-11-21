@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { MemoryEntry } from '../shared/types';
 import { parseFrontMatter } from './memory-vault';
 import { recordRecall } from './vault-sidecar';
-import { safeName, writeMemory, type MetaValue } from './memory-write';
+import { nodeProfilePath, safeName, writeMemory, type MetaValue } from './memory-write';
 
 /**
  * 記憶的 MCP 工具(階段 2):memory_search、memory_write 的邏輯。不依賴 Electron,單元測試可以直接載入;
@@ -102,13 +102,12 @@ export function setSection(body: string, heading: string, text: string): string 
   return [...lines.slice(0, start), ...block, ...lines.slice(end)].join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
 }
 
-/** 節點側寫檔的路徑。 */
-export const nodeProfilePath = (name: string) => `nodes/${safeName(name)}.md`;
+export { nodeProfilePath };
 
 /** 讀節點側寫的「特長」(給總管守則用);沒有側寫或沒有特長回傳空字串。 */
-export function readNodeStrengths(vaultDir: string, name: string): string {
+export function readNodeStrengths(vaultDir: string, node: { id: string; name: string }): string {
   try {
-    const { body } = parseFrontMatter(readFileSync(join(vaultDir, ...nodeProfilePath(name).split('/')), 'utf8').slice(0, READ_MAX));
+    const { body } = parseFrontMatter(readFileSync(join(vaultDir, ...nodeProfilePath(vaultDir, node).split('/')), 'utf8').slice(0, READ_MAX));
     return getSection(body, '特長') ?? '';
   } catch { return ''; }
 }
@@ -364,7 +363,7 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
     const matches = deps.nodes().filter(n => n.id === title || n.name.toLowerCase() === key);
     if (matches.length !== 1) throw new Error(matches.length ? `有 ${matches.length} 個節點都叫「${title}」,請改用節點 id 當 title。` : `找不到節點「${title}」。kind 為 node 時 title 要填節點的名稱(用 list_nodes 查)。`);
     const node = matches[0];
-    const rel = nodeProfilePath(node.name);
+    const rel = nodeProfilePath(deps.vaultDir, node);
     const abs = join(deps.vaultDir, ...rel.split('/'));
     let meta = new Map<string, MetaValue>();
     let body = '';

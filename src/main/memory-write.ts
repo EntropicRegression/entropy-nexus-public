@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /**
@@ -39,6 +39,39 @@ export function maskSecrets(text: string): { text: string; masked: number } {
   for (const re of SECRET_PATTERNS) out = out.replace(re, () => { masked++; return MASK; });
   out = out.replace(SECRET_KV, (_m, key: string, q: string) => { masked++; return `${key}${q}${MASK}${q}`; });
   return { text: out, masked };
+}
+
+/** 開頭屬性區塊裡的節點ID;沒有屬性區塊或沒有這個欄位是空字串。 */
+export function profileNodeId(text: string): string {
+  const block = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  const line = block && /^(?:節點ID|節點id|node-id|nodeId)\s*[:：]\s*(.*)$/m.exec(block[1]);
+  return line ? line[1].trim().replace(/^(['"])(.*)\1$/, '$2').trim() : '';
+}
+
+const headOf = (abs: string): string => readFileSync(abs, 'utf8').slice(0, 8192);
+
+/**
+ * 節點側寫的路徑(相對記憶庫)。依節點 ID 找 nodes/ 底下(不含子資料夾)的側寫,檔名不一定是現在的名稱(改名後沿用原檔);
+ * 同一個 ID 有多份時取最近修改的。找不到時:舊版依名稱存的 nodes/<名稱>.md 沒有節點ID 就沿用;
+ * 否則用 nodes/<名稱>-<ID 前 8 碼>.md。同名的不同節點因此各有一份,不會互相覆蓋。
+ */
+export function nodeProfilePath(vault: string, node: { id: string; name: string }): string {
+  const dir = join(vault, 'nodes');
+  let best: { rel: string; mtime: number } | null = null;
+  let names: string[] = [];
+  try { names = readdirSync(dir).filter(n => /\.md$/i.test(n)); } catch { /* 還沒有資料夾 */ }
+  for (const n of names) {
+    const abs = join(dir, n);
+    try {
+      const st = statSync(abs);
+      if (!st.isFile() || profileNodeId(headOf(abs)) !== node.id) continue;
+      if (!best || st.mtimeMs > best.mtime) best = { rel: `nodes/${n}`, mtime: st.mtimeMs };
+    } catch { /* 讀不到就略過 */ }
+  }
+  if (best) return best.rel;
+  const legacy = `nodes/${safeName(node.name)}.md`;
+  try { if (!profileNodeId(headOf(join(vault, 'nodes', `${safeName(node.name)}.md`)))) return legacy; } catch { /* 沒有舊檔 */ }
+  return `nodes/${safeName(node.name)}-${safeName(node.id).slice(0, 8)}.md`;
 }
 
 /** 檔名可以用的字:去掉 Windows 不允許的字元與結尾的點、空白,長度上限 60 字。 */

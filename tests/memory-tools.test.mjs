@@ -92,7 +92,7 @@ test('搜尋:呼叫者自己的側寫與判例排最前面', async () => {
   const { dir, deps } = setup();
   put(dir, 'cases/alpha/1-別人.md', { 種類: 'case', 專案ID: PROJ.id, 案由: '圖表 圖表 圖表', 狀態: '已確認', 節點ID: 'n9', 更新時間: iso(NOW) }, '圖表圖表圖表圖表');
   put(dir, 'cases/alpha/2-自己.md', { 種類: 'case', 專案ID: PROJ.id, 案由: '圖表偶爾壞', 狀態: '已確認', 節點ID: 'n1', 更新時間: iso(NOW - 5 * DAY) }, '提到一次圖表');
-  put(dir, nodeProfilePath('Hagemi'), { 種類: 'node', 節點ID: 'n1', 節點: 'Hagemi', 更新時間: iso(NOW) }, '## 特長\n\n擅長圖表');
+  put(dir, nodeProfilePath(dir, nodes[0]), { 種類: 'node', 節點ID: 'n1', 節點: 'Hagemi', 更新時間: iso(NOW) }, '## 特長\n\n擅長圖表');
   const hits = await searchMemory(deps, WORKER, { query: '圖表' });
   assert.equal(hits.length, 3);
   assert.ok(hits[0].own && hits[1].own && !hits[2].own, hits.map(h => h.entry.path).join());
@@ -162,7 +162,7 @@ test('節點側寫:只換特長章節,其他章節與屬性保留;找不到節�
   const { dir, deps } = setup();
   const r1 = await memoryWrite(deps, CHIEF, { kind: 'node', title: 'Hagemi', content: '前端與圖表\n也會寫測試' });
   assert.ok(r1.includes('Hagemi'));
-  const rel = nodeProfilePath('Hagemi');
+  const rel = nodeProfilePath(dir, nodes[0]);
   const file = join(dir, ...rel.split('/'));
   let text = readFileSync(file, 'utf8');
   assert.ok(/種類: node/.test(text) && /節點ID: n1/.test(text) && /後台: Claude Code/.test(text) && /commit: abc1234/.test(text));
@@ -174,19 +174,44 @@ test('節點側寫:只換特長章節,其他章節與屬性保留;找不到節�
   text = readFileSync(file, 'utf8');
   assert.equal(getSection(text.split('\n---\n').slice(1).join('\n---\n'), '特長'), '只剩後端');
   assert.ok(text.includes('1. 先看 log') && text.includes('自訂: 保留'));
-  assert.equal(readNodeStrengths(dir, 'Hagemi'), '只剩後端');
+  assert.equal(readNodeStrengths(dir, nodes[0]), '只剩後端');
   await assert.rejects(memoryWrite(deps, CHIEF, { kind: 'node', title: '不存在', content: 'x' }), /找不到節點/);
 });
 
 test('節點側寫:被使用者改過的檔案改為附加,不覆寫', async () => {
   const { dir, deps } = setup();
-  const rel = nodeProfilePath('Hagemi');
+  const rel = nodeProfilePath(dir, nodes[0]);
   mkdirSync(join(dir, 'nodes'), { recursive: true });
   writeFileSync(join(dir, ...rel.split('/')), '---\n種類: node\n節點: Hagemi\n---\n## 特長\n\n使用者手寫的特長\n');
   const r = await memoryWrite(deps, CHIEF, { kind: 'node', title: 'Hagemi', content: '總管想補的' });
   assert.ok(r.includes('附加'));
   const text = readFileSync(join(dir, ...rel.split('/')), 'utf8');
   assert.ok(text.includes('使用者手寫的特長') && text.includes('總管想補的') && text.includes('主控台補充'));
+});
+
+test('節點側寫依節點 ID 存放:同名的不同節點各一份、改名沿用原檔、舊版依名稱的檔案沒有 ID 才沿用', async () => {
+  const twins = [{ id: 'aaaa1111-x', name: 'claudia', backendLabel: 'Claude Code', model: '' }, { id: 'bbbb2222-y', name: 'claudia', backendLabel: 'Claude Code', model: '' }];
+  const { dir, deps } = setup({ nodes: () => twins });
+  await memoryWrite(deps, CHIEF, { kind: 'node', title: 'aaaa1111-x', content: '甲的特長' });
+  await memoryWrite(deps, CHIEF, { kind: 'node', title: 'bbbb2222-y', content: '乙的特長' });
+  assert.equal(nodeProfilePath(dir, twins[0]), 'nodes/claudia-aaaa1111.md');
+  assert.equal(nodeProfilePath(dir, twins[1]), 'nodes/claudia-bbbb2222.md');
+  assert.equal(readNodeStrengths(dir, twins[0]), '甲的特長', '後寫的同名節點不會蓋掉先寫的');
+  assert.equal(readNodeStrengths(dir, twins[1]), '乙的特長');
+  // 改名:依 ID 找到原檔,不另開新檔
+  const renamed = { ...twins[0], name: 'claudia 二代' };
+  assert.equal(nodeProfilePath(dir, renamed), 'nodes/claudia-aaaa1111.md');
+  // 舊版:nodes/<名稱>.md 沒有節點ID → 沿用;有別人的節點ID → 不碰,另開自己的
+  const legacyDir = setup().dir;
+  writeFileSync(join(legacyDir, 'nodes', 'Hagemi.md'), '---\n種類: node\n節點: Hagemi\n---\n## 特長\n\n舊的\n');
+  assert.equal(nodeProfilePath(legacyDir, nodes[0]), 'nodes/Hagemi.md');
+  writeFileSync(join(legacyDir, 'nodes', 'Hagemi.md'), '---\n種類: node\n節點ID: someone-else\n---\n## 特長\n\n別人的\n');
+  assert.equal(nodeProfilePath(legacyDir, nodes[0]), 'nodes/Hagemi-n1.md');
+  assert.equal(nodeProfilePath(legacyDir, { id: 'someone-else', name: 'Hagemi' }), 'nodes/Hagemi.md');
+  // 封存資料夾裡的檔案不算側寫
+  mkdirSync(join(legacyDir, 'nodes', '封存'), { recursive: true });
+  writeFileSync(join(legacyDir, 'nodes', '封存', 'X-2026-01-01.md'), '---\n節點ID: zz\n狀態: 封存\n---\n');
+  assert.equal(nodeProfilePath(legacyDir, { id: 'zz', name: 'X' }), 'nodes/X-zz.md');
 });
 
 test('專案知識上限:超過仍寫入,並通知總管一次', async () => {

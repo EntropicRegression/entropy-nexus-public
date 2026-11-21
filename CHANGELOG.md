@@ -34,6 +34,7 @@ odes封存<名稱>-<日期>.md`,包含基本資料、特長、任務紀錄、解
 
 ### 修正
 
+- 節點側寫改成依節點 ID 存放:原本存成 `nodes/<名稱>.md`,同名的兩個節點會共用一份、後寫的蓋掉先寫的。現在依檔頭的 `節點ID` 找側寫(改名後沿用原檔),新檔名是 `<名稱>-<節點 ID 前 8 碼>.md`;舊版依名稱存的檔案沒有 `節點ID` 時照舊沿用,屬於別的節點時不碰。
 - `case_submit` 的參數名稱改成英文(title、keywords、facts、issue、process、conclusion、reasoning、scope、precedents)。原本用中文,不符合 Anthropic API 對工具參數名稱的規定,Claude 節點會整個看不到這個工具、無法寫判例;舊的中文名稱仍然接受。新增單元測試 `tests/mcp-schema.test.mjs`,檢查所有 MCP 工具的名稱與參數名稱。
 
 ## 0.2.0(2026-11-21)

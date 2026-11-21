@@ -26,7 +26,7 @@ import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
 import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
-import { safeName } from './memory-write';
+import { nodeProfilePath } from './memory-write';
 import type { Store } from './store';
 import type { MemoryVault } from './memory-vault';
 import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
@@ -588,7 +588,7 @@ export class Core {
     const cases = vault.list().filter(e => e.kind === 'case' && e.nodeId === agent.id).map(caseNumber);
     const r = writeArchive(vault.dir, {
       node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt, sessionId: agent.sessionId, cwd: agent.cwd },
-      stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, review, now: new Date(),
+      stats, tasks, traits: readLiveTraits(vault.dir, agent), summary, summarySource: source, noSummaryReason: reason, cases, review, now: new Date(),
       images: agent.character ? characterImages(portraitsDir(), agent.character) : undefined,
     });
     // 馬上更新索引:不等資料夾監看(有去抖動),緊接著的查詢(例如新增同名節點時找封存)才讀得到
@@ -1381,7 +1381,7 @@ ${text}
     const nodes: StatsNode[] = [...this.agents.values()].filter(a => !a.parentId && a.id !== this.chiefId)
       .map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model }));
     const strengths = new Map<string, string>();
-    if (this.vault) for (const n of nodes) { const t = readNodeStrengths(this.vault.dir, n.name); if (t) strengths.set(n.id, t); }
+    if (this.vault) for (const n of nodes) { const t = readNodeStrengths(this.vault.dir, n); if (t) strengths.set(n.id, t); }
     return chiefStatsSection(nodes, stats, Date.now(), undefined, strengths);
   }
 
@@ -1692,7 +1692,7 @@ ${section}
   }
 }
 
-/** 節點目前側寫(nodes/<名稱>.md)裡「特長」一段;沒有側寫或讀不到就是空字串。 */
-function readLiveTraits(vaultDir: string, name: string): string {
-  try { return extractSection(readFileSync(join(vaultDir, 'nodes', `${safeName(name)}.md`), 'utf8'), '特長'); } catch { return ''; }
+/** 節點目前側寫(依節點 ID 找,見 nodeProfilePath)裡「特長」一段;沒有側寫或讀不到就是空字串。 */
+function readLiveTraits(vaultDir: string, node: { id: string; name: string }): string {
+  try { return extractSection(readFileSync(join(vaultDir, ...nodeProfilePath(vaultDir, node).split('/')), 'utf8'), '特長'); } catch { return ''; }
 }

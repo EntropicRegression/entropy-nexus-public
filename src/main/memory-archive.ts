@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { MemoryEntry, TaskInfo } from '../shared/types';
 import { formatDuration, type NodeStats } from '../shared/node-stats.ts';
 import { snapshotImages, type CharacterImages } from './vault-images.ts';
-import { safeName, writeMemory, type MetaValue, type WriteResult } from './memory-write.ts';
+import { nodeProfilePath, safeName, writeMemory, type MetaValue, type WriteResult } from './memory-write.ts';
 
 /**
  * 長期記憶階段 4:刪除節點時把它的工作履歷歸檔進記憶庫,之後同名(或同角色)的新節點可以接回。
@@ -174,7 +174,7 @@ export function attachArchive(vault: string, archiveRel: string, node: { id: str
     種類: 'node', 節點ID: node.id, 節點: node.name, 後台: node.backendLabel, 模型: node.model || '(預設)',
     更新時間: timeOf(now.getTime()), 接回自: rel,
   };
-  return writeMemory(vault, `nodes/${safeName(node.name)}.md`, meta, body, 'replace', now);
+  return writeMemory(vault, nodeProfilePath(vault, node), meta, body, 'replace', now);
 }
 
 /** 判例檔名開頭的編號(例如 2026-0003);沒有就用整個檔名。 */

@@ -107,9 +107,9 @@ test('接回:特長與解決問題的流程複製進側寫,加「接回自」;�
   const v = tmp();
   const a = writeArchive(v, mk());
   const r = attachArchive(v, a.path, { id: 'n2', name: 'Hagemi', backendLabel: 'Claude Code', model: 'opus' }, NOW);
-  assert.equal(r.path, 'nodes/Hagemi.md');
+  assert.equal(r.path, 'nodes/Hagemi-n2.md', '新的側寫依節點 ID 命名');
   assert.equal(r.action, 'created');
-  const text = readFileSync(join(v, 'nodes', 'Hagemi.md'), 'utf8');
+  const text = readFileSync(join(v, 'nodes', 'Hagemi-n2.md'), 'utf8');
   const { meta, body } = parseFrontMatter(text);
   assert.equal(meta.get('接回自'), a.path);
   assert.equal(meta.get('節點ID'), 'n2');
