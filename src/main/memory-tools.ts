@@ -223,7 +223,7 @@ export async function memorySearch(deps: MemoryToolsDeps, caller: MemoryCaller, 
 
 // ---------- 寫入 ----------
 
-export interface WriteArgs { kind?: string; title?: string; content?: string; project?: string }
+export interface WriteArgs { kind?: string; title?: string; content?: string; project?: string; subtype?: string; supersedes?: string }
 
 function isoNow(deps: MemoryToolsDeps): string { return new Date(deps.now()).toISOString(); }
 
@@ -266,7 +266,7 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
     if (getSection(next, '解決問題的流程') === null) next = `${next.trim()}\n\n## 解決問題的流程\n`;
     const r = writeMemory(deps.vaultDir, rel, full, next);
     deps.rescan();
-    return `已更新節點「${node.name}」的特長(${r.action === 'appended' ? '側寫檔被使用者改過,改為附加一段' : r.action === 'created' ? '建立新的側寫檔' : '取代特長章節,其他章節保留'})。路徑:${r.path}${r.masked ? `;有 ${r.masked} 處疑似金鑰或密碼已遮罩` : ''}`;
+    return `已更新節點「${node.name}」的特長(${r.action === 'appended' ? '側寫檔被使用者改過,改為附加一段' : r.action === 'created' ? '建立新的側寫檔' : '取代特長章節,其他章節保留'})。路徑:${r.path}${r.masked ? `;有 ${r.masked} 處疑似金鑰或密碼已遮罩` : ''}。提醒:特長的第一行要是最重要的一句話,總管守則只顯示前 80 個字。`;
   }
 
   if (kind === 'preference') {
@@ -283,7 +283,11 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
   const rel = `${knowledgeDir(p.name)}/${safeName(title)}.md`;
   const existed = existsSync(join(deps.vaultDir, ...rel.split('/')));
   const head = p === target ? await deps.head(p.root) : null;
-  const r = writeMemory(deps.vaultDir, rel, { 種類: 'knowledge', 範圍: '專案', 專案ID: p.id, 專案: p.name, 標題: title, 更新時間: now, commit: head ?? undefined }, content);
+  // 子類:決策 / 書籤(書籤的狀態是 未完,做完後使用者或總管改成 已完成);取代:舊檔路徑(寫成 [[路徑]])
+  const subtype = /^(decision|決策)$/i.test(String(args.subtype ?? '').trim()) ? '決策' : /^(bookmark|書籤)$/i.test(String(args.subtype ?? '').trim()) ? '書籤' : '';
+  if (String(args.subtype ?? '').trim() && !subtype) throw new Error('subtype 只能是 decision(決策)或 bookmark(書籤),不需要時請省略。');
+  const supersedes = String(args.supersedes ?? '').replace(/[\[\]]/g, '').trim();
+  const r = writeMemory(deps.vaultDir, rel, { 種類: 'knowledge', 範圍: '專案', 專案ID: p.id, 專案: p.name, 標題: title, 子類: subtype || undefined, 狀態: subtype === '書籤' ? '未完' : undefined, 取代: supersedes ? `[[${supersedes}]]` : undefined, 更新時間: now, commit: head ?? undefined }, content);
   deps.rescan();
   const n = countKnowledge(deps.vaultDir, p.name);
   let tail = '';

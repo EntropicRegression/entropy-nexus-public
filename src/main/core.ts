@@ -23,7 +23,7 @@ import { removeMedia } from './media';
 import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
 import { normalizeAgyAllow } from '../shared/agy-allow';
-import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, writeArchive, type SummarySource } from './memory-archive';
+import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
 import { safeName } from './memory-write';
 import type { Store } from './store';
 import type { MemoryVault } from './memory-vault';
@@ -554,12 +554,13 @@ export class Core {
     const chief = this.chiefId && this.chiefId !== agent.id ? this.agents.get(this.chiefId) : undefined;
     const chiefOk = !!chief && chief.state === 'idle' && !chief.terminal && this.sessions.has(chief.id);
     let summary = '';
+    let review = '';
     let source: SummarySource = '無';
     let reason = mode === 'stats' ? '使用者選擇只存統計' : '';
     let plan = decideSummarizer({ mode, selfAvailable: selfOk, selfFailed: false, chiefAvailable: chiefOk });
     if (plan === 'self') {
       const r = await this.askForSummary(agent.id, SELF_SUMMARY_PROMPT, timeout);
-      if (r) { summary = r; source = '節點自己'; }
+      if (r) { ({ summary, review } = splitReview(r)); source = '節點自己'; }
       else plan = decideSummarizer({ mode, selfAvailable: selfOk, selfFailed: true, chiefAvailable: chiefOk });
     }
     if (!summary && plan === 'chief' && chief) {
@@ -567,7 +568,7 @@ export class Core {
       const titles = [...tasks].sort((a, b) => b.startedAt - a.startedAt).slice(0, 20).map(t => t.title.slice(0, 120));
       const replies = events.filter(e => e.type === 'message' && e.role === 'agent').slice(-6).map(e => (e as { text: string }).text.slice(0, 600));
       const r = await this.askForSummary(chief.id, chiefSummaryPrompt(agent.name, titles, replies), timeout);
-      if (r) { summary = r; source = '總管'; }
+      if (r) { ({ summary, review } = splitReview(r)); source = '總管'; }
     }
     if (!summary && mode === 'summary') {
       reason = !selfOk
@@ -577,7 +578,7 @@ export class Core {
     const cases = vault.list().filter(e => e.kind === 'case' && e.nodeId === agent.id).map(caseNumber);
     const r = writeArchive(vault.dir, {
       node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt },
-      stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, now: new Date(),
+      stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, review, now: new Date(),
     });
     // 馬上更新索引:不等資料夾監看(有去抖動),緊接著的查詢(例如新增同名節點時找封存)才讀得到
     vault.rescan();
@@ -690,7 +691,7 @@ export class Core {
 - 交辦之前,先用一句話說明你要交給誰、做什麼;判斷不出來、或指令聽起來不完整時,先問使用者,不要猜。
 - 除非使用者明確要你自己做,或沒有合適的節點,否則不要自己改檔案或執行指令。
 - 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。
-- 長期記憶:交辦前可以用 memory_search 查有沒有相關的專案知識、使用者偏好、節點側寫與已確認的判例(標「可能過時」的要先對照現況)。只有你能用 memory_write 寫入:節點的特長(kind 為 node,title 填節點名稱)、專案知識、使用者偏好;只寫日後真的用得到、一兩句講得清楚的事,不要寫金鑰或密碼。${stats ? `
+- 長期記憶:交辦前可以用 memory_search 查有沒有相關的專案知識、使用者偏好、節點側寫與已確認的判例(標「可能過時」的要先對照現況)。只有你能用 memory_write 寫入:節點的特長(kind 為 node,title 填節點名稱)、專案知識、使用者偏好;只寫日後真的用得到、一兩句講得清楚的事,不要寫金鑰或密碼。節點特長的第一行必須是最重要的一句話(上面的節點清單只顯示特長的前 80 個字)。專案知識可以用 subtype 標 decision(決策)或 bookmark(書籤:還沒做完、要回來處理的事);新的記憶取代舊的時,用 supersedes 填舊檔的路徑。使用者在對話視窗按「儲存這段記憶」產生的草稿是未確認的,在使用者確認前你查不到,也不要去找。${stats ? `
 
 ${stats}` : ''}`;
   }

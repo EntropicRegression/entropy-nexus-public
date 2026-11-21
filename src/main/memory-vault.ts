@@ -104,6 +104,12 @@ const KIND_WORDS: Record<string, MemoryEntry['kind']> = {
   knowledge: 'knowledge', 專案知識: 'knowledge', 知識: 'knowledge', preference: 'preference', 偏好: 'preference', 使用者偏好: 'preference',
 };
 
+/** 子類只特別處理 decision / bookmark 英文寫法(轉成 決策 / 書籤);其他寫法原樣保留(去頭尾空白),使用者自己的分類不會被吃掉。 */
+export function normalizeSubtype(v: string): string {
+  const t = v.trim();
+  return /^decision$/i.test(t) ? '決策' : /^bookmark$/i.test(t) ? '書籤' : t;
+}
+
 /** 「2026-11-21」「2026-11-21T10:00:00」之類轉成毫秒;看不懂回傳 0。 */
 function parseTime(v: string): number {
   if (!v) return 0;
@@ -131,6 +137,8 @@ export function entryFromFile(rel: string, text: string, mtime: number, size: nu
   return {
     path: rel, kind, scope, projectId: scope === '專案' ? projectId : '', nodeId: pick(meta, ['節點ID', '節點id', 'node-id', 'nodeId', '節點', '承辦節點', 'node']),
     title, updatedAt: parseTime(pick(meta, ['更新時間', 'updated', 'updatedAt'])) || mtime, mtime, size, status: pick(meta, ['狀態', 'status']),
+    subtype: normalizeSubtype(pick(meta, ['子類', 'subtype'])),
+    supersedes: pick(meta, ['取代', 'supersedes']).replace(/[\[\]]/g, '').trim(),
   };
 }
 

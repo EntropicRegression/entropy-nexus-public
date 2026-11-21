@@ -17,6 +17,7 @@ import { Store } from './store';
 import { MemoryVault } from './memory-vault';
 import { safeName, writeMemory } from './memory-write';
 import { CaseService } from './cases';
+import { DraftService } from './memory-draft';
 import { CASE_DAILY_CAP, detectCandidate } from '../shared/case-candidates';
 import { attachArchive, findArchive } from './memory-archive';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
@@ -41,6 +42,7 @@ let core: Core | null = null;
 let store: Store | null = null;
 let vault: MemoryVault | null = null;
 let cases: CaseService | null = null;
+let drafts: DraftService | null = null;
 let quitting = false;
 let interopRef: Interop | null = null;
 
@@ -116,6 +118,8 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     clearTasks: () => c.clearFinishedTasks(),
     taskVerdict: (taskId: string, verdict: TaskVerdict) => c.setTaskVerdict(String(taskId), verdict ?? null),
     markCase: async (taskId: string) => { if (!cases) throw new Error('判例功能沒有啟用'); return cases.mark(String(taskId)); },
+    draftInfo: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.info(String(id)); },
+    requestDraft: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.request(String(id)); },
     memoryVault: () => ({ dir: vault?.dir ?? '', entries: vault?.list() ?? [] }),
     taskChanges: (taskId: string) => c.taskChanges(taskId),
     oldSessions: () => c.listOldSessions(),
@@ -361,6 +365,22 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     const caseSvc = cases;
     core.attachCases(caseSvc);
     interop.caseSubmit = (callerId, args) => caseSvc.submit(callerId, args);
+    // 對話草稿:使用者在對話視窗按「儲存這段記憶」,請節點整理成草稿(未確認),節點用 memory_draft 提交
+    drafts = new DraftService({
+      vaultDir: v.dir,
+      getSetting: k => s.getSetting(k),
+      setSetting: (k, val) => s.setSetting(k, val),
+      history: id => c.history(id),
+      agent: id => c.agentById(id),
+      project: async id => { const p = await c.memoryDeps()!.project(c.agentCwd(id) ?? ''); return { id: p.id, name: p.name }; },
+      request: (agentId, text) => c.enqueue(agentId, text, [], 'draft'),
+      rescan: () => { v.rescan(); },
+      write: writeMemory,
+      safeName,
+      backendLabel: b => BACKEND_LABEL[b],
+    });
+    const draftSvc = drafts;
+    interop.memoryDraft = (callerId, args) => draftSvc.submit(callerId, args);
     handleFileRequests(id => core?.agentCwd(id) ?? null);
     await core.init();
     if (core.isEmpty() && process.env.NEXUS_NO_SEED !== '1') core.seedDemo(app.getPath('home'));

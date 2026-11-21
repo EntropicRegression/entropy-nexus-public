@@ -46,6 +46,8 @@ export interface ArchiveInput {
   noSummaryReason: string;
   /** 判例編號(索引裡節點ID相同的判例)。 */
   cases: string[];
+  /** 回顧(2 到 3 句,根據實際紀錄);沒有就是空字串或省略。放在檔案最後一段。 */
+  review?: string;
   now: Date;
 }
 
@@ -82,6 +84,8 @@ export function buildArchive(i: ArchiveInput): { meta: Record<string, MetaValue>
   sections.push(task.join('\n'));
   if (i.summary.trim()) sections.push(`## 解決問題的流程\n\n${i.summary.trim()}`);
   if (i.cases.length) sections.push(`## 判例\n\n${i.cases.map(c => `- ${c}`).join('\n')}`);
+  // 回顧永遠是檔案最後一段
+  if (i.review?.trim()) sections.push(`## 回顧\n\n${i.review.trim()}`);
   return { meta, body: sections.join('\n\n') };
 }
 
@@ -170,11 +174,23 @@ export const SELF_SUMMARY_PROMPT = `〔歸檔總結〕這個節點即將從主�
 2. 常用工具與步驟
 3. 成功的模式
 4. 常見的失誤
+最後另起一行寫「## 回顧」,接著用 2 到 3 句話回顧:根據你實際做過的任務與對話紀錄,這段時間有哪些值得後人記住的事。你是單一作者,由你一個人總結,並寫清楚誰說了什麼(例如「使用者多次要求…」「我曾經…」);只寫紀錄裡有的,不要美化、不要編造。
 只回覆總結本身;不要改動任何檔案,也不要執行指令。`;
+
+/** 從節點或總管的回覆裡分出「## 回顧」:回傳去掉回顧的總結,與回顧本身(沒有就是空字串)。接受「## 回顧」「回顧:」「**回顧**」等寫法。 */
+export function splitReview(reply: string): { summary: string; review: string } {
+  const lines = reply.split(/\r?\n/);
+  const at = lines.findIndex(l => REVIEW_HEAD.test(l));
+  if (at < 0) return { summary: reply.trim(), review: '' };
+  const head = lines[at].replace(REVIEW_HEAD, '').trim();
+  const review = [head, ...lines.slice(at + 1)].join('\n').trim();
+  return { summary: lines.slice(0, at).join('\n').trim(), review };
+}
+const REVIEW_HEAD = /^\s*(?:#{1,6}\s*)?(?:\*\*)?回顧(?:\*\*)?\s*[:：]?\s*(?:\*\*)?/;
 
 /** 請總管代寫:附上節點的任務標題與最近的回覆。 */
 export function chiefSummaryPrompt(nodeName: string, titles: string[], replies: string[]): string {
-  return `〔歸檔總結:總管代寫〕節點「${nodeName}」即將從主控台移除,但它現在無法自己寫工作總結。請根據下面的資料,用 400 字以內整理它平常是怎麼工作的:習慣的做法、常用工具與步驟、成功的模式、常見的失誤。資料不足的地方不要編造,直接略過。只回覆總結本身;不要改動任何檔案,也不要執行指令。
+  return `〔歸檔總結:總管代寫〕節點「${nodeName}」即將從主控台移除,但它現在無法自己寫工作總結。請根據下面的資料,用 400 字以內整理它平常是怎麼工作的:習慣的做法、常用工具與步驟、成功的模式、常見的失誤。資料不足的地方不要編造,直接略過。最後另起一行寫「## 回顧」,接著用 2 到 3 句話回顧,內容要根據下面實際的紀錄;你是單一作者,由你一個人總結,並寫清楚誰說了什麼(例如「使用者要求…」「節點回報…」)。只回覆總結本身;不要改動任何檔案,也不要執行指令。
 
 它做過的任務(新到舊):
 ${titles.length ? titles.map(t => `- ${t}`).join('\n') : '(沒有紀錄)'}

@@ -49,7 +49,7 @@ test('case_submit 用英文參數,而且和 cases.ts 的 CASE_ARGS 對得上', (
   assert.ok(cs, '有 case_submit');
   const casesSrc = readFileSync(new URL('../src/main/cases.ts', import.meta.url), 'utf8');
   const args = /export const CASE_ARGS = \{([^}]+)\}/.exec(casesSrc)?.[1].match(/(\w+):/g)?.map(s => s.slice(0, -1)) ?? [];
-  assert.ok(args.length === 9, `CASE_ARGS 有 ${args.length} 個`);
+  assert.ok(args.length === 11, `CASE_ARGS 有 ${args.length} 個`);
   for (const a of args) assert.ok(new RegExp(`^\\s*${a}:\\s*\\{\\s*type:`, 'm').test(cs.body), `case_submit 少了參數 ${a}`);
 });
 

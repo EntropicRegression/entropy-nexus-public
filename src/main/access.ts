@@ -59,6 +59,9 @@ const RPC: Record<string, Rule> = {
   taskVerdict: operate('task'),
   // 記下解法:請節點撰寫判例,等於對節點下指令,所以和驗收一樣是操作以上的角色、只限看得到的節點
   markCase: operate('task'),
+  // 儲存這段記憶:請節點整理對話草稿,等於對節點下指令;只看資訊的 draftInfo 是唯讀
+  draftInfo: read('agent'),
+  requestDraft: operate('agent'),
   send: operate('agent'),
   enqueue: operate('agent'),
   cancelQueued: operate('agent'),
@@ -202,6 +205,7 @@ export function auditDetail(action: string, input: Record<string, any>): string 
     case 'settings': return cut([Number.isInteger(input.maxActive) && `同時上限 ${input.maxActive}`, Number.isInteger(input.quotaStop) && `額度上限 ${input.quotaStop}%`].filter(Boolean).join(','));
     case 'commitTask': return cut(input.message);
     case 'markCase': return '記下解法(請節點撰寫判例)';
+    case 'requestDraft': return '儲存這段記憶(請節點整理草稿)';
     case 'taskVerdict': return input.verdict === 'accepted' ? '驗收' : input.verdict === 'rejected' ? '退回' : '清除驗收';
     case 'setDailyBudget': return cut(`${input.backend ?? ''} 每日預算 ${input.percent === null || input.percent === undefined ? '預設' : `${input.percent}%`}`);
     default: return '';
