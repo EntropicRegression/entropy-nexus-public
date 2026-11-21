@@ -298,7 +298,7 @@ export function warningText(w: DashWarning, labels: Record<Backend, string>): st
     case 'quota':
       return `${labels[w.backend]} 的${w.group && !w.label.includes(w.group) ? `「${w.group}」` : ''}${w.label}額度已用 ${w.used}%,快滿了`;
     case 'fault':
-      return `${w.agentName} ${w.state === 'lost' ? '失聯' : '出錯'}已經 ${w.minutes < 1 ? '一陣子' : `${w.minutes} 分鐘`}`;
+      return `${w.agentName} ${w.state === 'lost' ? '失聯' : '出錯'}已經${w.minutes < 1 ? '一陣子' : ` ${w.minutes} 分鐘`}`;
   }
 }
 

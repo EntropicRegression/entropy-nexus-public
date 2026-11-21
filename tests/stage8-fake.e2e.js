@@ -52,7 +52,7 @@
     await click([...document.querySelectorAll('.dlg-settings button')].find(b => b.textContent === '儲存'));
     await wait(500);
     const s3 = await snap();
-    check('改名後對話視窗、節點清單、任務面板都更新', $('.dlg-id b')?.textContent === '改名後' && [...document.querySelectorAll('.row-name')].some(e => e.textContent === '改名後') && s3.tasks.filter(t => t.agentId === target.id).every(t => t.agentName === '改名後'), `任務 ${s3.tasks.filter(t => t.agentId === target.id).length} 筆`);
+    check('改名後對話視窗、任務面板都更新', $('.dlg-id b')?.textContent === '改名後' && [...document.querySelectorAll('.task-who')].some(e => e.textContent.includes('改名後')) && s3.tasks.filter(t => t.agentId === target.id).every(t => t.agentName === '改名後'), `任務 ${s3.tasks.filter(t => t.agentId === target.id).length} 筆`);
 
     // 4. 快捷鍵:Esc 關閉、Alt+N 跳到需要你的節點、Alt+A 允許、Alt+I 中斷、F1、Ctrl+N
     await click($('.topbar .brand'));

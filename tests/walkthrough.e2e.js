@@ -106,7 +106,8 @@
     check('按 Esc 關閉清單', !$('.oldsessions'));
 
     // 8. 終止節點
-    await click([...document.querySelectorAll('.row')].find(r => r.textContent.includes('走查一號')));
+    window.__nexusSelect('走查一號');
+    await wait(500);
     await click(btn('.dialog', '終止'));
     await until('節點移除', async () => !(await snap()).agents.some(a => a.id === mine.id), 10000);
     check('點「終止」移除節點', true);

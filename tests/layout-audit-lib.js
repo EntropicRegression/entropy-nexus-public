@@ -6,7 +6,7 @@
 // - 在畫面內但被其他元素蓋住(中心點點下去會點到別的東西)
 // 另外檢查整頁是否出現水平或垂直捲動(本程式的版面設計上不應該捲動整頁)。
 // 浮動面板(頂部的語音、遠端、顯示、快捷鍵、說明)本來就會蓋住底下的東西,被它們蓋住不算問題
-const FLOATING = '.remote, .topbar-pop, .keys, .limit-help';
+const FLOATING = '.remote, .topbar-pop, .keys, .limit-help, .dash-full, .dash-pick';
 window.__layoutAudit = function layoutAudit() {
   const W = window.innerWidth, H = window.innerHeight;
   const issues = [];
@@ -140,6 +140,32 @@ window.__layoutScene = async function layoutScene(name) {
     return window.__layoutAudit();
   }
   if (name === 'help') { document.querySelector('.topbar button.help')?.click(); await wait(600); return window.__layoutAudit(); }
+  // 總覽儀表:精簡版常駐在右側欄最上面,不能把任務面板和新增節點的按鈕擠出畫面;完整內容是浮動面板,要整個在畫面內
+  if (name === 'dash' || name === 'dash-full') {
+    const out = [];
+    const dash = document.querySelector('.sidebar .dash');
+    if (!dash) return ['右側欄沒有總覽儀表'];
+    if (name === 'dash-full') { dash.querySelector('.dash-expand')?.click(); await wait(700); }
+    const H = window.innerHeight, W = window.innerWidth;
+    const d = dash.getBoundingClientRect();
+    const tasks = document.querySelector('.sidebar .tasks')?.getBoundingClientRect();
+    const add = document.querySelector('.sidebar button.add')?.getBoundingClientRect();
+    if (dash.scrollWidth > dash.clientWidth + 1) out.push(`儀表的內容比右側欄寬(${dash.scrollWidth} > ${dash.clientWidth})`);
+    for (const el of dash.querySelectorAll('.dq-head, .dq-win, .ds')) { const r = el.getBoundingClientRect(); if (r.right > d.right + 1 || r.left < d.left - 1) out.push(`儀表的內容超出右側欄:${el.className}`); }
+    if (dash.querySelectorAll('.dq').length < 1 || dash.querySelectorAll('.ds').length !== 4) out.push('儀表缺少額度列或狀態數字');
+    if (!tasks || tasks.height < 120) out.push(`任務面板被儀表擠到只剩 ${Math.round(tasks?.height ?? 0)} 高`);
+    if (!add || add.bottom > H + 1 || add.height < 10) out.push(`「新增節點」按鈕被擠出畫面(底邊 ${Math.round(add?.bottom ?? 0)} / ${H})`);
+    if (name === 'dash-full') {
+      const full = document.querySelector('.dash-full');
+      if (!full) return [...out, '點「展開」後沒有出現完整內容'];
+      const f = full.getBoundingClientRect();
+      if (f.left < -1 || f.top < -1 || f.right > W + 1 || f.bottom > H + 1) out.push(`完整內容超出畫面(${Math.round(f.left)},${Math.round(f.top)}–${Math.round(f.right)},${Math.round(f.bottom)} / ${W}×${H})`);
+      if (f.width < 300) out.push(`完整內容太窄(${Math.round(f.width)})`);
+      if (full.scrollWidth > full.clientWidth + 1) out.push(`完整內容出現水平捲動(${full.scrollWidth} > ${full.clientWidth})`);
+      if (f.right > d.left + 1) out.push('完整內容蓋到右側欄的精簡版');
+    }
+    return [...out, ...window.__layoutAudit()];
+  }
   const b = btn(name, document.querySelector('.topbar'));
   if (!b) return [`頂部找不到「${name}」按鈕(可能被擠出畫面或被隱藏)`];
   // 視窗窄的時候「快捷鍵、顯示」收在「更多」選單裡:先打開選單,確認選單裡的按鈕點得到,再點它
@@ -162,7 +188,7 @@ window.__layoutScene = async function layoutScene(name) {
 window.__layoutClose = async function layoutClose() {
   const wait = ms => new Promise(r => setTimeout(r, ms));
   for (let i = 0; i < 4; i++) {
-    const x = document.querySelector('.dialog button[aria-label="關閉"], .remote button[aria-label="關閉"], .topbar-pop button[aria-label="關閉"]');
+    const x = document.querySelector('.dialog button[aria-label="關閉"], .remote button[aria-label="關閉"], .topbar-pop button[aria-label="關閉"], .dash-full button[aria-label="關閉"]');
     if (!x) break;
     x.click();
     await wait(250);
@@ -175,4 +201,4 @@ window.__layoutClose = async function layoutClose() {
   if (help) { help.click(); await wait(200); }
 };
 
-window.__LAYOUT_SCENES = [['board', '主畫面(14 個節點,13 個在待命區)'], ['dialog', '對話視窗'], ['addnode', '新增節點(選了角色)'], ['語音', '頂部「語音」'], ['遠端', '頂部「遠端」'], ['顯示', '頂部「顯示」'], ['快捷鍵', '頂部「快捷鍵」'], ['help', '頂部「?」說明']];
+window.__LAYOUT_SCENES = [['board', '主畫面(14 個節點,13 個在待命區)'], ['dash', '總覽儀表(精簡版)'], ['dash-full', '總覽儀表(展開)'], ['dialog', '對話視窗'], ['addnode', '新增節點(選了角色)'], ['語音', '頂部「語音」'], ['遠端', '頂部「遠端」'], ['顯示', '頂部「顯示」'], ['快捷鍵', '頂部「快捷鍵」'], ['help', '頂部「?」說明']];

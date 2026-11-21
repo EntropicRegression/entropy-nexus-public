@@ -4,6 +4,17 @@
   const log = (...a) => console.log('[test]', ...a);
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const shot = async n => { document.title = 'SHOT:' + n; await wait(900); document.title = 'SHOT:' + n + '-b'; await wait(900); };
+  // 節點清單已經拿掉:改成把游標移到主面板的節點上(位置由面板的自我檢查介面提供)
+  const hoverNode = async name => {
+    const a = (await window.nexus.getSnapshot()).agents.find(x => x.name === name);
+    const p = window.__nexusBoard?.positions().find(x => x.id === a?.id);
+    const canvas = document.querySelector('.board canvas');
+    if (!p || !canvas) return false;
+    const r = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: r.left + p.x, clientY: r.top + p.y, bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
+    return true;
+  };
+  const leaveNode = () => document.querySelector('.board canvas')?.dispatchEvent(new PointerEvent('pointermove', { clientX: 4, clientY: 60, bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
   try {
     await wait(3000);
     const cwd = window.__TEST_CWD__;
@@ -14,12 +25,11 @@
     log('額度', JSON.stringify(u?.windows.map(w => `${w.group}/${w.label} 已用${Math.round(w.used * 100)}% 重置${w.resetsAt ? new Date(w.resetsAt * 1000).toISOString().slice(5, 16) : '-'} [${(w.match || []).join('|')}]`)));
     log('unsupported', u?.unsupported);
     for (const [name] of specs) {
-      const row = [...document.querySelectorAll('.row')].find(x => x.textContent.includes(name));
-      row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await hoverNode(name);
       await wait(700);
       log(name, '→', document.querySelector('.hovercard')?.textContent.replace(/\s+/g, ' ').slice(0, 160));
       if (name === 'Agy-Flash') await shot('hover');
-      row?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+      leaveNode();
       await wait(300);
     }
     for (const a of (await window.nexus.getSnapshot()).agents) await window.nexus.removeAgent(a.id);

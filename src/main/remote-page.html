@@ -141,6 +141,7 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
   const ORDER = { awaiting: 0, error: 1, lost: 1, working: 2, planning: 2, idle: 3, sleeping: 4 };
   const BUSY = ['planning', 'working', 'awaiting'];
   let token = localStorage.getItem('nexus.token') || '';
+  let dash = null; // 總覽儀表的資料(每日預算、今天的任務統計),和桌面版右上角的儀表同一份
   let agents = {}, tasks = [], usage = [], settings = { maxActive: 4, quotaStop: 0 }, device = '', access = { role: 'full', agents: null };
   let tab = 'nodes', current = null, events = [], live = '', picked = {}, files = [], stack = [], embedKinds = {};
 
@@ -313,9 +314,16 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
   }
 
   // ---------- 更多:用量與設定
+  // 今天的預算用量(佔每週額度的百分比);超過只提醒,不擋指令
+  const pct = n => (Number.isInteger(n) ? n : n.toFixed(1)) + '%';
+  const budgetLine = backend => { const b = dash && dash.budgets.find(x => x.backend === backend); if (!b || !b.window || b.used === null || !(b.budget > 0)) return ''; return `<div class="hint${b.level === 'over' || b.level === 'near' ? ' w' : ''}" data-budget="${backend}">今天已用 ${pct(b.used)} / 每日預算 ${pct(b.budget)}${b.level === 'over' ? '(已超過)' : ''}</div>`; };
   function renderMore() {
-    let h = '<h2>剩餘額度</h2>';
-    for (const b of ['claude', 'codex', 'antigravity']) h += `<div style="margin-bottom:10px"><div class="n" style="font-size:13px">${BACKEND[b]}</div>${usageBars(b)}</div>`;
+    const st = Object.values(agents), top = st.filter(a => !a.parentId);
+    const n = { run: top.filter(a => a.state === 'planning' || a.state === 'working').length, wait: st.filter(a => a.state === 'awaiting').length, queue: top.filter(a => a.queued && a.queued.length).length, fault: top.filter(a => a.state === 'error' || a.state === 'lost').length };
+    let h = `<h2>總覽</h2><div class="d" id="dash-status">執行中 ${n.run} · 等你處理 ${n.wait} · 排隊 ${n.queue} · 異常 ${n.fault}</div>`;
+    if (dash) { const t = dash.tasks.reduce((s, r) => ({ assigned: s.assigned + r.assigned, done: s.done + r.done, failed: s.failed + r.failed, interrupted: s.interrupted + r.interrupted }), { assigned: 0, done: 0, failed: 0, interrupted: 0 }); h += `<div class="hint" id="dash-tasks">今天的任務:交辦 ${t.assigned} · 完成 ${t.done} · 出錯 ${t.failed} · 中斷 ${t.interrupted}</div>`; }
+    h += '<h2>剩餘額度</h2>';
+    for (const b of ['claude', 'codex', 'antigravity']) h += `<div style="margin-bottom:10px"><div class="n" style="font-size:13px">${BACKEND[b]}</div>${usageBars(b)}${budgetLine(b)}</div>`;
     if (access.role === 'full') h += `<h2>設定</h2><label>同時執行上限</label><input id="setmax" type="number" min="1" max="32" value="${settings.maxActive}"><label>額度上限(%;0 表示不限制)</label><input id="setquota" type="number" min="0" max="100" value="${settings.quotaStop}"><div class="hint">某家後台的額度用到這個百分比,就不再送出新指令。</div><div class="row" style="margin-top:10px"><button class="pri" id="setsave">儲存設定</button></div>`;
     h += `<h2>這支裝置</h2><div class="d">${esc(device)} · ${access.role === 'full' ? '完整權限' : (access.role === 'operator' ? '操作權限' : '唯讀權限') + (access.agents ? ' · ' + access.agents.length + ' 個節點' : ' · 全部節點')}</div><div class="row" style="margin-top:8px"><button class="bad" id="logout">登出這支裝置</button></div><div class="hint">登出只清除這支手機上的通行碼;要讓它徹底失效,請到電腦上的「手機」面板撤銷。</div>`;
     $('more').innerHTML = h;
@@ -518,6 +526,7 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
     if (u.task) { const i = tasks.findIndex(t => t.id === u.task.id); if (i >= 0) tasks[i] = u.task; else tasks.push(u.task); }
     if (u.tasks) tasks = u.tasks;
     if (u.usage) { const i = usage.findIndex(x => x.backend === u.usage.backend); if (i >= 0) usage[i] = u.usage; else usage.push(u.usage); }
+    if (u.dashboard) dash = u.dashboard;
     if (u.maxActive !== undefined) settings.maxActive = u.maxActive;
     if (u.quotaStop !== undefined) settings.quotaStop = u.quotaStop;
     if (current) {
@@ -540,7 +549,7 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
     for (;;) {
       try {
         const s = await api('/api/state');
-        agents = Object.fromEntries(s.agents.map(a => [a.id, a])); tasks = s.tasks; usage = s.usage; settings = { maxActive: s.maxActive, quotaStop: s.quotaStop }; device = s.device; access = s.access || access; document.body.className = access.role === 'full' ? '' : 'role-' + access.role;
+        agents = Object.fromEntries(s.agents.map(a => [a.id, a])); tasks = s.tasks; usage = s.usage; dash = s.dashboard || null; settings = { maxActive: s.maxActive, quotaStop: s.quotaStop }; device = s.device; access = s.access || access; document.body.className = access.role === 'full' ? '' : 'role-' + access.role;
         $('conn').textContent = '已連線'; $('conn').className = 'on';
         if (!$('v-sub').classList.contains('show')) render();
         const r = await fetch('/api/stream', { headers: { Authorization: 'Bearer ' + token } });

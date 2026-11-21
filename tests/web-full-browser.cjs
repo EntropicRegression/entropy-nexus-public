@@ -97,7 +97,7 @@ app.whenReady().then(async () => {
     check('選到資料夾', (await js(`window.__dir`)) === drives[0], String(await js(`window.__dir`)));
 
     // 打開對話視窗截圖
-    await js(`document.querySelector('.roster-list .row').click(); 0`);
+    await js(`window.nexus.getSnapshot().then(s => window.__nexusSelect(s.agents.find(a => !a.parentId).id)); 0`);
     await wait(1500);
     const dlg = await js(`({ open: !!document.querySelector('.dlg-portrait'), input: !!document.querySelector('textarea') })`);
     check('對話視窗打開', dlg.open && dlg.input, JSON.stringify(dlg));

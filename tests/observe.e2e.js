@@ -54,7 +54,11 @@
     // 模擬的 hook 事件由 run.js 送進來;等外部節點進入待授權時截圖並確認提示音有響
     await until('ext-1 待授權', () => seen.get('ext-1')?.state === 'awaiting', 60000);
     await wait(500);
-    log('chime', (window.__nexusChimes?.count ?? 0) - chimesBefore, '| 外部列', document.querySelectorAll('.observed-row').length, '| 外部列有授權按鈕', !!document.querySelector('.observed-row .approve, .observed-row [data-approve]'));
+    // 外部節點列在總覽儀表的完整內容裡:儀表標題列出現「外部 N」,點一下展開
+    log('儀表的外部標記', JSON.stringify(document.querySelector('.dash .dash-ext')?.textContent ?? ''), document.querySelector('.dash .dash-ext')?.className);
+    document.querySelector('.dash .dash-ext')?.click();
+    await wait(500);
+    log('chime', (window.__nexusChimes?.count ?? 0) - chimesBefore, '| 外部列', document.querySelectorAll('.dash-full .observed-row').length, '| 外部列有授權按鈕', !!document.querySelector('.observed-row .approve, .observed-row [data-approve]'));
     document.querySelector('.observed')?.scrollIntoView();
     await shot('3-awaiting');
 
