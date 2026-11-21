@@ -50,6 +50,9 @@ test('候選:不是完成、判例請求本身、假資料自動運作、會議�
   assert.deepEqual(detect(mkTask({ ...long, endedAt: null })), []);
   assert.deepEqual(detect(mkTask({ ...long, source: 'case' })), []);
   assert.deepEqual(detect(mkTask({ ...long, source: 'autopilot' })), []);
+  assert.deepEqual(detect(mkTask({ ...long, source: 'archive' })), [], '刪除節點前的工作總結請求');
+  assert.deepEqual(detect(mkTask({ ...long, source: 'interop', from: { id: 'x', name: 'X', meeting: true } })), [], '會議發言回合');
+  assert.equal(detect(mkTask({ ...long, source: 'interop', from: { id: 'x', name: 'X' } })).length, 1, '一般的節點交辦照常偵測');
   assert.deepEqual(detect(mkTask({ ...long, title: '(主控台:這是一場由節點「A」召開的會議,不是使用者直接下的指令。' })), []);
   assert.deepEqual(detect(mkTask({ ...long, caseId: '2026-0001' })), []);
   assert.deepEqual(detect(mkTask({ ...long, casePending: true })), []);

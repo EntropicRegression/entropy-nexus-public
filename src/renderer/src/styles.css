@@ -365,6 +365,8 @@ button.mute { font-size: 12px; }
 .rv-path { display: flex; align-items: center; gap: 10px; }
 .rv-path span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rv-path button { flex: none; font-size: 11px; color: var(--bad); }
+.task-from { align-self: flex-start; padding: 0 6px; font-size: 11px; line-height: 17px; color: var(--accent); border: 1px solid rgba(63, 216, 230, 0.35); background: rgba(63, 216, 230, 0.06); }
+.task-from[data-from="autopilot"] { color: var(--dim); border-color: var(--line-soft); background: none; }
 .task-cost { font: 11px var(--mono); color: var(--dim); }
 .hc-spent { margin-top: 7px; font: 11px var(--mono); color: var(--text); }
 
@@ -746,3 +748,11 @@ button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px
   .topbar .limits { gap: 7px; }
   .topbar .tb-long { display: none; }
 }
+
+.df-dispatch td { padding: 3px 6px 3px 0; vertical-align: top; }
+.df-dispatch .df-dtime { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+.df-dispatch .df-dwho { white-space: nowrap; }
+.df-dispatch .df-dtitle { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+.df-dispatch .df-dstatus { white-space: nowrap; font-size: 11px; }
+.df-dispatch .df-dstatus.s-running { color: var(--accent); }
+.df-dispatch .df-dstatus.s-failed, .df-dispatch .df-dstatus.s-timeout { color: var(--bad); }

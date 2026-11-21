@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { BACKEND_LABEL, usageWindowsFor, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { BACKEND_LABEL, usageWindowsFor, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
+import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
 import type {
+  DispatchEntry, LinkInfo, TaskFrom,
   AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
 import type { Adapter, AdapterSession, StartOptions } from './adapters/adapter';
@@ -19,7 +22,11 @@ import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } 
 import { removeMedia } from './media';
 import { projectOf } from './project';
 import { chiefStatsSection, computeNodeStats, type StatsNode } from '../shared/node-stats';
+import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, writeArchive, type SummarySource } from './memory-archive';
+import { safeName } from './memory-write';
 import type { Store } from './store';
+import type { MemoryVault } from './memory-vault';
+import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
 
 /** 執行中超過這段時間沒有任何事件就標成失聯;NEXUS_STALL_MS 可在測試時縮短。 */
 const STALL_MS = Number(process.env.NEXUS_STALL_MS) || 10 * 60 * 1000;
@@ -55,6 +62,9 @@ export class Core {
   private notices = new Map<string, Set<'name' | 'persona'>>();
   /** 總管節點(主控語音模式);存在設定的 chief。 */
   private chiefId: string | null = null;
+  /** 協作連線(進行中的 ask_node 與會議)與分派紀錄;由 interop 更新。 */
+  private links: LinkInfo[] = [];
+  private dispatches: DispatchEntry[] = [];
   private capabilities = new Map<Backend, Capability>();
   private autopilot = true;
   private autopilotTimer: NodeJS.Timeout | null = null;
@@ -70,6 +80,10 @@ export class Core {
   /** 上一次送給總管的節點統計段落與時間;用來判斷下一則指令前要不要再通知。 */
   private chiefStatsSent = { text: '', at: 0 };
   private cases: { onTaskEnded(task: TaskInfo): unknown } | null = null;
+  /** 記憶庫(長期記憶);沒有設定時記憶工具不可用。 */
+  private vault: MemoryVault | null = null;
+  /** 要在下一則指令前告訴總管的記憶相關通知(例如專案知識超過上限)。 */
+  private chiefNotes: string[] = [];
   private interrupted = new Set<string>();
   /** 每個節點目前這個回合 agent 說的最後兩則文字,回合正常完成時拿來做語音摘要。 */
   private turnText = new Map<string, string[]>();
@@ -132,6 +146,10 @@ export class Core {
       try { saved = JSON.parse(this.store.getSetting(`usage:${backend}`) ?? 'null'); } catch { /* 存壞了就當作沒有 */ }
       this.usage.set(backend, saved?.windows ? { ...saved, backend, unsupported: false } : { backend, windows: [], unsupported: false, updatedAt: 0 });
     }
+    this.store.pruneDispatches(Date.now() - DISPATCH_KEEP_MS);
+    // 上次關閉時還在進行的交辦:這次開啟時標成失敗
+    this.dispatches = this.store.loadDispatches(DISPATCH_MAX);
+    for (const d of this.dispatches) if (d.status === 'running') { d.status = 'failed'; d.endedAt = Date.now(); this.store.saveDispatch(d); }
     this.store.pruneTasks(Date.now() - STATS_DAYS * 24 * 3600 * 1000);
     // 上次關閉時還沒結束的任務,這次開啟時一律標成已中斷
     for (const t of this.store.loadTasks(200)) {
@@ -191,7 +209,30 @@ export class Core {
       portraitsDir: portraitsDir(),
       chiefId: this.chiefId,
       dashboard: this.dashboard(),
+      links: this.links,
+      dispatches: this.dispatches,
     };
+  }
+
+  /** 協作連線有變時由 interop 呼叫;內容相同就不推送。 */
+  setLinks(links: LinkInfo[]): void {
+    if (sameLinks(this.links, links)) return;
+    this.links = links;
+    this.broadcast({ links });
+  }
+
+  /** 新增或更新一筆分派紀錄(寫進資料庫並推送給畫面)。 */
+  recordDispatch(d: DispatchEntry): void {
+    const i = this.dispatches.findIndex(x => x.id === d.id);
+    if (i >= 0) this.dispatches[i] = d; else this.dispatches.unshift(d);
+    this.dispatches = trimDispatches(this.dispatches, Date.now());
+    this.store.saveDispatch(d);
+    this.broadcast({ dispatches: this.dispatches });
+  }
+
+  /** 節點目前進行中的任務 id(沒有時為 undefined)。 */
+  currentTaskId(agentId: string): string | undefined {
+    return this.current.get(agentId);
   }
 
   /** 總覽儀表的資料:各後台今天的預算用量、本週的花費、今天的任務統計。額度本身在 usage,節點狀態在 agents。 */
@@ -467,6 +508,76 @@ export class Core {
     return agent;
   }
 
+  /**
+   * 刪除最上層節點前先歸檔進記憶庫(長期記憶階段 4)。mode:summary 先請節點寫工作總結(不行就請總管代寫),stats 只存統計。
+   * 歸檔失敗不會擋住刪除:失敗的原因回傳給畫面,節點照樣移除。
+   */
+  async removeWithArchive(id: string, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }> {
+    const agent = this.agents.get(id);
+    let out: { archive: string | null; note: string } = { archive: null, note: '' };
+    if (agent && !agent.parentId && this.vault) {
+      try { out = await this.archiveNode(agent, mode === 'stats' ? 'stats' : 'summary'); }
+      catch (e) { out = { archive: null, note: `歸檔失敗,節點仍已刪除:${String((e as Error)?.message ?? e)}` }; console.error('歸檔節點失敗', e); }
+    }
+    await this.removeAgent(id);
+    return out;
+  }
+
+  /** 等這個節點交辦出去的歸檔提示結束,回傳它的最後一則回覆;逾時、失敗或沒有回覆就是 null。 */
+  private async askForSummary(id: string, prompt: string, timeoutMs: number): Promise<string | null> {
+    const t0 = Date.now();
+    try { await this.send(id, prompt, [], 'user', 'archive'); } catch { return null; }
+    const find = () => [...this.tasks.values()].find(t => t.agentId === id && t.source === 'archive' && t.startedAt >= t0);
+    while (Date.now() - t0 < timeoutMs) {
+      const t = find();
+      if (t && t.endedAt !== null) {
+        if (t.status !== 'done') return null;
+        const reply = this.store.agentEvents(id, 40).filter(e => e.type === 'message' && e.role === 'agent' && e.ts >= t.startedAt).map(e => (e as { text: string }).text).pop();
+        return reply?.trim() || null;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    void Promise.resolve(this.interrupt(id)).catch(() => {});
+    return null;
+  }
+
+  private async archiveNode(agent: AgentInfo, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }> {
+    const vault = this.vault!;
+    const timeout = Number(process.env.NEXUS_ARCHIVE_TIMEOUT_MS) || 3 * 60 * 1000;
+    const tasks = this.store.loadTasksForStats(0, 100000).filter(t => t.agentId === agent.id && t.source !== 'archive');
+    const stats = computeNodeStats(tasks).get(agent.id);
+    const selfOk = agent.state === 'idle' && !agent.terminal && this.sessions.has(agent.id);
+    const chief = this.chiefId && this.chiefId !== agent.id ? this.agents.get(this.chiefId) : undefined;
+    const chiefOk = !!chief && chief.state === 'idle' && !chief.terminal && this.sessions.has(chief.id);
+    let summary = '';
+    let source: SummarySource = '無';
+    let reason = mode === 'stats' ? '使用者選擇只存統計' : '';
+    let plan = decideSummarizer({ mode, selfAvailable: selfOk, selfFailed: false, chiefAvailable: chiefOk });
+    if (plan === 'self') {
+      const r = await this.askForSummary(agent.id, SELF_SUMMARY_PROMPT, timeout);
+      if (r) { summary = r; source = '節點自己'; }
+      else plan = decideSummarizer({ mode, selfAvailable: selfOk, selfFailed: true, chiefAvailable: chiefOk });
+    }
+    if (!summary && plan === 'chief' && chief) {
+      const events = this.store.agentEvents(agent.id, 200);
+      const titles = [...tasks].sort((a, b) => b.startedAt - a.startedAt).slice(0, 20).map(t => t.title.slice(0, 120));
+      const replies = events.filter(e => e.type === 'message' && e.role === 'agent').slice(-6).map(e => (e as { text: string }).text.slice(0, 600));
+      const r = await this.askForSummary(chief.id, chiefSummaryPrompt(agent.name, titles, replies), timeout);
+      if (r) { summary = r; source = '總管'; }
+    }
+    if (!summary && mode === 'summary') {
+      reason = !selfOk
+        ? (chief ? (chiefOk ? '節點無法回覆,總管也沒有寫出來' : '節點無法回覆,總管目前忙碌或無法使用') : '節點無法回覆,也沒有總管可以代寫')
+        : (chiefOk ? '節點沒有在時限內回覆,總管也沒有寫出來' : '節點沒有在時限內回覆,也沒有可用的總管代寫');
+    }
+    const cases = vault.list().filter(e => e.kind === 'case' && e.nodeId === agent.id).map(caseNumber);
+    const r = writeArchive(vault.dir, {
+      node: { id: agent.id, name: agent.name, backend: agent.backend, backendLabel: BACKEND_LABEL[agent.backend], model: agent.model, character: agent.character, createdAt: agent.createdAt },
+      stats, tasks, traits: readLiveTraits(vault.dir, agent.name), summary, summarySource: source, noSummaryReason: reason, cases, now: new Date(),
+    });
+    return { archive: r.path, note: summary ? `已封存(工作總結由${source}撰寫):${r.path}` : `已封存,但沒有工作總結(${reason}):${r.path}` };
+  }
+
   async removeAgent(id: string): Promise<void> {
     if (this.agents.get(id)?.parentId) { this.dropSub(id); return; }
     // 終止節點時排隊的指令一併丟棄;先清掉,停止 session 的期間才不會又被送出
@@ -496,11 +607,11 @@ export class Core {
 
   /** origin 是佇列項目時表示由佇列自動送出:送不出去就放回佇列開頭,不會丟掉。 */
   /** source:指令是從哪裡送出的(語音播報用);佇列送出時沿用排入時記下的來源。 */
-  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop'): Promise<void> {
+  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop', from?: TaskFrom): Promise<void> {
     const agent = this.agents.get(id);
     const session = this.sessions.get(id);
     const fromQueue = typeof origin === 'object' ? origin : null;
-    if (fromQueue) source = fromQueue.source ?? 'desktop';
+    if (fromQueue) { source = fromQueue.source ?? 'desktop'; from = fromQueue.from; }
     else if (origin === 'autopilot') source = 'autopilot';
     if (!agent || !session) { if (fromQueue && agent) this.requeue(agent, fromQueue); return; }
     // 額度上限:這家後台的額度用到設定的百分比就不再送出新指令
@@ -526,7 +637,7 @@ export class Core {
     if (!BUSY.has(agent.state) && this.activeCount(id) >= this.maxActive) {
       if (fromQueue) { this.requeue(agent, fromQueue); return; }
       if (origin === 'autopilot') return;
-      this.pushQueue(agent, text, images, source);
+      this.pushQueue(agent, text, images, source, from);
       this.onAdapterEvent(id, { type: 'note', text: `已達同時執行上限(${this.maxActive} 個),指令已排隊,有名額時會自動送出。` });
       return;
     }
@@ -536,7 +647,7 @@ export class Core {
       try {
         // 專案在交辦的這一刻依節點目前的工作目錄決定,之後不再重算
         const project = await projectOf(agent.cwd).catch(() => null);
-        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name } : undefined);
+        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name } : undefined, from);
         await this.captureBase(agent, task);
       } finally {
         this.starting.delete(id);
@@ -550,7 +661,7 @@ export class Core {
     }
     this.onAdapterEvent(id, { type: 'message', role: 'user', text });
     // 改名、換角色之後的第一則指令順便告訴 agent;紀錄裡仍只留使用者原本的文字
-    session.send(this.takeNotice(agent) + this.takeStatsNotice(agent) + text, images);
+    session.send(this.takeNotice(agent) + this.takeChiefNotes(agent) + this.takeStatsNotice(agent) + text, images);
   }
 
   /** 讓 agent 知道自己在主控台裡的身分:節點名稱,加上所選角色的角色卡(有的話)。 */
@@ -572,7 +683,8 @@ export class Core {
 - 用 ask_node 交辦。對方看不到你和使用者的對話,所以 prompt 要寫完整:背景、要做什麼、要讀的檔案(絕對路徑)、希望怎麼回覆。需要多方意見或討論時用 start_meeting。
 - 交辦之前,先用一句話說明你要交給誰、做什麼;判斷不出來、或指令聽起來不完整時,先問使用者,不要猜。
 - 除非使用者明確要你自己做,或沒有合適的節點,否則不要自己改檔案或執行指令。
-- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。${stats ? `
+- 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。
+- 長期記憶:交辦前可以用 memory_search 查有沒有相關的專案知識、使用者偏好、節點側寫與已確認的判例(標「可能過時」的要先對照現況)。只有你能用 memory_write 寫入:節點的特長(kind 為 node,title 填節點名稱)、專案知識、使用者偏好;只寫日後真的用得到、一兩句講得清楚的事,不要寫金鑰或密碼。${stats ? `
 
 ${stats}` : ''}`;
   }
@@ -931,9 +1043,9 @@ ${text}
     this.broadcast({ agent: { ...agent, queued: agent.queued.map(q => ({ ...q })) } });
   }
 
-  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource): void {
+  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource, from?: TaskFrom): void {
     if (agent.queued.length >= MAX_QUEUED) throw new Error(`佇列已滿(最多 ${MAX_QUEUED} 筆)`);
-    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now(), source });
+    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now(), source, ...(from ? { from } : {}) });
     this.saveQueue(agent);
     this.schedulePump();
   }
@@ -1110,12 +1222,47 @@ ${text}
     this.pushTask(task);
   }
 
+  setMemoryVault(v: MemoryVault): void { this.vault = v; }
+
+  /** 記憶工具用:呼叫者的身分(是不是總管、名稱、工作目錄);找不到節點回傳 null。 */
+  memoryCaller(agentId: string): MemoryCaller | null {
+    const a = this.agents.get(agentId);
+    return a ? { id: a.id, name: a.name, cwd: a.cwd, isChief: a.id === this.chiefId } : null;
+  }
+
+  /** 記憶工具用的相依項目;記憶庫還沒啟動時回傳 null。 */
+  memoryDeps(): MemoryToolsDeps | null {
+    const vault = this.vault;
+    if (!vault) return null;
+    return {
+      vaultDir: vault.dir,
+      list: () => vault.list(),
+      rescan: () => { vault.rescan(); },
+      nodes: () => [...this.agents.values()].filter(a => !a.parentId).map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model })),
+      project: cwd => projectOf(cwd),
+      head: gitHead,
+      commitsAhead: gitCommitsAhead,
+      noteChief: text => { this.chiefNotes.push(text); },
+      now: () => Date.now(),
+    };
+  }
+
+  /** 取出並清掉給總管的記憶通知。 */
+  private takeChiefNotes(agent: AgentInfo): string {
+    if (agent.id !== this.chiefId || !this.chiefNotes.length) return '';
+    const out = this.chiefNotes.join('\n\n');
+    this.chiefNotes = [];
+    return `${out}\n\n`;
+  }
+
   /** 總管守則用:每個最上層節點(不含總管自己)的統計。資料取自資料庫,包含任務面板已清除的任務。 */
   private chiefStats(): string {
-    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000));
+    const stats = computeNodeStats(this.store.loadTasksForStats(Date.now() - STATS_DAYS * 24 * 3600 * 1000), t => t.source !== 'archive');
     const nodes: StatsNode[] = [...this.agents.values()].filter(a => !a.parentId && a.id !== this.chiefId)
       .map(a => ({ id: a.id, name: a.name, backendLabel: BACKEND_LABEL[a.backend], model: a.model }));
-    return chiefStatsSection(nodes, stats, Date.now());
+    const strengths = new Map<string, string>();
+    if (this.vault) for (const n of nodes) { const t = readNodeStrengths(this.vault.dir, n.name); if (t) strengths.set(n.id, t); }
+    return chiefStatsSection(nodes, stats, Date.now(), undefined, strengths);
   }
 
   /**
@@ -1194,7 +1341,7 @@ ${section}
     this.broadcast({ tasks: [...this.tasks.values()] });
   }
 
-  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: { id: string; name: string }): TaskInfo {
+  private startTask(agent: AgentInfo, text: string, source: SpeechSource, project?: { id: string; name: string }, from?: TaskFrom): TaskInfo {
     const task: TaskInfo = {
       id: randomUUID(),
       agentId: agent.id,
@@ -1210,6 +1357,7 @@ ${section}
       subs: [],
       changes: null,
       source,
+      ...(from ? { from } : {}),
       ...(project ? { project } : {}),
     };
     this.interrupted.delete(agent.id);
@@ -1420,4 +1568,9 @@ ${section}
       }
     }
   }
+}
+
+/** 節點目前側寫(nodes/<名稱>.md)裡「特長」一段;沒有側寫或讀不到就是空字串。 */
+function readLiveTraits(vaultDir: string, name: string): string {
+  try { return extractSection(readFileSync(join(vaultDir, 'nodes', `${safeName(name)}.md`), 'utf8'), '特長'); } catch { return ''; }
 }

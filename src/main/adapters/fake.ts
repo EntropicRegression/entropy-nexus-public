@@ -213,6 +213,14 @@ class FakeSession implements AdapterSession {
       this.emit({ type: 'state', state: 'idle', detail: '' });
       return;
     }
+    // 【只給驗收測試用】刪除節點前的歸檔提示(正式指令裡本來就有的標記):約 0.3 秒後回一段固定的工作總結;
+    // 「〔歸檔總結〕」是節點自己寫,「〔歸檔總結:總管代寫〕」是總管代寫(開頭不同,測試才分得出來)。
+    if (_text.includes('〔歸檔總結')) {
+      await this.wait(300);
+      this.emit({ type: 'message', role: 'agent', text: `${_text.includes('〔歸檔總結:總管代寫〕') ? '總管代寫的總結' : '節點自己的總結'}\n1. 習慣的做法:先讀程式再動手\n2. 常用工具與步驟:Read、Edit\n3. 成功的模式:小步修改\n4. 常見的失誤:忘了跑測試` });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
     // 〔測試執行:毫秒〕:停在「執行中」這麼久再完成(不回報用量);〔測試出錯〕:這個回合直接出錯
     const runMark = /〔測試執行:(\d+)〕/.exec(_text);
     if (runMark) {

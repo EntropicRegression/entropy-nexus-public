@@ -18,7 +18,7 @@ const REVIEW_RESEND = /^使用者在變更檢視裡,對你在任務/;
 const MEETING_TURN = /^\(主控台:這是一場由節點/;
 
 export interface CandidateInput {
-  task: Pick<TaskInfo, 'status' | 'startedAt' | 'endedAt' | 'source' | 'title' | 'caseId' | 'casePending'>;
+  task: Pick<TaskInfo, 'status' | 'startedAt' | 'endedAt' | 'source' | 'from' | 'title' | 'caseId' | 'casePending'>;
   /** 節點在這個任務期間說了幾則話。 */
   agentMessages: number;
   /** 失敗次數:任務期間的錯誤事件,加上這次是重試上一次失敗的同一句指令。 */
@@ -33,8 +33,9 @@ export function notCandidateReason(task: CandidateInput['task']): string | null 
   if (task.status !== 'done' || task.endedAt === null) return '任務沒有正常完成';
   if (task.caseId || task.casePending) return '已經有判例或正在撰寫';
   // 撰寫判例的請求本身、假資料的自動運作、會議的發言,都不是值得記下來的解法
-  if (task.source === 'case' || task.source === 'autopilot') return '來源不列入判例候選';
-  if (MEETING_TURN.test(task.title)) return '會議的發言';
+  // (archive 是刪除節點前請節點寫工作總結的提示詞)
+  if (task.source === 'case' || task.source === 'autopilot' || task.source === 'archive') return '來源不列入判例候選';
+  if (task.from?.meeting || MEETING_TURN.test(task.title)) return '會議的發言';
   return null;
 }
 

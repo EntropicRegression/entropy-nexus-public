@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { AdapterEvent, AgentInfo, AuditEntry, Backend, NexusEvent, QueuedPrompt, TaskInfo } from '../shared/types';
-import type { MemoryEntry } from '../shared/types';
+import type { DispatchEntry, MemoryEntry } from '../shared/types';
 import type { QuotaBaseline, SpendRow } from '../shared/dashboard';
 
 function parseJson<T>(v: unknown): T | null {
@@ -78,6 +78,9 @@ export class Store {
       -- 總覽儀表:每個任務是哪一天交辦的、最後的狀態;任務面板清除已結束的任務後,今天的統計仍然算得出來
       CREATE TABLE IF NOT EXISTS task_daily (id TEXT PRIMARY KEY, date TEXT NOT NULL, agent_id TEXT NOT NULL, status TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS task_daily_date ON task_daily (date);
+      -- 分派紀錄:節點用 ask_node 交辦給其他節點的每一筆(保留 30 天)
+      CREATE TABLE IF NOT EXISTS dispatch_log (id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS dispatch_log_started ON dispatch_log (started_at);
       -- 記憶庫索引:memory-vault 資料夾裡每個 .md 檔一筆;檔案才是正本,這張表隨時可以由掃描重建
       CREATE TABLE IF NOT EXISTS memory_index (
         path TEXT PRIMARY KEY,
@@ -321,6 +324,20 @@ export class Store {
     this.db.prepare('DELETE FROM spend_daily WHERE date < ?').run(before);
     this.db.prepare('DELETE FROM quota_baseline WHERE date < ?').run(before);
     this.db.prepare('DELETE FROM task_daily WHERE date < ?').run(before);
+  }
+
+  saveDispatch(d: DispatchEntry): void {
+    this.db.prepare('INSERT INTO dispatch_log (id, started_at, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data').run(d.id, d.startedAt, JSON.stringify(d));
+  }
+
+  /** 最近的分派紀錄,新的在前。 */
+  loadDispatches(limit: number): DispatchEntry[] {
+    const rows = this.db.prepare('SELECT data FROM dispatch_log ORDER BY started_at DESC, id DESC LIMIT ?').all(limit) as Array<{ data: string }>;
+    return rows.map(r => parseJson<DispatchEntry>(r.data)).filter((d): d is DispatchEntry => !!d && typeof d.id === 'string');
+  }
+
+  pruneDispatches(before: number): void {
+    this.db.prepare('DELETE FROM dispatch_log WHERE started_at < ?').run(before);
   }
 
   getSetting(key: string): string | null {
