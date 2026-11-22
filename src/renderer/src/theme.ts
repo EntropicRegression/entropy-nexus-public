@@ -46,4 +46,12 @@ export const STATE_COLOR: Record<AgentState, number> = {
   lost: COLOR.bad,
 };
 
+/** 會議室虛擬節點(任務清單 2-7):暖金外框、青色內框、直播綠點,和一般節點一眼分得開;琥珀用在開會中的參與者。 */
+export const MEETING_COLOR = {
+  gold: 0xd9a441,
+  cyan: 0x5ce1e6,
+  live: 0x4ade80,
+  member: 0xf59e0b,
+};
+
 export const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;

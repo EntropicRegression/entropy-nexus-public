@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
-import { ATTACHMENT_LABEL, attachmentKind, BACKEND_LABEL, STATE_LABEL, type AgentInfo, type ApprovalDecision, type Capability, type NexusEvent, type PermissionMode, type WorktreeStatus } from '../../shared/types';
+import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { ATTACHMENT_LABEL, attachmentKind, BACKEND_LABEL, STATE_LABEL, type AgentInfo, type ApprovalDecision, type Capability, type MeetingView, type NexusEvent, type PermissionMode, type WorktreeStatus } from '../../shared/types';
 import { Markdown, MdImage } from './Markdown';
 import { PersonaEditor } from './PersonaEditor';
 import { Portrait } from './Portrait';
@@ -457,3 +457,94 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
     </section>
   );
 }
+
+/**
+ * 會議室的旁聽視窗(任務清單 2-7):沿用對話視窗的外框、立繪區、對話串與輸入列的樣式。
+ * 內容是整場會議的逐字發言(標明發言者與第幾輪;第 0 輪是主控台的說明,用系統訊息的樣式),立繪換成正在發言的節點。
+ * 唯讀:會議只由主持節點控制,這裡不能插話、不能結束會議,也沒有設定、休眠、終止等節點操作。
+ */
+export function MeetingDialog({ meeting: m, agents, ended, onClose }: { meeting: MeetingView; agents: Record<string, AgentInfo>; ended: boolean; onClose: () => void }) {
+  const [full, setFull] = useState(() => localStorage.getItem('nexus.dlgFull') === '1');
+  const toggleFull = () => setFull(v => { localStorage.setItem('nexus.dlgFull', v ? '0' : '1'); return !v; });
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'f') { e.preventDefault(); toggleFull(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [m.transcript.length, m.speakerId, ended]);
+
+  const nameOf = (id: string) => (id === m.hostId ? m.hostName : m.participants.find(p => p.id === id)?.name ?? agents[id]?.name ?? '');
+  const speakerId = ended ? null : m.speakerId;
+  const speakerName = speakerId ? nameOf(speakerId) : '';
+  // 立繪:正在發言的節點;換人之間(還沒有人在發言)留在最後一位發言的節點,再不然是主持人
+  const shownId = speakerId ?? m.transcript.findLast(t => t.nodeId)?.nodeId ?? m.hostId;
+  const shown = agents[shownId];
+  const isHost = shownId === m.hostId;
+  const progress = ended ? '會議已結束' : `${m.round > 0 ? `第 ${m.round}/${m.rounds} 輪` : `開場 · 共 ${m.rounds} 輪`} · 正在發言:${speakerName || '(換人中)'}`;
+  const spoke = m.transcript.some(t => t.round > 0);
+
+  return (
+    <section className={`dialog meeting-dialog ${full ? 'full' : ''} ${ended ? 'ended' : ''}`} data-meeting={m.id} aria-label={`會議室:${m.topic}`}>
+      <div className="dlg-portrait meeting-portrait" data-speaker={shownId}>
+        {/* 換發言者時重新掛載,沒有立繪就退回預設圖 */}
+        <Portrait key={shownId} backend={shown?.backend ?? 'claude'} state={shown?.state ?? 'idle'} character={shown?.character ?? ''} />
+        <div className="mp-caption">
+          <span className={`mp-role ${isHost ? 'host' : ''}`}>{isHost ? '主持人' : '與會節點'}</span>
+          <b title={nameOf(shownId)}>{nameOf(shownId)}</b>
+        </div>
+      </div>
+      <div className="dlg-main">
+        <header className="dlg-id">
+          <span className="tag-meeting" title="會議室:進行中的會議,不是節點,只能旁聽"><i className="live-dot" />{ended ? 'MEETING · 已結束' : 'MEETING · LIVE'}</span>
+          <b title={m.topic}>會議室 · {m.topic.replace(/\s+/g, ' ')}</b>
+          <span className="muted meeting-who" title={[m.hostName, ...m.participants.map(p => p.name)].join('、')}>主持 {m.hostName} · 與會 {m.participants.map(p => p.name).join('、')}</span>
+          <span className="spacer" />
+          <span className="state meeting-progress">{progress}</span>
+          <button className={`ghost dlg-full ${full ? 'on' : ''}`} onClick={toggleFull} title={full ? '還原成下半部(Alt+F)' : '向上展開到佔滿面板(Alt+F)'} aria-label={full ? '還原對話視窗' : '展開對話視窗'}>{full ? '▼ 還原' : '▲ 展開'}</button>
+          <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
+        </header>
+        <div className="dlg-stream" ref={scroller} onScroll={e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+          {m.transcript.length === 0 && !speakerId && <div className="muted hint">會議剛開始,還沒有人發言。</div>}
+          {m.transcript.map((t, i) => <MeetingLine key={i} line={t} hostId={m.hostId} hostName={m.hostName} />)}
+          {speakerId && <div className="line sub meeting-typing">{speakerName} 正在發言…<span className="caret" /></div>}
+        </div>
+        <div className="dlg-inputwrap">
+          {ended && <div className="meeting-ended" role="status">{spoke ? '會議已結束,紀錄已存進記憶庫。' : '會議已結束(沒有人發言,不留紀錄)。'}</div>}
+          <div className="dlg-input meeting-readonly">
+            <textarea rows={1} disabled readOnly value="" placeholder="會議由主持節點主持,這裡只能旁聽" aria-label="會議由主持節點主持,這裡只能旁聽" />
+            <button className="primary" disabled title="會議室是唯讀的:不能插話或結束會議">送出</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type MeetingLineData = MeetingView['transcript'][number];
+
+/**
+ * 逐字紀錄的一則(主控台的說明或一則發言)。每次推送都是新的物件,所以依內容比較:
+ * 內容沒變就不重畫,長會議時只有新增的那則要跑 Markdown。
+ */
+const MeetingLine = memo(function MeetingLine({ line: t, hostId, hostName }: { line: MeetingLineData; hostId: string; hostName: string }) {
+  if (t.round === 0) return <div className="line sub meeting-note">主控台:{t.name === '主控台' ? '' : `${t.name} `}{t.text}{t.inRound ? `(第 ${t.inRound} 輪)` : ''}</div>;
+  const host = t.nodeId === hostId;
+  return (
+    <div className={`msg agent meeting-msg ${host ? 'host' : ''}`} data-node={t.nodeId ?? ''} data-round={t.round}>
+      {/* 主持人的發言在紀錄裡叫「名稱(主持人)」;這裡另外標「主持人」,名稱欄只放名稱 */}
+      <span className="who" title={t.name}>{host ? hostName : t.name}</span>
+      <div className="mm-body">
+        <div className="mm-meta">第 {t.round} 輪{host ? ' · 主持人' : ''}</div>
+        <Markdown text={t.text} agentId={t.nodeId ?? hostId} />
+      </div>
+    </div>
+  );
+}, (a, b) => a.hostId === b.hostId && a.hostName === b.hostName && a.line.round === b.line.round && a.line.name === b.line.name
+  && a.line.nodeId === b.line.nodeId && a.line.text === b.line.text && a.line.inRound === b.line.inRound);

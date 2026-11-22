@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BACKEND_LABEL, usageWindowsFor, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
+import { BACKEND_LABEL, usageWindowsFor, type MeetingView, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
@@ -71,6 +71,8 @@ export class Core {
   private chiefId: string | null = null;
   /** 協作連線(進行中的 ask_node 與會議)與分派紀錄;由 interop 更新。 */
   private links: LinkInfo[] = [];
+  /** 進行中的會議(會議室虛擬節點);interop 推過來。 */
+  private meetingViews: MeetingView[] = [];
   private dispatches: DispatchEntry[] = [];
   private capabilities = new Map<Backend, Capability>();
   private autopilot = true;
@@ -229,8 +231,16 @@ export class Core {
       chiefId: this.chiefId,
       dashboard: this.dashboard(),
       links: this.links,
+      meetings: this.meetingViews,
       dispatches: this.dispatches,
     };
+  }
+
+  /** 進行中的會議有變動時由 interop 呼叫;內容相同就不推送。 */
+  setMeetings(meetings: MeetingView[]): void {
+    if (JSON.stringify(meetings) === JSON.stringify(this.meetingViews)) return;
+    this.meetingViews = meetings;
+    this.broadcast({ meetings });
   }
 
   /** 協作連線有變時由 interop 呼叫;內容相同就不推送。 */

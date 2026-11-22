@@ -54,6 +54,7 @@ const SUITES = [
   // ---- 假資料驗收腳本(core 是 e2e 的子集合,每次 PR 都跑)
   { name: 'interop', group: 'e2e', core: true, min: 1, ...bash('tests/interop.sh') },
   { name: 'meeting', group: 'e2e', core: true, min: 1, ...bash('tests/meeting.sh') },
+  { name: 'meeting-room', group: 'e2e', core: true, min: 1, ...bash('tests/meeting-room.sh') },
   { name: 'chief', group: 'e2e', core: true, min: 1, ...bash('tests/chief.sh') },
   { name: 'voice-speech', group: 'e2e', core: true, min: 1.5, ...bash('tests/voice-speech.sh') },
   { name: 'queue-fake', group: 'e2e', core: true, min: 1.5, ...bash('tests/queue-fake.sh') },

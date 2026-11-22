@@ -1,4 +1,4 @@
-import type { DispatchEntry, LinkInfo, RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
+import type { DispatchEntry, LinkInfo, MeetingView, RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
 import type { DashboardData } from '../shared/dashboard';
 
 /**
@@ -152,8 +152,11 @@ export function filterLinks(links: LinkInfo[], see: (id: string) => boolean): Li
 /** 分派紀錄只留兩端都看得到的。 */
 export const filterDispatches = (list: DispatchEntry[], see: (id: string) => boolean): DispatchEntry[] => list.filter(d => see(d.fromId) && see(d.toId));
 
+/** 進行中的會議(會議室):主持人與所有參與者都看得到才給(逐字紀錄含每個人的發言,不做部分遮蔽)。 */
+export const filterMeetings = (list: MeetingView[], see: (id: string) => boolean): MeetingView[] => list.filter(m => see(m.hostId) && m.participants.every(p => see(p.id)));
+
 /** 狀態快照只留這支裝置看得到的節點;非完整角色不提供外部觀察節點與立繪資料夾的位置。 */
-export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard' | 'links' | 'dispatches'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
+export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard' | 'links' | 'dispatches' | 'meetings'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
   if (access.role === 'full') return s;
   const see = (id: string) => visible(access, rootOf(id));
   const out = { ...s, agents: s.agents.filter(a => see(a.id)), tasks: s.tasks.filter(t => see(t.agentId)) };
@@ -162,6 +165,7 @@ export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Pa
   // 協作連線與分派紀錄:兩端都看得到的才給
   if (s.links) out.links = filterLinks(s.links, see);
   if (s.dispatches) out.dispatches = filterDispatches(s.dispatches, see);
+  if (s.meetings) out.meetings = filterMeetings(s.meetings, see);
   if ('observed' in s) out.observed = [];
   if ('portraitsDir' in s) out.portraitsDir = '';
   return out;
@@ -186,6 +190,7 @@ export function filterUpdate(u: Update, access: RemoteAccess, rootOf: (id: strin
   if (u.dashboard) out.dashboard = limitDashboard(u.dashboard, see);
   if (u.links) out.links = filterLinks(u.links, see);
   if (u.dispatches) out.dispatches = filterDispatches(u.dispatches, see);
+  if (u.meetings) out.meetings = filterMeetings(u.meetings, see);
   if (u.maxActive !== undefined) out.maxActive = u.maxActive;
   if (u.quotaStop !== undefined) out.quotaStop = u.quotaStop;
   if (u.autopilot !== undefined) out.autopilot = u.autopilot;

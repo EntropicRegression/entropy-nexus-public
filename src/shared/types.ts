@@ -319,6 +319,8 @@ export interface Snapshot {
   dashboard: DashboardData;
   /** 目前進行中的協作連線(節點呼叫節點、會議);面板上畫成連線。 */
   links: LinkInfo[];
+  /** 進行中的會議(會議室虛擬節點)。 */
+  meetings?: MeetingView[];
   /** 分派紀錄:最近的節點交辦(新的在前,最多 50 筆)。 */
   dispatches: DispatchEntry[];
 }
@@ -334,6 +336,27 @@ export interface LinkInfo {
   active: boolean;
   /** 會議:目前正在發言的參與者。 */
   speaker?: string;
+}
+
+/**
+ * 進行中的一場會議(主面板的「會議室」虛擬節點,任務清單 2-7)。會議室不是 agent:不在 agents 裡、不能被 ask_node 呼叫、
+ * 不出現在 list_nodes、不寫進統計檔與側寫、不算同時執行的上限。會議結束就從清單移除(紀錄在記憶庫的 meetings/)。
+ */
+export interface MeetingView {
+  id: string;
+  topic: string;
+  hostId: string;
+  hostName: string;
+  /** 參與者,不含主持人。 */
+  participants: Array<{ id: string; name: string }>;
+  /** 目前第幾輪(還沒開始是 0)。 */
+  round: number;
+  rounds: number;
+  /** 正在發言的節點 id;輪到主持人時是主持人;都沒有時是 null。 */
+  speakerId: string | null;
+  startedAt: number;
+  /** 逐字紀錄(依時間順序)。round 為 0 的是主控台的說明(略過、失敗等),inRound 是它發生在第幾輪;nodeId 是發言者(主控台的說明是 null)。 */
+  transcript: Array<{ round: number; name: string; nodeId: string | null; text: string; inRound?: number }>;
 }
 
 export type DispatchStatus = 'running' | 'done' | 'failed' | 'timeout';
@@ -421,6 +444,8 @@ export interface Update {
   dashboard?: DashboardData;
   /** 目前進行中的協作連線(整份取代)。 */
   links?: LinkInfo[];
+  /** 進行中的會議有變動(開會、發言、換人、散會)時的完整清單。 */
+  meetings?: MeetingView[];
   /** 分派紀錄(整份取代)。 */
   dispatches?: DispatchEntry[];
 }

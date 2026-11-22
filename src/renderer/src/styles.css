@@ -769,3 +769,34 @@ button.speak-switch { flex: none; min-width: 72px; padding: 3px 8px; border: 1px
 .agy-allow-ok { color: var(--ok, #6fe08d); }
 .agy-allow-err { color: var(--bad); }
 .dlg-draft { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+
+/* 會議室旁聽視窗(任務清單 2-7):暖金外框、青色內框,和節點的對話視窗分得開;唯讀 */
+.meeting-dialog { border-top-color: #d9a441; box-shadow: inset 0 0 0 1px rgba(92, 225, 230, 0.14), 0 0 40px rgba(217, 164, 65, 0.14), 0 -10px 40px rgba(0, 0, 0, 0.5); }
+.meeting-dialog.ended { border-top-color: var(--dim); }
+.meeting-portrait { position: relative; }
+.meeting-portrait .portrait-frame { border-color: #d9a441 !important; }
+.mp-caption { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px; background: linear-gradient(180deg, transparent, rgba(6, 10, 18, 0.92) 45%); }
+.mp-caption b { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.mp-role { font: 700 10px var(--mono); padding: 0 8px; border-radius: 999px; color: #5ce1e6; border: 1px solid rgba(92, 225, 230, 0.5); background: rgba(92, 225, 230, 0.12); }
+.mp-role.host { color: #fde68a; border-color: #d9a441; background: rgba(217, 164, 65, 0.2); }
+.tag-meeting { display: inline-flex; align-items: center; gap: 5px; font: 700 10px var(--mono); letter-spacing: 1px; color: #fde68a; border: 1px solid rgba(217, 164, 65, 0.6); background: rgba(217, 164, 65, 0.14); padding: 0 6px; }
+.tag-meeting .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; animation: blink 1.6s ease-in-out infinite; }
+.meeting-dialog.ended .live-dot { background: var(--dim); animation: none; }
+.meeting-progress { color: #5ce1e6; }
+/* 「主持 … · 與會 …」:名稱很長時截斷,不擠出標題列 */
+.dlg-id > .meeting-who { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bm-row.bm-room i { background: #d9a441; }
+.bm-row.bm-room .bm-name { color: #fde68a; }
+.meeting-msg .mm-body { flex: 1; min-width: 0; }
+.meeting-msg .mm-meta { font: 600 10.5px var(--mono); color: var(--dim); }
+.meeting-msg.host .who, .meeting-msg.host .mm-meta { color: #d9a441; }
+.meeting-note { color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+.meeting-typing { color: #5ce1e6; font-size: 12px; }
+.meeting-ended { padding: 6px 10px; border: 1px solid rgba(217, 164, 65, 0.55); background: rgba(217, 164, 65, 0.1); color: #fde68a; font-size: 12px; }
+.meeting-readonly textarea:disabled { opacity: 1; color: var(--dim); border-style: dashed; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .meeting-dialog { animation: none; }
+  .meeting-dialog .live-dot, .meeting-dialog .caret { animation: none; }
+  /* 立繪的預設圖有思考、忙碌的小動畫,換發言者時會重播 */
+  .meeting-dialog .portrait *, .meeting-dialog .portrait-frame * { animation: none !important; }
+}

@@ -56,6 +56,17 @@ test('filterSnapshot / filterUpdate 帶著連線與分派紀錄過濾;完整角�
   assert.deepEqual(filterDispatches(dispatches, id => id !== 'a'), []);
 });
 
+test('權限過濾:進行中的會議(會議室)主持人與所有參與者都看得到才給', () => {
+  const access = { role: 'viewer', agents: ['a', 'b'] };
+  const rootOf = id => id;
+  const mv = (id, hostId, ids) => ({ id, topic: 't', hostId, hostName: hostId, participants: ids.map(x => ({ id: x, name: x })), round: 1, rounds: 2, speakerId: null, startedAt: 1, transcript: [{ round: 1, name: 'x', nodeId: ids[0], text: '祕密' }] });
+  const meetings = [mv('m1', 'a', ['b']), mv('m2', 'a', ['b', 'c']), mv('m3', 'c', ['a'])];
+  assert.deepEqual(filterSnapshot({ agents: [], tasks: [], meetings }, access, rootOf).meetings.map(m => m.id), ['m1']);
+  assert.deepEqual(filterUpdate({ meetings }, access, rootOf).meetings.map(m => m.id), ['m1']);
+  assert.equal(filterUpdate({ meetings }, { role: 'full', agents: null }, rootOf).meetings.length, 3);
+  assert.equal(filterUpdate({ meetings: [] }, access, rootOf).meetings.length, 0, '散會(空清單)照送,遠端畫面才會清掉會議室');
+});
+
 test('任務來源標籤', () => {
   assert.equal(sourceLabel({ source: 'desktop' }, 'c'), '');
   assert.equal(sourceLabel({}, 'c'), '');

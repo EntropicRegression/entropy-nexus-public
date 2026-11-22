@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type DispatchEntry, type LinkInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
+  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type DispatchEntry, type LinkInfo, type MeetingView, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
 import type { DashboardData } from '../../shared/dashboard';
 import { Dashboard, DashboardFull } from './Dashboard';
@@ -11,7 +11,7 @@ import { PersonaEditor } from './PersonaEditor';
 import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
-import { Dialog } from './Dialog';
+import { Dialog, MeetingDialog } from './Dialog';
 import { AgyAllowEditor } from './AgyAllow';
 import { BoardScene, type BoardMore } from './board';
 import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
@@ -35,6 +35,11 @@ export function App() {
   const [addingChief, setAddingChief] = useState(false);
   const [chiefId, setChiefId] = useState<string | null>(null);
   const [links, setLinks] = useState<LinkInfo[]>([]);
+  // 進行中的會議(主面板的會議室虛擬節點)、打開旁聽的會議室,以及它散會時最後的樣子(顯示「會議已結束」後關閉)
+  const [meetings, setMeetings] = useState<MeetingView[]>([]);
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [roomEnded, setRoomEnded] = useState<MeetingView | null>(null);
+  const roomLast = useRef<MeetingView | null>(null);
   const [dispatches, setDispatches] = useState<DispatchEntry[]>([]);
   const [maxActive, setMaxActive] = useState(4);
   const [quotaStop, setQuotaStop] = useState(0);
@@ -92,6 +97,7 @@ export function App() {
       setQuotaStop(s.quotaStop);
       setChiefId(s.chiefId ?? null);
       setLinks(s.links ?? []);
+      setMeetings(s.meetings ?? []);
       setDispatches(s.dispatches ?? []);
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
@@ -123,6 +129,7 @@ export function App() {
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.dashboard) setDash(u.dashboard);
       if (u.links) setLinks(u.links);
+      if (u.meetings) setMeetings(u.meetings);
       if (u.dispatches) setDispatches(u.dispatches);
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
       if (u.chiefId !== undefined) setChiefId(u.chiefId);
@@ -162,6 +169,23 @@ export function App() {
     return roots.flatMap(r => [r, ...list.filter(a => a.parentId === r.id).sort((a, b) => a.createdAt - b.createdAt)]);
   }, [list, agents]);
   const selected = selectedId ? agents[selectedId] ?? null : null;
+  // 會議室和節點的對話視窗同時只開一個:打開節點就關掉會議室
+  useEffect(() => { if (selectedId) { setRoomId(null); setRoomEnded(null); } }, [selectedId]);
+  const openRoom = (id: string) => { setSelectedId(null); setRoomEnded(null); setRoomId(id); };
+  const liveRoom = roomId ? meetings.find(m => m.id === roomId) ?? null : null;
+  if (liveRoom) roomLast.current = liveRoom;
+  // 旁聽中的會議散會了:會議室在面板上立刻消失;旁聽視窗留下最後的內容、顯示「會議已結束」,稍後自動關閉
+  useEffect(() => {
+    if (!roomId || liveRoom || roomEnded) return;
+    if (roomLast.current?.id === roomId) setRoomEnded(roomLast.current); else setRoomId(null);
+  }, [roomId, liveRoom, roomEnded]);
+  useEffect(() => {
+    if (!roomEnded) return;
+    const t = setTimeout(() => { setRoomId(cur => (cur === roomEnded.id ? null : cur)); setRoomEnded(null); }, 1800);
+    return () => clearTimeout(t);
+  }, [roomEnded]);
+  const room = liveRoom ?? (roomEnded && roomEnded.id === roomId ? roomEnded : null);
+  const closeRoom = () => { setRoomId(null); setRoomEnded(null); };
   // 快捷鍵。終端機模式下按鍵都交給原生 CLI,只保留 F1
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -172,7 +196,8 @@ export function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'n') { e.preventDefault(); if (fullAccess) setAdding(true); return; }
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); if (fullAccess) setShowOld(true); return; }
       if (e.key === 'Escape' && !reviewId && !showOld) {
-        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (showDash) setShowDash(false); else if (selectedId) setSelectedId(null);
+        // 新增節點的面板開著時,Esc 不要關掉底下的對話視窗或會議室(面板要按「取消」關)
+        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (showDash) setShowDash(false); else if (adding) return; else if (selectedId) setSelectedId(null); else if (roomId) closeRoom();
         return;
       }
       if (!e.altKey || e.ctrlKey) return;
@@ -190,11 +215,14 @@ export function App() {
       } else if (k === 'w' && selectedId) {
         e.preventDefault();
         setSelectedId(null);
+      } else if (k === 'w' && roomId) {
+        e.preventDefault();
+        closeRoom();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agents, roster, selectedId, reviewId, showOld, showKeys, showMore, showDash]);
+  }, [agents, roster, selectedId, roomId, reviewId, showOld, showKeys, showMore, showDash, adding]);
   const reviewTask = reviewId ? tasks.find(t => t.id === reviewId) ?? null : null;
   // 對話視窗的「變更」按鈕:這個節點最近一個有變更資料的任務
   const latestTask = (agentId: string) => tasks.filter(t => t.agentId === agentId && t.changes).sort((a, b) => b.startedAt - a.startedAt)[0]?.id ?? null;
@@ -306,10 +334,11 @@ ${c.note}` : ''}`}>
           <div><span>顯示這張表</span><kbd>F1</kbd></div>
         </div>
       )}
-      <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} links={links} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
+      <main className={`stage ${selected || room ? 'dim' : ''}`}>
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} links={links} meetings={meetings} roomId={room ? room.id : null} onRoom={openRoom} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
         {hover && agents[hover.id] && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} />}
         {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
+        {room && !selected && <MeetingDialog key={room.id} meeting={room} agents={agents} ended={roomEnded?.id === room.id} onClose={closeRoom} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
         {showOld && <OldSessions onOpened={id => { setShowOld(false); setSelectedId(id); }} onClose={() => setShowOld(false)} />}
       </main>
@@ -360,11 +389,15 @@ function describe(e: NexusEvent): string {
 }
 
 /** PixiJS 主面板的 React 外殼。 */
-function Board({ agents, selectedId, avatars, chiefId, links, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; links: LinkInfo[]; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
+function Board({ agents, selectedId, avatars, chiefId, links, meetings, roomId, onRoom, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; links: LinkInfo[]; meetings: MeetingView[]; roomId: string | null; onRoom: (meetingId: string) => void; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
   const addChiefRef = useRef(onAddChief);
   addChiefRef.current = onAddChief;
+  const roomRef = useRef(onRoom);
+  roomRef.current = onRoom;
+  const latestRooms = useRef({ meetings, roomId });
+  latestRooms.current = { meetings, roomId };
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<BoardScene | null>(null);
   const latest = useRef({ agents, selectedId, avatars, chiefId });
@@ -387,12 +420,13 @@ function Board({ agents, selectedId, avatars, chiefId, links, onSelect, onHover,
 
   useEffect(() => {
     let dead = false;
-    const s = new BoardScene(id => { s.closeMore(); onSelect(id); }, h => hoverRef.current(h), () => addChiefRef.current(), setMore);
+    const s = new BoardScene(id => { s.closeMore(); onSelect(id); }, h => hoverRef.current(h), () => addChiefRef.current(), setMore, id => roomRef.current(id));
     void s.init(host.current!).then(() => {
       if (dead) { s.destroy(); return; }
       scene.current = s;
       s.setAvatars(latest.current.avatars);
       s.setLinks(latestLinks.current);
+      s.setMeetings(latestRooms.current.meetings, latestRooms.current.roomId);
       s.sync(latest.current.agents, latest.current.selectedId, latest.current.chiefId);
     });
     return () => { dead = true; scene.current?.destroy(); scene.current = null; };
@@ -401,6 +435,7 @@ function Board({ agents, selectedId, avatars, chiefId, links, onSelect, onHover,
   useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
   useEffect(() => { scene.current?.setLinks(links); }, [links]);
+  useEffect(() => { scene.current?.setMeetings(meetings, roomId); }, [meetings, roomId]);
 
   // 清單放在標記的上方或下方(看哪邊空間大),不超出面板
   const box = host.current?.parentElement;
@@ -420,10 +455,17 @@ function Board({ agents, selectedId, avatars, chiefId, links, onSelect, onHover,
       {more && moreStyle && (
         <div className="board-more" ref={moreRef} style={moreStyle} role="dialog" aria-label={`${zoneName}區塊的其他節點`}>
           <div className="bm-head">
-            <b>{zoneName}</b><span>另外 {more.ids.length} 個</span>
+            <b>{zoneName}</b><span>另外 {more.ids.length + more.rooms.length} 個</span>
             <button className="ghost" aria-label="關閉清單" onClick={() => scene.current?.closeMore()}>×</button>
           </div>
           <div className="bm-list">
+            {more.rooms.map(id => meetings.find(m => m.id === id)).filter((m): m is MeetingView => !!m).map(m => (
+              <button key={m.id} className="bm-row bm-room" onClick={() => { scene.current?.closeMore(); onRoom(m.id); }} title={`旁聽會議「${m.topic}」`}>
+                <i />
+                <span className="bm-name">會議室 · {m.topic}</span>
+                <span className="bm-state">{m.round > 0 ? `第 ${m.round}/${m.rounds} 輪` : '開場'}</span>
+              </button>
+            ))}
             {more.ids.map(id => agents.find(a => a.id === id)).filter((a): a is AgentInfo => !!a).map(a => (
               <button key={a.id} className={`bm-row s-${a.state}`} onClick={() => { scene.current?.closeMore(); onSelect(a.id); }} title={`打開「${a.name}」的對話視窗`}>
                 <i style={{ background: hex(BACKEND_COLOR[a.backend]) }} />
