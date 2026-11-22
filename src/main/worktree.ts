@@ -38,7 +38,7 @@ const HEAVY = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__', '
 const MAX_WALK = 20000;
 
 /** gitignore 風格的樣式轉成比對函式:支援 `*`、`**`、`?`、`[...]`、開頭 `!` 排除、開頭或中間有 `/` 時從根目錄比對、結尾 `/` 只比對資料夾。 */
-function compileRules(text: string): (rel: string, isDir: boolean) => boolean {
+export function compileRules(text: string): (rel: string, isDir: boolean) => boolean {
   const rules: { neg: boolean; dirOnly: boolean; re: RegExp }[] = [];
   for (let line of text.split(/\r?\n/)) {
     line = line.replace(/(?<!\\)\s+$/, '');
@@ -115,6 +115,26 @@ function linkDir(target: string, at: string): void {
 }
 
 /**
+ * 原版本庫裡有、目標資料夾裡沒有的 node_modules(根目錄與兩層內的子專案)建立連結(Windows 用 junction),不必重裝。
+ * 子專案資料夾不在目標裡、或目標已有自己的 node_modules 就跳過。回傳建立的連結(相對路徑)與失敗原因。
+ * 清理時一定要先用 unlinkWorktreeLinks 解除連結,再刪資料夾。
+ */
+export function linkNodeModules(repoRoot: string, path: string): { linked: string[]; failed: string[] } {
+  const linked: string[] = [], failed: string[] = [];
+  for (const rel of nodeModulesSpots(repoRoot)) {
+    const src = join(repoRoot, rel);
+    const at = join(path, rel);
+    try {
+      if (!existsSync(src) || !lstatSync(realpathSync(src)).isDirectory()) continue;
+      if (!existsSync(dirname(at)) || existsSync(at) || isLink(at)) continue; // 子專案不在工作區裡,或工作區已有自己的 node_modules
+      linkDir(realpathSync(src), at);
+      linked.push(rel);
+    } catch (e) { failed.push(`連結 ${rel}:${(e as Error).message}`); }
+  }
+  return { linked, failed };
+}
+
+/**
  * 獨立工作區的環境初始化:
  * 1. 原版本庫有 .worktreeinclude 時,依它的 gitignore 風格規則複製符合的未追蹤檔案;沒有時複製 .env、.env.* 這類環境檔。
  * 2. 原版本庫裡有、工作區裡沒有的 node_modules(根目錄與兩層內的子專案)建立連結,不必每個節點重裝。
@@ -178,16 +198,9 @@ export async function setupWorktree(repoRoot: string, path: string): Promise<str
     }
   } catch (e) { failed.push(`複製環境檔:${(e as Error).message}`); }
 
-  for (const rel of nodeModulesSpots(repoRoot)) {
-    const src = join(repoRoot, rel);
-    const at = join(path, rel);
-    try {
-      if (!existsSync(src) || !lstatSync(realpathSync(src)).isDirectory()) continue;
-      if (!existsSync(dirname(at)) || existsSync(at) || isLink(at)) continue; // 子專案不在工作區裡,或工作區已有自己的 node_modules
-      linkDir(realpathSync(src), at);
-      linked.push(rel);
-    } catch (e) { failed.push(`連結 ${rel}:${(e as Error).message}`); }
-  }
+  const links = linkNodeModules(repoRoot, path);
+  linked.push(...links.linked);
+  failed.push(...links.failed);
 
   // 連結指向資料夾以外的地方,`node_modules/` 這種只比對資料夾的忽略規則對它無效,所以要另外排除
   const made = [...linked, ...copied];

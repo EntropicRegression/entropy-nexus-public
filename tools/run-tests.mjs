@@ -51,6 +51,10 @@ const SUITES = [
   { name: 'collab-unit', group: 'unit', min: 0.1, ...node('tests/collab.test.mjs') },
   { name: 'acp', group: 'unit', min: 0.5, ...node('tests/acp.test.js') },
   { name: 'worktree-setup-unit', group: 'unit', min: 0.5, ...node('tests/worktree-setup.test.js') },
+  { name: 'flow-def', group: 'unit', min: 0.1, ...node('tests/flow-def.test.mjs') },
+  { name: 'flow-scope', group: 'unit', min: 0.1, ...node('tests/flow-scope.test.mjs') },
+  { name: 'flow-version', group: 'unit', min: 0.3, ...node('tests/flow-version.test.mjs') },
+  { name: 'flow-verify', group: 'unit', min: 0.3, ...node('tests/flow-verify.test.mjs') },
   // ---- 假資料驗收腳本(core 是 e2e 的子集合,每次 PR 都跑)
   { name: 'interop', group: 'e2e', core: true, min: 1, ...bash('tests/interop.sh') },
   { name: 'meeting', group: 'e2e', core: true, min: 1, ...bash('tests/meeting.sh') },
