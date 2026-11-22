@@ -20,7 +20,7 @@ const rec = buildMeetingRecord(meetingRecordOf({
   participants: [
     { id: 'node-vega', name: '織女' },
     { id: 'node-lyra', name: '天琴' },
-    { id: 'node-castor', name: '北河' },
+    { id: 'node-castor', name: '北河、二號' },
   ],
   project: { id: 'c:/projects/star-app', name: 'star-app' },
   createdAt: Date.UTC(2031, 2, 14, 6, 0, 0),
@@ -29,11 +29,11 @@ const rec = buildMeetingRecord(meetingRecordOf({
   transcript: [
     { round: 1, name: '織女', nodeId: 'node-vega', text: '可行。我看過設定檔 C:\\Users\\example\\Documents\\star app\\auth.config.json,逾時寫死在裡面,要先抽成設定。' },
     { round: 1, name: '天琴', nodeId: 'node-lyra', text: '文件那邊要同步改,相對路徑 docs/auth.md 之後也要補流程圖。' },
-    { round: 1, name: '北河', nodeId: 'node-castor', text: '同意。換裝置要重登是最多人抱怨的地方。' },
+    { round: 1, name: '北河、二號', nodeId: 'node-castor', text: '同意。換裝置要重登是最多人抱怨的地方。' },
     { round: 1, name: '獵戶(主持人)', nodeId: 'node-orion', text: '第 2 輪請織女列出遷移步驟,其他人看有沒有風險。' },
     { round: 2, name: '織女', nodeId: 'node-vega', text: '## 遷移步驟\n\n1. 新增權杖表\n2. 雙寫兩週\n\n```ts\nexport const TOKEN_TTL_MS = 15 * 60 * 1000;\n```\n\n有沒有人反對?' },
     { round: 0, name: '天琴', nodeId: 'node-lyra', text: '(第 2 輪略過:目前在休眠)', inRound: 2 },
-    { round: 2, name: '北河', nodeId: 'node-castor', text: '沒有反對。(沒有需要補充的)' },
+    { round: 2, name: '北河、二號', nodeId: 'node-castor', text: '沒有反對。(沒有需要補充的)' },
     { round: 2, name: '獵戶(主持人)', nodeId: 'node-orion', text: conclusion },
     { round: 0, name: '主控台', nodeId: null, text: '主持人結束了會議。' },
   ],

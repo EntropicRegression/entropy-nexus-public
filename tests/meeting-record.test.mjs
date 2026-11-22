@@ -21,7 +21,7 @@ const localDay = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pa
 
 const base = () => ({
   id: 'm1', topic: '登入流程怎麼改', hostId: 'node-orion', hostName: '獵戶',
-  participants: [{ id: 'node-orion', name: '獵戶' }, { id: 'node-vega', name: '織女' }, { id: 'node-lyra', name: '天琴' }],
+  participants: [{ id: 'node-vega', name: '織女' }, { id: 'node-lyra', name: '天琴' }],
   projectId: 'c:/projects/star-app', projectName: 'star-app',
   startedAt: T0, endedAt: T1, endReason: '完成',
   conclusion: '決定改用權杖登入。\n第二行補充。\n\n後面的段落不進摘要。',
@@ -225,7 +225,7 @@ test('檔頭 YAML:刁鑽的主題與名稱寫檔後讀回完全相同(字串、�
     input.topic = t;
     input.hostName = t;
     input.projectName = t;
-    input.participants = [{ id: 'node-orion', name: t }, ...TRICKY.slice(0, 6).map((n, k) => ({ id: `node-${k}`, name: n })), { id: 'node-x', name: TRICKY[(i + 3) % TRICKY.length] }];
+    input.participants = [{ id: 'node-p0', name: t }, ...TRICKY.slice(0, 6).map((n, k) => ({ id: `node-${k}`, name: n })), { id: 'node-x', name: TRICKY[(i + 3) % TRICKY.length] }];
     const res = writeMeetingRecord(dir, input);
     const text = readFileSync(join(dir, ...res.path.split('/')), 'utf8');
     assert.ok(text.startsWith('---\n'), '第一行是 ---');
@@ -431,6 +431,19 @@ test('空名稱改用節點ID;引號內的空字串項目讀回長度一致', ()
   const fm = parseFrontMatter('---\n參與者: ["", "x"]\n空白項: [a, , b]\n---\n');
   assert.deepEqual(fm.meta.get('參與者'), ['', 'x']);
   assert.deepEqual(fm.meta.get('空白項'), ['a', 'b']);
+});
+
+test('參與者名稱含全形「，」「、」:每個名稱都在雙引號內,讀回不被拆開;參與者不含主持人', () => {
+  const vault = mkdtempSync(join(tmpdir(), 'nexus-meeting-names-'));
+  const names = ['北河、二號', '甲，乙', '丙、丁，戊', 'a, b'];
+  const r = writeMeetingRecord(vault, { ...base(), participants: [{ id: 'node-orion', name: '獵戶' }, ...names.map((n, i) => ({ id: `node-${i}`, name: n })), { id: 'node-0', name: '重複' }] });
+  const text = readFileSync(join(vault, r.path), 'utf8');
+  assert.ok(text.includes('參與者: ["北河、二號", "甲，乙", "丙、丁，戊", "a, b"]'), text.slice(0, 500));
+  assert.ok(text.includes('參與節點ID: ["node-0", "node-1", "node-2", "node-3"]'), '主持人與重複的節點不列入參與者');
+  const fm = parseFrontMatter(text);
+  assert.deepEqual(fm.meta.get('參與者'), names);
+  assert.deepEqual(yaml.load(text.split('\n---\n')[0].replace(/^---\n/, ''))['參與者'], names);
+  assert.equal(fm.meta.get('節點ID'), 'node-orion');
 });
 
 test('專案資料夾名稱也遮金鑰', () => {

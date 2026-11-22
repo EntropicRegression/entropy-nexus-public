@@ -227,7 +227,8 @@ export function buildMeetingRecord(input: MeetingRecordInput): MeetingRecord {
   const rounds = entries.map(roundOf).filter(r => r > 0);
   const roundCount = rounds.length ? Math.max(...rounds) : 0;
   const conclusion = (input.conclusion ?? '').trim();
-  const parts = input.participants || [];
+  // 參與節點ID / 參與者不含主持人(主持人只寫在 節點ID / 主持人,記憶設計討論第五輪);同一個節點重複列出時只留第一次
+  const parts = (input.participants || []).filter((p, i, all) => p && p.id !== input.hostId && all.findIndex(q => q && q.id === p.id) === i);
   const nameOf = (s: string) => oneLine(visible(s));
 
   const meta: Record<string, MetaValue> = {
