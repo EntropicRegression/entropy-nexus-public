@@ -30,11 +30,23 @@ const usedLevel = (used: number, warnAt: number) => (used * 100 >= warnAt ? 'cri
  */
 function compactWindows(windows: UsageWindow[]): UsageWindow[] {
   const plain = windows.filter(w => !w.group);
-  if (plain.length) return plain.slice(0, 2);
+  if (plain.length) return byLength(plain).slice(0, 2);
   const worst = new Map<string, UsageWindow>();
   for (const w of windows) { const m = worst.get(w.label); if (!m || w.used > m.used) worst.set(w.label, w); }
-  return [...worst.values()].slice(0, 2);
+  return byLength([...worst.values()]).slice(0, 2);
 }
+
+/** 額度視窗的長度(小時),用來排序:各家回傳的順序不一(Antigravity 每週在前),統一短的在上、長的在下。認不出的排最後。 */
+function windowHours(label: string): number {
+  const n = Number(/(\d+(?:\.\d+)?)/.exec(label)?.[1] ?? 1);
+  if (/小時|hour|\bh\b/i.test(label)) return n;
+  if (/週|周|week/i.test(label)) return 168 * (/(\d)/.test(label) ? n : 1);
+  if (/月|month/i.test(label)) return 720 * (/(\d)/.test(label) ? n : 1);
+  if (/日|天|day/i.test(label)) return 24 * (/(\d)/.test(label) ? n : 1);
+  return Number.MAX_SAFE_INTEGER;
+}
+/** 依視窗長短排序(穩定排序:同長度維持原順序,例如依模型分組的同一種視窗)。 */
+const byLength = (list: UsageWindow[]): UsageWindow[] => [...list].sort((a, b) => windowHours(a.label) - windowHours(b.label));
 
 /** 額度條像血量:沒用過是滿的,用光是空的(剩餘百分比 = 100 − 已用,和節點資訊卡的血量條一致)。 */
 const leftPct = (w: UsageWindow) => 100 - Math.round(Math.max(0, Math.min(1, w.used)) * 100);
@@ -270,7 +282,7 @@ export function DashboardFull({ agents, caps, usage, data, quotaStop, observed, 
         return (
           <div key={b} className="df-backend" data-backend={b}>
             <div className="df-bhead"><i style={{ background: hex(BACKEND_COLOR[b]) }} /><b>{BACKEND_LABEL[b]}</b>{u && u.windows.length > 0 && u.updatedAt > 0 && <span>{ago(u.updatedAt)}更新</span>}</div>
-            {u && u.windows.length > 0 ? u.windows.map(w => (
+            {u && u.windows.length > 0 ? byLength(u.windows).map(w => (
               <div key={`${w.group ?? ''}:${w.label}`} className={`df-win ${usedLevel(w.used, warnAt)}`} title={winTitle(b, w)}>
                 <span className="df-label">{w.group && !w.label.includes(w.group) ? `${w.group} · ` : ''}{w.label}</span>
                 <Bar value={leftPct(w)} level={usedLevel(w.used, warnAt)} />
