@@ -381,7 +381,7 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
     if (getSection(next, '解決問題的流程') === null) next = `${next.trim()}\n\n## 解決問題的流程\n`;
     const r = writeMemory(deps.vaultDir, rel, full, next);
     deps.rescan();
-    return `已更新節點「${node.name}」的特長(${r.action === 'appended' ? '側寫檔被使用者改過,改為附加一段' : r.action === 'created' ? '建立新的側寫檔' : '取代特長章節,其他章節保留'})。路徑:${r.path}${r.masked ? `;有 ${r.masked} 處疑似金鑰或密碼已遮罩` : ''}。提醒:特長的第一行要是最重要的一句話,總管守則只顯示前 80 個字。`;
+    return `已更新節點「${node.name}」的特長(${r.action === 'appended' ? '側寫檔被使用者改過,改為附加有變動的章節' : r.action === 'unchanged' ? '側寫檔被使用者改過,而特長和檔案裡最新的版本相同,所以沒有寫入' : r.action === 'created' ? '建立新的側寫檔' : '取代特長章節,其他章節保留'})。路徑:${r.path}${r.masked ? `;有 ${r.masked} 處疑似金鑰或密碼已遮罩` : ''}。提醒:特長的第一行要是最重要的一句話,總管守則只顯示前 80 個字。`;
   }
 
   if (kind === 'preference') {
@@ -417,5 +417,5 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
   return `已寫入專案「${p.name}」的專案知識「${title}」(${actionText(r.action)})。路徑:${r.path}${maskText(r.masked)}${tail}`;
 }
 
-const actionText = (a: string) => (a === 'created' ? '新增' : a === 'replaced' ? '取代同標題的內容' : '檔案被使用者改過,改為附加一段');
+const actionText = (a: string) => (a === 'created' ? '新增' : a === 'replaced' ? '取代同標題的內容' : a === 'unchanged' ? '檔案被使用者改過,而內容和檔案裡最新的版本相同,沒有寫入' : '檔案被使用者改過,改為附加有變動的部分');
 const maskText = (n: number) => (n ? `;有 ${n} 處疑似金鑰或密碼已遮罩` : '');

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /**
@@ -126,7 +126,8 @@ export function editedByOthers(vault: string, rel: string): boolean {
 export interface WriteResult {
   /** 相對於記憶庫的路徑(用 /)。 */
   path: string;
-  action: 'created' | 'replaced' | 'appended';
+  /** unchanged:檔案被使用者改過,而新內容和檔案裡每個章節的最新版本都相同,所以沒有附加。 */
+  action: 'created' | 'replaced' | 'appended' | 'unchanged';
   /** 遮罩的處數(內文加屬性)。 */
   masked: number;
 }
@@ -137,7 +138,58 @@ export interface WriteResult {
  * - 檔案存在、而且只有 agent 寫過:mode 為 replace 時整份取代,append 時附加。
  * - 檔案被使用者改過:一律改成附加一段「## 主控台補充(時間)」,不動使用者的內容。
  */
-export function writeMemory(vault: string, rel: string, meta: Record<string, MetaValue>, body: string, mode: 'replace' | 'append' = 'replace', now: Date = new Date()): WriteResult {
+/** 主控台附加段落的標題:## 主控台補充(YYYY-MM-DD HH:mm)。全形、半形括號都認。 */
+const APPENDIX_HEADING = /^##\s*主控台補充[（(][^）)]*[）)]\s*$/;
+const SECTION_HEADING = /^##\s+(.+?)\s*$/;
+
+/** 去掉開頭的屬性區塊,回傳正文。 */
+export function bodyOfText(text: string): string {
+  const m = /^\uFEFF?---\r?\n[\s\S]*?\r?\n---[\t ]*(?:\r?\n|$)/.exec(text);
+  return m ? text.slice(m[0].length) : text;
+}
+
+/**
+ * 正文依二級標題(## )切成章節:標題前的文字是 '' 這一節。主控台補充的標題不是章節,只是分隔(它後面的文字、
+ * 子標題照樣算在對應的章節)。同一個標題出現好幾次時(使用者版本與之後的補充),以最後一次為準。
+ */
+export function sectionMap(body: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let title = '';
+  let lines: string[] = [];
+  const flush = () => { const text = lines.join('\n').trim(); if (text || title) out.set(title, text); lines = []; };
+  for (const line of body.replace(/\r\n?/g, '\n').split('\n')) {
+    if (APPENDIX_HEADING.test(line)) { flush(); title = ''; continue; }
+    const h = SECTION_HEADING.exec(line);
+    if (h) { flush(); title = h[1]; continue; }
+    lines.push(line);
+  }
+  flush();
+  return out;
+}
+
+/**
+ * 附加時只附「和檔案目前內容相比有變動的章節」:新正文的每一節,和檔案裡同標題章節的最新版本(含之前的補充)比較,
+ * 不同才附加;內容是空的章節不附加(例如只補上空的標題)。回傳要附加的文字,沒有變動時是空字串。
+ */
+export function changedSections(currentBody: string, nextBody: string): string {
+  const current = sectionMap(currentBody);
+  const parts: string[] = [];
+  for (const [title, text] of sectionMap(nextBody)) {
+    if (!text || (current.get(title) ?? null) === text) continue;
+    parts.push(title ? `## ${title}\n\n${text}` : text);
+  }
+  return parts.join('\n\n');
+}
+
+/** 附加前後檔案被別人改過時,最多重讀重算這麼多次;仍一直在變就用最後一次讀到的內容寫入。 */
+export const APPEND_RETRIES = 3;
+
+export interface WriteOptions {
+  /** 測試用:在比對檔案版本、寫回之前呼叫(模擬寶庫或使用者剛好在這時改了檔案)。 */
+  beforeCommit?: (abs: string, attempt: number) => void;
+}
+
+export function writeMemory(vault: string, rel: string, meta: Record<string, MetaValue>, body: string, mode: 'replace' | 'append' = 'replace', now: Date = new Date(), opts: WriteOptions = {}): WriteResult {
   const relPath = rel.replace(/\\/g, '/').replace(/^\/+/, '');
   if (!relPath.endsWith('.md') || relPath.split('/').some(p => p === '..' || p === '')) throw new Error('記憶的路徑不正確');
   const abs = join(vault, ...relPath.split('/'));
@@ -154,15 +206,33 @@ export function writeMemory(vault: string, rel: string, meta: Record<string, Met
     action = 'replaced';
     text = serializeFrontMatter(meta) + '\n' + m.text.trim() + '\n';
   } else {
+    // 附加(檔案被使用者改過,或明確要求附加):依「目前檔案內容」計算要附加的文字。原本要整份取代的寫入,只附有變動的章節;
+    // 寫回前再比對一次檔案版本,讀取之後檔案被改過(寶庫或使用者剛好在寫)就重讀重算,不蓋掉別人剛寫的內容
     action = 'appended';
     const stamp = now.toISOString().slice(0, 16).replace('T', ' ');
-    text = readFileSync(abs, 'utf8').replace(/\s*$/, '') + `\n\n## 主控台補充(${stamp})\n\n` + m.text.trim() + '\n';
+    const tmp = `${abs}.tmp`;
+    for (let attempt = 0; ; attempt++) {
+      const before = statSync(abs);
+      const current = readFileSync(abs, 'utf8');
+      const add = mode === 'append' ? m.text.trim() : changedSections(bodyOfText(current), m.text);
+      if (!add) {
+        if (!Number.isFinite(masked)) masked = 0;
+        return { path: relPath, action: 'unchanged', masked };
+      }
+      text = current.replace(/\s*$/, '') + `\n\n## 主控台補充(${stamp})\n\n` + add + '\n';
+      writeFileSync(tmp, text);
+      opts.beforeCommit?.(abs, attempt);
+      const after = statSync(abs);
+      if ((after.mtimeMs === before.mtimeMs && after.size === before.size) || attempt >= APPEND_RETRIES) break;
+      try { unlinkSync(tmp); } catch { /* 下一輪會覆寫 */ }
+    }
   }
   const tmp = `${abs}.tmp`;
-  writeFileSync(tmp, text);
+  if (action !== 'appended') writeFileSync(tmp, text);
   renameSync(tmp, abs);
   const st = statSync(abs);
   const reg = readRegistry(vault);
+  // 附加過的檔案記成「使用者改過」:否則下一次寫入會因為版本和登記相同而整份取代,蓋掉使用者的內容
   reg[relPath] = { mtime: Math.floor(st.mtimeMs), size: st.size, ...(action === 'appended' ? { edited: true } : {}) };
   saveRegistry(vault, reg);
   if (!Number.isFinite(masked)) masked = 0;

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { editedByOthers, maskSecrets, safeName, serializeFrontMatter, writeMemory } from '../src/main/memory-write.ts';
+import { bodyOfText, changedSections, editedByOthers, maskSecrets, safeName, sectionMap, serializeFrontMatter, writeMemory } from '../src/main/memory-write.ts';
 import { entryFromFile, parseFrontMatter } from '../src/main/memory-vault.ts';
 
 let passed = 0;
@@ -96,6 +96,79 @@ test('寫入:路徑不能跳出記憶庫、一定要是 .md', () => {
   assert.throws(() => writeMemory(vault, '../outside.md', {}, 'x'));
   assert.throws(() => writeMemory(vault, 'nodes/a.txt', {}, 'x'));
   assert.throws(() => writeMemory(vault, 'nodes//a.md', {}, 'x'));
+});
+
+test('只附加有變動的章節:依二級標題比對檔案裡最新的版本(含之前的補充),沒變的章節、空章節不附加', () => {
+  const user = '## 基本資料\n\n- 名稱:甲\n\n## 特長\n\n使用者寫的特長\n\n## 解決問題的流程\n\n1. 先看 log';
+  assert.equal(changedSections(user, user), '', '完全相同:不附加');
+  assert.equal(changedSections(user, user.replace('使用者寫的特長', '總管的新特長')), '## 特長\n\n總管的新特長');
+  // 之前的補充已經有同樣的特長:以最新版本比較,不重複附加
+  const withAppendix = user + '\n\n## 主控台補充(2026-11-22 07:00)\n\n## 特長\n\n總管的新特長';
+  assert.equal(changedSections(withAppendix, user.replace('使用者寫的特長', '總管的新特長')), '');
+  assert.equal(sectionMap(withAppendix).get('特長'), '總管的新特長', '同標題以最後一次為準');
+  assert.ok(!sectionMap(withAppendix).has('主控台補充(2026-11-22 07:00)'), '補充標題不是章節');
+  // 新增的空章節(例如只補上 ## 解決問題的流程 的標題)不附加;新的非空章節才附加
+  assert.equal(changedSections('## 特長\n\n甲', '## 特長\n\n甲\n\n## 解決問題的流程\n'), '');
+  assert.equal(changedSections('## 特長\n\n甲', '## 特長\n\n甲\n\n## 新章節\n\n內容'), '## 新章節\n\n內容');
+  // 沒有標題的內容(例如偏好、專案知識的正文)整段比較;### 不是章節分隔
+  assert.equal(changedSections('一段話', '一段話'), '');
+  assert.equal(changedSections('一段話', '另一段話'), '另一段話');
+  assert.equal(sectionMap('## 特長\n\n甲\n\n### 細節\n\n乙').get('特長'), '甲\n\n### 細節\n\n乙');
+  assert.equal(bodyOfText('---\n種類: node\n---\n\n## 特長\n\n甲\n'), '\n## 特長\n\n甲\n');
+  assert.equal(changedSections('## 特長\r\n\r\n甲\r\n', '## 特長\n\n甲'), '', 'CRLF 與 LF 視為相同');
+});
+
+test('使用者改過的側寫:總管更新特長只附加特長;同樣的特長再寫一次不附加;補充裡只有一個補充標題', () => {
+  const vault = mkdtempSync(join(tmpdir(), 'nexus-append-'));
+  const rel = 'nodes/甲.md';
+  mkdirSync(join(vault, 'nodes'), { recursive: true });
+  writeFileSync(join(vault, rel), '---\n種類: node\n節點ID: n1\n---\n\n## 基本資料\n\n- 名稱:甲\n\n## 特長\n\n使用者手寫的特長\n\n## 解決問題的流程\n\n1. 先看 log\n');
+  const update = special => `## 基本資料\n\n- 名稱:甲\n\n## 特長\n\n${special}\n\n## 解決問題的流程\n\n1. 先看 log`;
+  const r1 = writeMemory(vault, rel, { 種類: 'node' }, update('總管的新特長'), 'replace', new Date('2026-11-22T07:00:00Z'));
+  assert.equal(r1.action, 'appended');
+  let text = readFileSync(join(vault, rel), 'utf8');
+  const appendix = text.slice(text.indexOf('## 主控台補充'));
+  assert.equal(appendix, '## 主控台補充(2026-11-22 07:00)\n\n## 特長\n\n總管的新特長\n', appendix);
+  assert.ok(text.startsWith('---\n種類: node\n節點ID: n1\n---\n\n## 基本資料') && text.includes('使用者手寫的特長'), '使用者的內容一字不動');
+  // 再寫一次同樣的特長:不附加、檔案不變
+  const r2 = writeMemory(vault, rel, { 種類: 'node' }, update('總管的新特長'), 'replace', new Date('2026-11-22T08:00:00Z'));
+  assert.equal(r2.action, 'unchanged');
+  assert.equal(readFileSync(join(vault, rel), 'utf8'), text);
+  // 特長又變了:新的補充段落也只有特長
+  writeMemory(vault, rel, { 種類: 'node' }, update('第三版特長'), 'replace', new Date('2026-11-22T09:00:00Z'));
+  text = readFileSync(join(vault, rel), 'utf8');
+  assert.equal(text.match(/^## 主控台補充/gm).length, 2);
+  assert.equal(text.match(/^## 解決問題的流程/gm).length, 1, '沒變的章節沒有重複附加');
+  assert.ok(text.endsWith('## 主控台補充(2026-11-22 09:00)\n\n## 特長\n\n第三版特長\n'));
+});
+
+test('附加前再比對一次:讀取之後檔案被別人改過,重讀後再附加,不丟失外部的修改', () => {
+  const vault = mkdtempSync(join(tmpdir(), 'nexus-append-race-'));
+  const rel = 'nodes/乙.md';
+  const abs = join(vault, rel);
+  mkdirSync(join(vault, 'nodes'), { recursive: true });
+  writeFileSync(abs, '---\n種類: node\n---\n\n## 特長\n\n使用者的特長\n');
+  let calls = 0;
+  const r = writeMemory(vault, rel, { 種類: 'node' }, '## 特長\n\n總管的特長', 'replace', new Date('2026-11-22T07:00:00Z'), {
+    beforeCommit: (path, attempt) => {
+      calls++;
+      // 第一次寫回前,寶庫(或使用者)剛好在檔尾加了一段筆記
+      if (attempt === 0) writeFileSync(path, readFileSync(path, 'utf8') + '\n## 筆記\n\n寶庫剛寫的筆記\n');
+    },
+  });
+  assert.equal(r.action, 'appended');
+  assert.equal(calls, 2, '偵測到變動後重讀重算一次');
+  const text = readFileSync(abs, 'utf8');
+  assert.ok(text.includes('寶庫剛寫的筆記'), '外部修改沒有被蓋掉');
+  assert.equal(text.match(/^## 主控台補充/gm).length, 1);
+  assert.ok(text.indexOf('寶庫剛寫的筆記') < text.indexOf('## 主控台補充'), '補充接在外部修改之後');
+  // 檔案一直在變:重試用盡後用最後一次讀到的內容寫入(仍包含所有外部修改)
+  let n = 0;
+  writeMemory(vault, rel, { 種類: 'node' }, '## 特長\n\n總管的特長第二版', 'replace', new Date('2026-11-22T08:00:00Z'), {
+    beforeCommit: path => { n++; writeFileSync(path, readFileSync(path, 'utf8') + `\n第 ${n} 次外部修改\n`); },
+  });
+  const last = readFileSync(abs, 'utf8');
+  assert.ok(n >= 2 && last.includes('第 1 次外部修改') && last.includes('總管的特長第二版'), last);
 });
 
 console.log(`通過 ${passed} 項`);
