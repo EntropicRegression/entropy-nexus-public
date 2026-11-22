@@ -6,6 +6,8 @@ import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type DispatchEntry, type Up
 import type { Core } from './core';
 import { memoryRead, memorySearch, memoryWrite } from './memory-tools';
 import { buildLinks, dispatchTitle } from '../shared/collab';
+import { projectOf } from './project';
+import { chooseProject, folderHint, type KnownProject } from './project-choice';
 
 /**
  * 節點互相呼叫:主控台開一個只聽本機迴路的 MCP 伺服器(Streamable HTTP,單純的 JSON 回應),
@@ -78,6 +80,8 @@ interface Pending {
   taskId?: string;
   /** 建立當下呼叫者是不是總管。 */
   fromChief?: boolean;
+  /** 交辦者明確指定的專案。 */
+  project?: KnownProject;
 }
 
 /** 一場會議:由主控台主持,參與者輪流發言。 */
@@ -91,6 +95,8 @@ interface Meeting {
   createdAt: number;
   /** 召開當下主持人是不是總管。 */
   chiefHost?: boolean;
+  /** 主持人指定的專案:整場每一輪都記在這個專案。 */
+  project?: KnownProject;
   /** 會議紀錄;round 為 0 的是主控台的說明(略過、失敗、散會)。 */
   transcript: Array<{ round: number; name: string; text: string }>;
   status: 'running' | 'done' | 'failed';
@@ -129,6 +135,7 @@ const TOOL_DEFS = [
       properties: {
         node: { type: 'string', description: '目標節點的名稱或 id(用 list_nodes 查)。' },
         prompt: { type: 'string', description: '要交給對方的完整指令。' },
+        project: { type: 'string', description: '選填:這件事屬於哪個專案(專案名稱或 ID,list_nodes 的「專案」欄)。不填就記到接手節點自己的工作目錄所屬的專案;只接受主控台已知的專案。' },
       },
       required: ['node', 'prompt'],
       additionalProperties: false,
@@ -154,6 +161,7 @@ const TOOL_DEFS = [
         participants: { type: 'array', items: { type: 'string' }, description: '參與節點的名稱或 id(用 list_nodes 查),1 到 5 個,不含你自己。' },
         rounds: { type: 'number', description: '最多討論幾輪(每輪每位參與者發言一次),1 到 6,預設 2。' },
         host_turns: { type: 'boolean', description: '每一輪之間是否輪到你(主持人)發言,預設 true。設為 false 時你不發言,所有參與者同一輪都表示沒有補充就提前結束。' },
+        project: { type: 'string', description: '選填:這場會議屬於哪個專案(整場每一輪都記在這個專案)(專案名稱或 ID,list_nodes 的「專案」欄)。不填就每位參與者記到自己的工作目錄所屬的專案;只接受主控台已知的專案。' },
       },
       required: ['topic', 'participants'],
       additionalProperties: false,
@@ -380,7 +388,7 @@ export class Interop {
     const name = (id: string, fallback: string) => this.agents().find(a => a.id === id)?.name ?? fallback;
     return {
       id: p.id, startedAt: p.createdAt, endedAt: status === 'running' ? null : Date.now(), fromId: p.callerId, fromName: name(p.callerId, '(已移除)'),
-      toId: p.targetId, toName: p.targetName, title: p.title ?? '', status, ...(p.taskId ? { taskId: p.taskId } : {}), ...(p.fromChief ? { fromChief: true } : {}),
+      toId: p.targetId, toName: p.targetName, title: p.title ?? '', status, ...(p.taskId ? { taskId: p.taskId } : {}), ...(p.fromChief ? { fromChief: true } : {}), ...(p.project ? { project: { id: p.project.id, name: p.project.name } } : {}),
     };
   }
 
@@ -431,14 +439,14 @@ export class Interop {
       const text = (t: string, isError = false) => ok({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) });
       try {
         const args: Json = params?.arguments && typeof params.arguments === 'object' ? params.arguments : {};
-        if (params?.name === 'list_nodes') return text(this.listNodes(callerId));
+        if (params?.name === 'list_nodes') return text(await this.listNodes(callerId));
         // 模型偶爾會把參數名稱寫成別的(實測 Codex 發生過),常見的別名一併接受
         const pick = (...keys: string[]) => { for (const k of keys) if (typeof args[k] === 'string' && args[k].trim()) return args[k] as string; return ''; };
         if (params?.name === 'ask_node') {
           const node = pick('node', 'name', 'target', 'node_id', 'nodeId', 'node_name', 'id');
           const prompt = pick('prompt', 'message', 'question', 'text', 'instruction', 'instructions', 'query', 'content', 'task');
           if (!node || !prompt) throw new Error(`ask_node 需要兩個字串參數:node(目標節點的名稱或 id)與 prompt(要交給對方的完整指令)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。請用正確的參數名稱再呼叫一次。`);
-          return text(await this.askNode(callerId, node, prompt));
+          return text(await this.askNode(callerId, node, prompt, pick('project', 'project_id', 'projectId', 'project_name')));
         }
         if (params?.name === 'wait_reply') return text(await this.waitReply(callerId, pick('request_id', 'requestId', 'id')));
         if (params?.name === 'start_meeting') {
@@ -447,7 +455,7 @@ export class Interop {
           const names = (Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[,、,\n]/) : []).map((x: unknown) => String(x).trim()).filter(Boolean);
           if (!topic || !names.length) throw new Error(`start_meeting 需要 topic(字串:會議主題與背景)與 participants(字串陣列:參與節點的名稱或 id)。這次收到的參數是:${JSON.stringify(Object.keys(args))}。請用正確的參數再呼叫一次。`);
           const hostTurns = ![false, 'false'].includes(args.host_turns ?? args.hostTurns);
-          return text(await this.startMeeting(callerId, topic, names, Number(args.rounds ?? args.max_rounds ?? 2), hostTurns));
+          return text(await this.startMeeting(callerId, topic, names, Number(args.rounds ?? args.max_rounds ?? 2), hostTurns, pick('project', 'project_id', 'projectId', 'project_name')));
         }
         if (params?.name === 'meeting_say') {
           const rid = pick('request_id', 'requestId', 'meeting_id', 'id');
@@ -489,12 +497,14 @@ export class Interop {
     return `${a.name}(${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''})`;
   }
 
-  private listNodes(callerId: string): string {
+  private async listNodes(callerId: string): Promise<string> {
     const peers = this.agents().filter(a => !a.parentId && a.id !== callerId);
     if (!peers.length) return '面板上沒有其他節點。';
-    const lines = peers.map(a => {
+    const projects = await Promise.all(peers.map(a => projectOf(a.cwd).catch(() => null)));
+    const lines = peers.map((a, i) => {
       const ready = (a.state === 'idle' || a.state === 'error') && !a.terminal;
-      return `- 名稱:${a.name} | id:${a.id} | 後台:${BACKEND_LABEL[a.backend]}${a.model ? ` | 模型:${a.model}` : ''} | 狀態:${a.terminal ? '終端機模式' : STATE_LABEL[a.state]}${ready ? '(可以呼叫)' : '(現在不能呼叫)'} | 工作目錄:${a.cwd}`;
+      const p = projects[i];
+      return `- 名稱:${a.name} | id:${a.id} | 後台:${BACKEND_LABEL[a.backend]}${a.model ? ` | 模型:${a.model}` : ''} | 狀態:${a.terminal ? '終端機模式' : STATE_LABEL[a.state]}${ready ? '(可以呼叫)' : '(現在不能呼叫)'} | 工作目錄:${a.cwd}${p ? ` | 專案:${p.name}${p.isGit === false ? '(共用資料夾)' : ''}` : ''}`;
     });
     return `面板上的其他節點(只有「待命」的可以用 ask_node 呼叫):\n${lines.join('\n')}`;
   }
@@ -518,11 +528,20 @@ export class Interop {
     if (target.state !== 'idle' && target.state !== 'error') throw new Error(`節點「${target.name}」正在忙(${STATE_LABEL[target.state]}),請稍後再試,或改找別的節點。`);
   }
 
-  private async askNode(callerId: string, node: string, prompt: string): Promise<string> {
+  /** project 參數:空字串表示沒指定;有值時只接受主控台已知的專案,否則丟出附可用清單的錯誤。 */
+  private async pickProject(arg: string): Promise<KnownProject | undefined> {
+    if (!arg.trim()) return undefined;
+    const choice = chooseProject(arg, await this.core!.knownProjects());
+    if (!choice.ok) throw new Error(choice.error);
+    return choice.project;
+  }
+
+  private async askNode(callerId: string, node: string, prompt: string, projectArg = ''): Promise<string> {
     const core = this.core!;
     this.prune();
     const caller = this.agents().find(a => a.id === callerId);
     if (!caller) throw new Error('呼叫者不是面板上的節點。');
+    const project = await this.pickProject(projectArg);
     if (!prompt.trim()) throw new Error('prompt 不能是空的。');
     if (prompt.length > MAX_PROMPT) throw new Error(`prompt 太長(上限 ${MAX_PROMPT} 字)。`);
     const target = this.resolve(callerId, node);
@@ -544,7 +563,7 @@ export class Interop {
       if (!again) throw new Error(`節點「${target.name}」已經不在了。`);
       this.checkReady(again);
     }
-    const p: Pending = { id: randomUUID().slice(0, 8), callerId, targetId: target.id, targetName: target.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set(), title: dispatchTitle(prompt), fromChief: this.core?.isChief(callerId) ?? false };
+    const p: Pending = { id: randomUUID().slice(0, 8), callerId, targetId: target.id, targetName: target.name, createdAt: Date.now(), started: false, parts: [], status: 'running', error: '', waiters: new Set(), title: dispatchTitle(prompt), fromChief: this.core?.isChief(callerId) ?? false, ...(project ? { project } : {}) };
     this.pending.set(p.id, p);
     core.recordDispatch(this.dispatchOf(p, 'running'));
     this.publish();
@@ -553,7 +572,7 @@ export class Interop {
     try {
       await core.send(target.id, `${header}
 
-${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
+${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(project ? { project } : {}) });
       // 記下這次交辦產生的任務,分派紀錄才查得到花費
       const taskId = core.currentTaskId(target.id);
       if (taskId && p.status === 'running') { p.taskId = taskId; core.recordDispatch(this.dispatchOf(p, 'running')); }
@@ -561,7 +580,10 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
     } catch (err) {
       this.finish(p, 'failed', String((err as Error)?.message ?? err));
     }
-    return this.await(p);
+    // 沒指定專案、對方又在共用的非 git 資料夾:回覆多一行提醒(不擋)
+    const hint = project ? '' : folderHint(await projectOf(target.cwd).then(t => ({ id: t.id, name: t.name, git: t.isGit }), () => null));
+    const result = await this.await(p);
+    return hint ? `${hint}\n\n${result}` : result;
   }
 
   private async waitReply(callerId: string, requestId: string): Promise<string> {
@@ -590,11 +612,12 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
 
   // ---------- 會議
 
-  private async startMeeting(callerId: string, topic: string, names: string[], rounds: number, hostTurns: boolean): Promise<string> {
+  private async startMeeting(callerId: string, topic: string, names: string[], rounds: number, hostTurns: boolean, projectArg = ''): Promise<string> {
     const core = this.core!;
     this.prune();
     const caller = this.agents().find(a => a.id === callerId);
     if (!caller) throw new Error('呼叫者不是面板上的節點。');
+    const project = await this.pickProject(projectArg);
     if (topic.length > MAX_PROMPT) throw new Error(`topic 太長(上限 ${MAX_PROMPT} 字)。`);
     if ([...this.meetings.values()].some(m => m.status === 'running' && m.callerId === callerId)) throw new Error('你召開的上一場會議還在進行,請先用 wait_reply 等它結束。');
     const members: AgentInfo[] = [];
@@ -617,7 +640,7 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
       const decision = await core.requestApproval(callerId, '召開會議', `${members.map(a => a.name).join('、')}(最多 ${total} 輪):${topic.replace(/\s+/g, ' ').slice(0, 80)}`, `要召開一場會議,參與的節點:${who}。最多 ${total} 輪,每輪每個節點發言一次(各算一個回合,會用到它們的額度)${hostTurns ? ',每輪之間由召開者主持發言' : ''};允許後整場會議不再逐次詢問。\n\n主題:\n${topic}`);
       if (decision === 'deny') throw new Error('使用者拒絕召開這場會議。');
     }
-    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0, chiefHost: this.core?.isChief(callerId) ?? false };
+    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0, chiefHost: this.core?.isChief(callerId) ?? false, ...(project ? { project } : {}) };
     this.meetings.set(m.id, m);
     this.publish();
     core.note(callerId, `會議開始(${m.id}):參與者 ${who};最多 ${total} 輪${hostTurns ? ',每輪之間輪到主持人發言' : ''}。中斷這個節點就會散會。`);
@@ -654,7 +677,7 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name });
         this.pending.set(p.id, p);
         m.current = p;
         this.publish();
-        try { await core.send(part.id, prompt, [], 'user', 'interop', { id: m.callerId, name: m.callerName, meeting: true }); } catch (err) { this.finish(p, 'failed', String((err as Error)?.message ?? err)); }
+        try { await core.send(part.id, prompt, [], 'user', 'interop', { id: m.callerId, name: m.callerName, meeting: true, ...(m.project ? { project: m.project } : {}) }); } catch (err) { this.finish(p, 'failed', String((err as Error)?.message ?? err)); }
         // 等這位講完;太久就中斷它,換下一位
         if (p.status === 'running') await new Promise<void>(resolve => {
           const done = () => { clearTimeout(timer); p.waiters.delete(done); resolve(); };

@@ -65,6 +65,9 @@ export function buildArchive(i: ArchiveInput): { meta: Record<string, MetaValue>
     後台ID: n.backend, sessionId: n.sessionId || undefined, 工作目錄: n.cwd || undefined,
     任務數: s?.tasks ?? 0, 完成數: s?.done ?? 0, 完成率: s?.completionRate == null ? undefined : Math.round(s.completionRate * 100) / 100,
     驗收數: s?.accepted ?? 0, 退回數: s?.rejected ?? 0, 判例數: i.cases.length,
+    // 專案(2026-11-22 起):和 專案 同序的 專案ID,讓只剩封存檔的節點也保有專案資料;沒有就不寫
+    專案ID: s?.projects.length ? s.projects.map(p => p.id) : undefined,
+    專案: s?.projects.length ? s.projects.map(p => p.name) : undefined,
   };
   const sections: string[] = [];
   const projects = (s?.projects ?? []).map(p => `${p.name}(${p.tasks} 個任務)`).join('、');

@@ -23,6 +23,8 @@ import { characterImages } from './vault-images';
 import { readArchives, type MeetingRecord, type StatsInput } from './vault-stats';
 import { removeMedia } from './media';
 import { projectKindFromPath, projectOf } from './project';
+import { wakeTargetOf, type WakeTarget } from './wake';
+import { uniqueProjects, type KnownProject } from './project-choice';
 import { parseChiefTerms, updateChiefTerms, type ChiefTerm } from './chief-tenure';
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
 import { normalizeAgyAllow } from '../shared/agy-allow';
@@ -351,6 +353,15 @@ export class Core {
     this.chiefTerms = after;
     this.store.setSetting('chiefTerms', JSON.stringify(after));
     this.onStatsDirty?.();
+  }
+
+  /** 主控台已知的專案:面板上每個節點的工作目錄所屬的專案,加上任務紀錄(保留期間內)裡出現過的專案。給 project 參數驗證用。 */
+  async knownProjects(): Promise<KnownProject[]> {
+    const live = [...this.agents.values()].filter(a => !a.parentId);
+    const fromNodes = await Promise.all(live.map(a => projectOf(a.cwd).then(p => ({ id: p.id, name: p.name, git: p.isGit }), () => null)));
+    const fromTasks = [...this.store.loadTasksForStats(0, 100000), ...this.tasks.values()]
+      .flatMap(t => (t.project ? [{ id: t.project.id, name: t.project.name, git: t.project.git }] : []));
+    return uniqueProjects([...fromNodes.filter((p): p is NonNullable<typeof p> => !!p), ...fromTasks]);
   }
 
   /** 這個節點現在是不是總管(交辦與會議紀錄在建立當下記下)。 */
@@ -688,8 +699,10 @@ export class Core {
       this.starting.add(id);
       try {
         // 專案在交辦的這一刻依節點目前的工作目錄決定,之後不再重算
-        const project = await projectOf(agent.cwd).catch(() => null);
-        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name, ...(typeof project.isGit === 'boolean' ? { git: project.isGit } : {}) } : undefined, from);
+        // 交辦者明確指定的專案優先(ask_node / start_meeting 的 project);沒有就用節點的工作目錄所屬的專案
+        const project = from?.project ?? await projectOf(agent.cwd).catch(() => null);
+        const git = from?.project ? from.project.git : (project as { isGit?: boolean } | null)?.isGit;
+        const task = this.startTask(agent, text, source, project ? { id: project.id, name: project.name, ...(typeof git === 'boolean' ? { git } : {}) } : undefined, from);
         await this.captureBase(agent, task);
       } finally {
         this.starting.delete(id);
@@ -723,6 +736,7 @@ export class Core {
     return `你是這個主控台的「總管」節點。使用者交代給你的事(常常是用語音說的、由語音辨識轉成的文字,可能有錯字或同音字)是要分派出去的工作:
 - 先用 list_nodes 看面板上有哪些節點、各自的後台、模型、狀態與工作目錄,再判斷這件事適合交給誰。使用者在句首直接叫了某個節點的名字(或聽起來像那個名字)時,就交給那個節點。
 - 用 ask_node 交辦。對方看不到你和使用者的對話,所以 prompt 要寫完整:背景、要做什麼、要讀的檔案(絕對路徑)、希望怎麼回覆。需要多方意見或討論時用 start_meeting。
+- 為某個專案交辦時,請帶 project(專案名稱或 ID,list_nodes 的「專案」欄看得到);不帶就記到接手節點自己的工作目錄,在共用資料夾的節點會被記成那個資料夾。
 - 交辦之前,先用一句話說明你要交給誰、做什麼;判斷不出來、或指令聽起來不完整時,先問使用者,不要猜。
 - 除非使用者明確要你自己做,或沒有合適的節點,否則不要自己改檔案或執行指令。
 - 拿到結果後簡短回報重點(你的回覆會被念出來):做了什麼、結果如何、有沒有需要使用者決定的事。
@@ -1329,13 +1343,9 @@ ${text}
   }
 
   /** wake 網址用:節點在面板上、或是已終止還能接回(回傳要接回的 session 資料);都不是就是 null。 */
-  wakeTarget(id: string): { kind: 'board'; name: string } | { kind: 'removed'; name: string; input: OpenOldSessionInput } | null {
-    const on = this.agents.get(id);
-    if (on && !on.parentId) return { kind: 'board', name: on.name };
-    const r = this.store.loadRemovedAgents().find(x => x.agent.id === id);
-    if (!r || !r.agent.sessionId) return null;
-    const a = r.agent;
-    return { kind: 'removed', name: a.name, input: { backend: a.backend, sessionId: a.sessionId!, cwd: a.cwd, agentId: a.id, name: a.name, character: a.character, model: a.model } };
+  wakeTarget(id: string): WakeTarget {
+    // 和統計檔的「可接回」用同一份已終止節點清單(loadRemovedAgents)與同一個判斷(canResume)
+    return wakeTargetOf(id, [...this.agents.values()], this.store.loadRemovedAgents().map(r => r.agent), p => existsSync(p));
   }
   agentById(id: string): AgentInfo | undefined { return this.agents.get(id); }
 

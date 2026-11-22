@@ -6,6 +6,7 @@ import { computeNodeStats, isWorkTask } from '../shared/node-stats.ts';
 import { parseFrontMatter } from './memory-vault.ts';
 import type { CharacterImages } from './vault-images.ts';
 import { wasChief, type ChiefTerm } from './chief-tenure.ts';
+import { canResume } from './wake.ts';
 
 /**
  * .nexus-stats.json:寫在記憶庫根目錄、給記憶庫管理 app 讀的節點統計(設計見 docs/記憶設計討論.md「第二輪定案」10、11)。
@@ -30,6 +31,8 @@ export interface ArchiveInfo {
   tasks: number; done: number; completionRate: number | null; accepted: number; rejected: number; cases: number;
   /** 圖像快照的絕對路徑;沒有就是 null。 */
   avatar: string | null; portrait: string | null; at: number;
+  /** 封存檔的 專案ID / 專案 清單(2026-11-22 起才有;同序同長度、ID 是路徑形式的才收)。舊封存檔是空清單。 */
+  projects?: Array<{ id: string; name: string }>;
 }
 export interface StatsInput {
   now: number;
@@ -53,13 +56,16 @@ export interface StatsInput {
   projectKind?(id: string): 'git' | '資料夾';
 }
 
+/** 專案ID 是不是主控台產生的路徑形式(正規化後:磁碟代號 c:/…、或 / 開頭,含 //server/share);名稱形式的不是。 */
+export const isProjectPath = (id: string | null | undefined): id is string => !!id && /^(?:[a-zA-Z]:\/|\/)/.test(id);
+
 const round2 = (r: number | null): number | null => (r === null ? null : Math.round(r * 100) / 100);
 
 /**
  * 組出 .nexus-stats.json 的內容。
  * - 節點:面板上的(線上或休眠)、已終止還留著 session 的、只剩封存檔的;同一個節點ID 以前面的為準。
  *   統計用任務紀錄(排除封存與判例請求);任務紀錄已被清掉的封存節點改用封存檔裡的數字。專案是做過的專案名稱(最近的在前)。
- * - session.CLI有紀錄:session 出現在後台自己的紀錄清單裡;清單還沒查到時是 null。可接回:不在面板上、有 sessionId、工作目錄還在、而且有任一邊的紀錄。
+ * - session.CLI有紀錄:session 出現在後台自己的紀錄清單裡;清單還沒查到時是 null。可接回:不在面板上、在主控台資料庫的已終止節點清單裡、有 sessionId、工作目錄還在(和喚醒網址同一個判斷,見 wake.ts 的 canResume;只存在於封存檔的節點不算)。
  * - 協作:最近 30 天的交辦(ask_node),依 從→到 彙總;同席:最近 30 天的會議,依參與的節點組合彙總(含主持人)。
  */
 export function buildVaultStats(i: StatsInput) {
@@ -93,6 +99,8 @@ export function buildVaultStats(i: StatsInput) {
     const a = latest.get(n.id);
     const fromTasks = !!s?.tasks;
     const imgs = status === '封存' ? { avatar: a?.avatar ?? null, portrait: a?.portrait ?? null } : i.images(n.character);
+    // 專案:任務紀錄有就用任務紀錄(最近做的在前);沒有(只剩封存檔)就用封存檔記下的清單
+    const nodeProjects: Array<{ id: string; name: string }> = s?.projects.length ? s.projects : a?.projects ?? [];
     const sessionId = n.sessionId || a?.sessionId || null;
     const backend = n.backend ?? a?.backend ?? null;
     const dirOk = !!n.cwd && i.dirExists(n.cwd);
@@ -105,16 +113,17 @@ export function buildVaultStats(i: StatsInput) {
       驗收數: fromTasks ? s!.accepted : a?.accepted ?? 0,
       退回數: fromTasks ? s!.rejected : a?.rejected ?? 0,
       判例數: caseCount.get(n.id) || a?.cases || 0,
-      專案: (s?.projects ?? []).map(p => p.name),
+      專案: nodeProjects.map(p => p.name),
       // 和「專案」同序同長度;ID 是主控台的專案識別(git 版本庫與它的 worktree 共用,其他資料夾是正規化後的路徑),同名不同專案的 ID 不同
-      專案ID: (s?.projects ?? []).map(p => p.id),
+      專案ID: nodeProjects.map(p => p.id),
       // 和「專案ID」同序同長度:近 90 天(PROJECT_TASK_DAYS)在該專案的任務數,沒有就是 0
-      專案任務數: (s?.projects ?? []).map(p => recent.get(n.id)?.get(p.id) ?? 0),
+      專案任務數: nodeProjects.map(p => recent.get(n.id)?.get(p.id) ?? 0),
       總管: n.id === chiefId,
       頭像路徑: imgs.avatar, 立繪路徑: imgs.portrait,
       session: {
         後台: backend, sessionId, 主控台有紀錄: known, CLI有紀錄: cli, 工作目錄存在: dirOk,
-        可接回: !onBoard && !!sessionId && dirOk && (known || cli === true),
+        // 和喚醒網址同一個判斷(wake.ts 的 canResume):主控台資料庫的已終止節點才算,只存在於封存檔的不算
+        可接回: !onBoard && canResume({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists),
       },
     };
   };
@@ -153,6 +162,18 @@ export function buildVaultStats(i: StatsInput) {
     c.次數++; c.last = Math.max(c.last, d.startedAt);
     collabNoChief.set(k, c);
   }
+  // 依任務的專案彙總(專案星系第二版):每筆交辦的專案取它產生的任務的專案,沒有任務時取交辦時指定的專案,兩者都沒有就不算
+  const taskProject = new Map(i.tasks.flatMap(t => (t.project ? [[t.id, t.project] as const] : [])));
+  const collabProject = new Map<string, { 從: string; 到: string; 專案ID: string; 專案: string; 次數: number; last: number }>();
+  for (const d of i.dispatches) {
+    if (d.startedAt < since || d.fromChief || chiefThen(d.fromId, d.startedAt) || chiefThen(d.toId, d.startedAt)) continue;
+    const p = (d.taskId ? taskProject.get(d.taskId) : undefined) ?? d.project;
+    if (!p || !isProjectPath(p.id)) continue;
+    const k = `${d.fromId}\n${d.toId}\n${p.id}`;
+    const c = collabProject.get(k) ?? { 從: d.fromId, 到: d.toId, 專案ID: p.id, 專案: p.name, 次數: 0, last: 0 };
+    c.次數++; if (d.startedAt >= c.last) { c.last = d.startedAt; c.專案 = p.name; }
+    collabProject.set(k, c);
+  }
   const seatsNoChief = new Map<string, { 節點: string[]; 次數: number }>();
   for (const m of i.meetings) {
     if (m.startedAt < since || m.chiefHost || chiefThen(m.ids[0] ?? '', m.startedAt)) continue;
@@ -171,7 +192,11 @@ export function buildVaultStats(i: StatsInput) {
     table[id] = { 名稱: projectNames.get(id)?.name || name || id, 類型: known ? (known.git ? 'git' : '資料夾') : (i.projectKind?.(id) ?? '資料夾') };
   };
   for (const s of stats.values()) for (const p of s.projects) addProject(p.id, p.name);
-  for (const c of i.cases) if (c.kind === 'case' && c.scope === '專案' && c.projectId) addProject(c.projectId, c.projectId.split('/').pop() ?? c.projectId);
+  for (const a of latest.values()) for (const p of a.projects ?? []) addProject(p.id, p.name);
+  // 判例只收路徑形式的專案ID:舊判例沒有 專案ID 時,主控台讀到的是專案名稱(或 cases/<資料夾> 名稱),
+  // 拿名稱當鍵會在專案表多出一筆假的「資料夾」(和同一個專案的路徑鍵重複),所以不列入
+  for (const c of i.cases) if (c.kind === 'case' && c.scope === '專案' && isProjectPath(c.projectId)) addProject(c.projectId, c.projectId.split('/').pop() ?? c.projectId);
+  for (const c of collabProject.values()) addProject(c.專案ID, c.專案);
   return {
     更新時間: new Date(i.now).toISOString(),
     圖像目錄: i.portraitsDir,
@@ -180,12 +205,20 @@ export function buildVaultStats(i: StatsInput) {
     同席: [...seats.values()].sort((a, b) => b.次數 - a.次數),
     協作不含總管: [...collabNoChief.values()].sort((a, b) => b.last - a.last).map(c => ({ 從: c.從, 到: c.到, 次數: c.次數, 最後: new Date(c.last).toISOString() })),
     同席不含總管: [...seatsNoChief.values()].sort((a, b) => b.次數 - a.次數),
+    協作專案不含總管: [...collabProject.values()].sort((a, b) => b.last - a.last).map(c => ({ 從: c.從, 到: c.到, 專案ID: c.專案ID, 專案: c.專案, 次數: c.次數, 最後: new Date(c.last).toISOString() })),
     專案表: table,
     總管任期: terms.map(t => ({ 節點: t.id, 名稱: t.name, 開始: new Date(t.from).toISOString(), 結束: t.to === null ? null : new Date(t.to).toISOString() })),
   };
 }
 
 const ARCHIVE_RE = /^nodes\/封存\/.+\.md$/;
+/** 封存檔的 專案ID 與 專案 清單:長度要相同、ID 要是路徑形式,否則整個不用(舊檔或手改壞的不猜)。 */
+export function archiveProjects(ids: unknown, names: unknown): Array<{ id: string; name: string }> {
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? [v] : []);
+  const a = list(ids), b = list(names);
+  if (!a.length || a.length !== b.length || !a.every(isProjectPath)) return [];
+  return a.map((id, k) => ({ id, name: b[k] || id.split('/').pop() || id }));
+}
 const num = (v: unknown): number => { const n = Number(Array.isArray(v) ? v[0] : v); return Number.isFinite(n) ? n : 0; };
 const str = (v: unknown): string => (Array.isArray(v) ? v.join('、') : String(v ?? ''));
 
@@ -214,6 +247,7 @@ export function readArchives(vaultDir: string, entries: MemoryEntry[]): ArchiveI
       tasks: num(meta.get('任務數')), done: num(meta.get('完成數')), completionRate: rate === undefined || rate === '' ? null : num(rate),
       accepted: num(meta.get('驗收數')), rejected: num(meta.get('退回數')), cases: num(meta.get('判例數')),
       avatar: abs(meta.get('頭像')), portrait: abs(meta.get('立繪')), at: e.updatedAt,
+      projects: archiveProjects(meta.get('專案ID'), meta.get('專案')),
     });
   }
   return out;

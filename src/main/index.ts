@@ -67,6 +67,7 @@ async function handleWake(raw: string): Promise<void> {
   const target = core.wakeTarget(parsed.node);
   if (!target) { await notice('找不到這個節點,或它已經沒有可以接回的對話。', 'error'); return; }
   if (target.kind === 'board') { await notice(`「${target.name}」已經在面板上了。`); return; }
+  if (target.kind === 'unavailable') { await notice(`「${target.name}」無法接回:${target.reason}。`, 'error'); return; }
   const r = await dialog.showMessageBox(win, { type: 'question', title: '喚醒節點', message: `要接回 ${target.name} 的舊對話嗎?`, detail: '會把這個已封存的節點放回面板,繼續原本的對話。', buttons: ['接回', '取消'], defaultId: 1, cancelId: 1, noLink: true });
   if (r.response !== 0) return;
   try { await core.openOldSession(target.input); }

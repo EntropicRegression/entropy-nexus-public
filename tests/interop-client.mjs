@@ -39,6 +39,12 @@ try {
 
   const list = await call(A, 'list_nodes', {});
   check('list_nodes 列出其他節點、不含自己', list.text.includes('Beta') && list.text.includes('Gamma') && !list.text.includes('名稱:Alpha') && list.text.includes('可以呼叫'), list.text);
+  check('list_nodes 每個節點多一欄專案', list.text.split('
+').filter(l => l.startsWith('- 名稱:')).every(l => l.includes(' | 專案:')), list.text);
+  const badProject = await call(A, 'ask_node', { node: 'Beta', prompt: 'x', project: '沒有這個專案' });
+  check('project 填主控台不認得的專案:回錯誤並附可用清單', badProject.error && badProject.text.includes('不認得專案') && badProject.text.includes('ID:'), badProject.text);
+  const badMeeting = await call(A, 'start_meeting', { topic: 't', participants: ['Beta'], project: '沒有這個專案' });
+  check('start_meeting 的 project 也驗證', badMeeting.error && badMeeting.text.includes('不認得專案'), badMeeting.text);
 
   // 自動模式的 Alpha 呼叫 Beta:不必經過使用者同意
   const r1 = await ask(A, 'Beta', '請幫我看一下這段設計。');

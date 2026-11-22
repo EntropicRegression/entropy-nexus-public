@@ -8,8 +8,8 @@ import { buildArchive, writeArchive } from '../src/main/memory-archive.ts';
 import { computeNodeStats } from '../src/shared/node-stats.ts';
 import { MemoryVault, README, entryFromFile, parseFrontMatter, readmeUpdate } from '../src/main/memory-vault.ts';
 import { characterImages, snapshotDir } from '../src/main/vault-images.ts';
-import { atomicWriteJson, buildVaultStats, readArchives, StatsWriter } from '../src/main/vault-stats.ts';
-import { findWakeUrl, parseWakeUrl } from '../src/main/wake.ts';
+import { archiveProjects, atomicWriteJson, buildVaultStats, isProjectPath, readArchives, StatsWriter } from '../src/main/vault-stats.ts';
+import { canResume, findWakeUrl, parseWakeUrl, wakeTargetOf } from '../src/main/wake.ts';
 import { parseChiefTerms, updateChiefTerms, wasChief } from '../src/main/chief-tenure.ts';
 import { projectKindFromPath } from '../src/main/project.ts';
 
@@ -50,6 +50,57 @@ await test('封存:複製圖像快照,頭像、立繪屬性是相對封存檔的
   const g = k => meta.get(k);
   assert.deepEqual([g('任務數'), g('完成數'), g('完成率'), g('驗收數'), g('退回數'), g('判例數')], ['3', '2', '0.67', '1', '1', '2']);
   assert.deepEqual([g('後台'), g('後台ID'), g('sessionId'), g('工作目錄')], ['Claude Code', 'claude', 'sess-1', 'C:/work']);
+  // 專案清單(2026-11-22 起):和 專案 同序
+  assert.deepEqual([g('專案ID'), g('專案')], [['p'], ['專案甲']]);
+});
+
+await test('封存檔的專案清單:只剩封存檔的節點,統計檔改用它的 專案/專案ID;沒有清單的舊封存檔照舊是空的', () => {
+  const vault = tmp();
+  const proj = [{ id: 'c:/work/star-app', name: 'star-app' }, { id: 'c:/shared/test', name: 'test' }];
+  const tasks = [task('n1', 'done', { project: proj[0] }), task('n1', 'done', { project: proj[1] })];
+  const r = writeArchive(vault, { node: { ...node, id: 'arch1', name: '封存者' }, stats: computeNodeStats(tasks).get('n1'), tasks, traits: '', summary: '', summarySource: '無', noSummaryReason: '', cases: [], now: NOW });
+  const old = writeArchive(vault, { node: { ...node, id: 'arch0', name: '舊封存' }, stats: undefined, tasks: [], traits: '', summary: '', summarySource: '無', noSummaryReason: '', cases: [], now: NOW });
+  const entry = rel => entryFromFile(rel, readFileSync(join(vault, rel), 'utf8'), 1, 1);
+  const archives = readArchives(vault, [entry(r.path), entry(old.path)]);
+  const a1 = archives.find(a => a.nodeId === 'arch1');
+  assert.deepEqual(a1.projects.map(p => p.id).sort(), ['c:/shared/test', 'c:/work/star-app']);
+  assert.deepEqual(archives.find(a => a.nodeId === 'arch0').projects, []);
+  const out = buildVaultStats({ now: NOW.getTime(), portraitsDir: portraits, live: [], removed: [], archives, tasks: [], cases: [], dispatches: [], meetings: [], cliSessions: null,
+    dirExists: () => true, images: () => ({ avatar: null, portrait: null }), projectKind: id => (id.includes('shared') ? '資料夾' : 'git') });
+  const n = out.節點.arch1;
+  assert.deepEqual(n.專案ID.slice().sort(), ['c:/shared/test', 'c:/work/star-app']);
+  assert.equal(n.專案.length, n.專案ID.length);
+  assert.deepEqual(n.專案任務數, [0, 0], '沒有任務紀錄:近 90 天任務數都是 0');
+  assert.deepEqual(out.專案表['c:/work/star-app'], { 名稱: 'star-app', 類型: 'git' });
+  assert.deepEqual([out.節點.arch0.專案, out.節點.arch0.專案ID], [[], []]);
+  // 長度不符或不是路徑形式的清單整個不用
+  assert.deepEqual(archiveProjects(['c:/a', 'c:/b'], ['a']), []);
+  assert.deepEqual(archiveProjects(['名稱'], ['名稱']), []);
+  assert.deepEqual(archiveProjects('c:/a', 'a'), [{ id: 'c:/a', name: 'a' }]);
+});
+
+await test('協作專案不含總管:依交辦產生的任務的專案彙總;沒有任務時用指定的專案;總管與名稱形式的專案不算;舊欄位不變', () => {
+  const now = NOW.getTime();
+  const app = { id: 'c:/work/app', name: 'app' }, site = { id: 'd:/repo/site', name: 'site' };
+  const tasks = [task('y', 'done', { id: 'ty1', project: app }), task('y', 'done', { id: 'ty2', project: site }), task('y', 'done', { id: 'ty3', project: app })];
+  const out = buildVaultStats({ now, portraitsDir: portraits, live: [], removed: [], archives: [], tasks, cases: [], meetings: [], cliSessions: null,
+    dirExists: () => true, images: () => ({ avatar: null, portrait: null }), chiefId: 'chief',
+    dispatches: [
+      { id: 'd1', startedAt: now - 3000, fromId: 'x', toId: 'y', taskId: 'ty1' },
+      { id: 'd2', startedAt: now - 2000, fromId: 'x', toId: 'y', taskId: 'ty2', project: app }, // 任務的專案優先(site)
+      { id: 'd3', startedAt: now - 1000, fromId: 'x', toId: 'y', taskId: 'ty3' },
+      { id: 'd4', startedAt: now - 1000, fromId: 'x', toId: 'z', project: site }, // 沒有任務:用指定的專案
+      { id: 'd5', startedAt: now - 1000, fromId: 'chief', toId: 'y', taskId: 'ty1' }, // 總管:不算
+      { id: 'd6', startedAt: now - 1000, fromId: 'x', toId: 'w' }, // 沒有專案:不算
+      { id: 'd7', startedAt: now - 1000, fromId: 'x', toId: 'w', project: { id: '舊名稱', name: '舊名稱' } }, // 名稱形式:不算
+      { id: 'd8', startedAt: now - 40 * 86400000, fromId: 'x', toId: 'y', taskId: 'ty1' }, // 超過 30 天:不算
+    ] });
+  const rows = out.協作專案不含總管.map(c => [c.從, c.到, c.專案ID, c.專案, c.次數]).sort((a, b) => (a.join() < b.join() ? -1 : 1));
+  assert.deepEqual(rows, [['x', 'y', 'c:/work/app', 'app', 2], ['x', 'y', 'd:/repo/site', 'site', 1], ['x', 'z', 'd:/repo/site', 'site', 1]]);
+  assert.ok(out.協作專案不含總管.every(c => typeof c.最後 === 'string' && !Number.isNaN(Date.parse(c.最後))));
+  // 舊欄位意義不變:協作不含總管 依 從→到 彙總,含沒有專案的交辦
+  assert.deepEqual(out.協作不含總管.map(c => [c.從, c.到, c.次數]).sort(), [['x', 'w', 2], ['x', 'y', 3], ['x', 'z', 1]]);
+  assert.ok('d:/repo/site' in out.專案表 && !('舊名稱' in out.專案表));
 });
 
 await test('封存:沒有角色或沒有圖像時省略 頭像、立繪;沒有 session 時省略 sessionId', () => {
@@ -106,7 +157,7 @@ await test('統計:節點的數字、狀態、圖像路徑、session 狀態、�
     meetings: [{ id: 'm1', startedAt: now - 1000, endedAt: now, ids: ['n1', 'n2', 'n3'] }, { id: 'm2', startedAt: now - 2000, endedAt: now, ids: ['n3', 'n2', 'n1'] }, { id: 'm0', startedAt: now - 40 * 86400000, endedAt: now - 40 * 86400000, ids: ['n1', 'n2'] }],
   }));
   // 舊欄位都在;2026-11-22 起另有專案表、總管任期與不含總管的協作、同席(只新增,不改舊欄位)
-  assert.deepEqual(Object.keys(out).sort(), ['協作', '同席', '圖像目錄', '更新時間', '節點', '專案表', '總管任期', '協作不含總管', '同席不含總管'].sort());
+  assert.deepEqual(Object.keys(out).sort(), ['協作', '同席', '圖像目錄', '更新時間', '節點', '專案表', '總管任期', '協作不含總管', '同席不含總管', '協作專案不含總管'].sort());
   assert.equal(out.圖像目錄, portraits);
   assert.equal(out.更新時間, NOW.toISOString());
   const a = out.節點.n1;
@@ -198,7 +249,12 @@ await test('專案星系第一版:專案表兩種類型、總管旗標、專案�
   ];
   const asked = [];
   const mk = o => ({ now, portraitsDir: portraits, live: [{ id: 'a1', name: '甲', character: '', backend: 'claude', sessionId: null, cwd: 'C:/w', state: 'idle' }, { id: 'b2', name: '乙', character: '', backend: 'claude', sessionId: null, cwd: 'C:/w', state: 'idle' }],
-    removed: [], archives: [], tasks: tasks3, cases: [{ path: 'cases/x/1.md', kind: 'case', scope: '專案', projectId: 'd:/repo/other', nodeId: 'a1' }], dispatches: [], meetings: [], cliSessions: null, dirExists: () => true,
+    removed: [], archives: [], tasks: tasks3, cases: [
+      { path: 'cases/x/1.md', kind: 'case', scope: '專案', projectId: 'd:/repo/other', nodeId: 'a1' },
+      // 舊判例沒有 專案ID:主控台讀到的是名稱或資料夾名稱,不能進專案表
+      { path: 'cases/app/2.md', kind: 'case', scope: '專案', projectId: 'app', nodeId: 'a1' },
+      { path: 'cases/舊專案/3.md', kind: 'case', scope: '專案', projectId: '舊專案', nodeId: 'b2' },
+    ], dispatches: [], meetings: [], cliSessions: null, dirExists: () => true,
     images: () => ({ avatar: null, portrait: null }), projectKind: id => { asked.push(id); return id === 'd:/repo/other' ? 'git' : '資料夾'; }, ...o });
   const out = buildVaultStats(mk({ chiefId: 'b2' }));
   const a = out.節點.a1;
@@ -211,6 +267,16 @@ await test('專案星系第一版:專案表兩種類型、總管旗標、專案�
   assert.equal(out.專案表['c:/old/legacy'].類型, '資料夾', '舊任務沒記類型:問 projectKind');
   assert.equal(out.專案表['d:/repo/other'].類型, 'git', '判例裡的專案也列進專案表');
   assert.ok(asked.includes('c:/old/legacy') && !asked.includes('c:/work/app'), '任務已記下類型的不再判斷');
+  // 名稱形式的鍵不進專案表(不會多出假的「資料夾」),也不會被拿去判斷類型
+  assert.ok(!('app' in out.專案表) && !('舊專案' in out.專案表), Object.keys(out.專案表).join());
+  assert.ok(Object.keys(out.專案表).every(isProjectPath), '專案表的鍵都是路徑形式');
+  assert.ok(!asked.includes('app') && !asked.includes('舊專案'));
+  assert.deepEqual(Object.keys(out.專案表).sort(), ['c:/old/legacy', 'c:/shared/test', 'c:/work/app', 'd:/repo/other']);
+  // 既有欄位不受影響:判例數仍計入舊判例
+  assert.equal(out.節點.a1.判例數, 2);
+  assert.equal(out.節點.b2.判例數, 1);
+  for (const id of ['c:/a/b', 'C:/A/B', '/home/x/repo', '//server/share/repo']) assert.equal(isProjectPath(id), true, id);
+  for (const id of ['app', '舊專案', 'cases', '', null, undefined, 'a:b']) assert.equal(isProjectPath(id), false, String(id));
   // 總管旗標:換總管前後
   assert.equal(out.節點.b2.總管, true);
   assert.equal(a.總管, false);
@@ -276,6 +342,38 @@ await test('專案類型只看檔案:有 .git 或是 bare 版本庫算 git,其�
   assert.equal(projectKindFromPath('c:/plain', has(new Set(['c:/plain/HEAD']))), '資料夾');
   assert.equal(projectKindFromPath('c:/gone', () => false), '資料夾');
   assert.equal(projectKindFromPath('c:/err', () => { throw new Error('x'); }), '資料夾');
+});
+
+await test('可接回與喚醒用同一個判斷:統計檔標可接回的一定喚醒得回;只存在於封存檔、超過已終止清單上限的不標', () => {
+  const now = NOW.getTime();
+  const exists = p => !p.startsWith('C:/gone');
+  const live = [{ id: 'on1', name: '在線', character: '', backend: 'claude', sessionId: 's-on', cwd: 'C:/w', state: 'idle', parentId: null }];
+  // 資料庫的已終止節點清單(主控台只取最近 200 個;清單外的節點只剩封存檔)
+  const removed = [
+    { id: 'r-ok', name: '可接回', character: '', backend: 'claude', sessionId: 's-ok', cwd: 'C:/w', model: '' },
+    { id: 'r-gone', name: '目錄沒了', character: '', backend: 'codex', sessionId: 's-gone', cwd: 'C:/gone/x', model: '' },
+  ];
+  // 只存在於封存檔:CLI 自己的紀錄裡有這個 session、工作目錄也在(舊規則會標可接回)
+  const archives = [{ nodeId: 'a-only', name: '只有封存檔', character: '', backend: 'claude', sessionId: 's-arch', cwd: 'C:/w', tasks: 1, done: 1, completionRate: 1, accepted: 1, rejected: 0, cases: 0, avatar: null, portrait: null, at: now - 1000 },
+    // 超過清單上限:資料庫還有這個節點,但不在 loadRemovedAgents 取回的 200 個裡,只能從封存檔看到
+    { nodeId: 'r-old', name: '超過上限', character: '', backend: 'claude', sessionId: 's-old', cwd: 'C:/w', tasks: 0, done: 0, completionRate: null, accepted: 0, rejected: 0, cases: 0, avatar: null, portrait: null, at: now - 2000 }];
+  const out = buildVaultStats({ now, portraitsDir: portraits, live, removed, archives, tasks: [], cases: [], dispatches: [], meetings: [],
+    cliSessions: new Set(['claude:s-arch', 'claude:s-old', 'claude:s-ok', 'codex:s-gone']), dirExists: exists, images: () => ({ avatar: null, portrait: null }) });
+  const can = id => out.節點[id].session.可接回;
+  assert.deepEqual(['on1', 'r-ok', 'r-gone', 'a-only', 'r-old'].map(can), [false, true, false, false, false]);
+  assert.equal(out.節點['a-only'].session.CLI有紀錄, true, 'CLI 有紀錄仍照實報告,只是不算可接回');
+  // 喚醒網址的判斷:和統計檔一致
+  for (const id of Object.keys(out.節點)) {
+    const t = wakeTargetOf(id, live, removed, exists);
+    assert.equal(t?.kind === 'removed', can(id), id);
+  }
+  assert.equal(wakeTargetOf('on1', live, removed, exists).kind, 'board');
+  assert.deepEqual(wakeTargetOf('r-gone', live, removed, exists), { kind: 'unavailable', name: '目錄沒了', reason: '原本的工作目錄已經不存在' });
+  assert.equal(wakeTargetOf('a-only', live, removed, exists), null, '只有封存檔:找不到(不會用新的節點 ID 接回)');
+  assert.deepEqual(wakeTargetOf('r-ok', live, removed, exists).input, { backend: 'claude', sessionId: 's-ok', cwd: 'C:/w', agentId: 'r-ok', name: '可接回', character: '', model: '' });
+  assert.equal(canResume({ sessionId: null, cwd: 'C:/w' }, true, exists), false);
+  assert.equal(canResume({ sessionId: 's', cwd: '' }, true, exists), false);
+  assert.equal(canResume({ sessionId: 's', cwd: 'C:/w' }, false, exists), false);
 });
 
 await test('喚醒網址:解析與驗證', () => {

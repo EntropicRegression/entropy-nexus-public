@@ -110,7 +110,11 @@ export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'arc
 export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource; from?: TaskFrom }
 
 /** 節點互相呼叫(或會議)時,指令是哪個節點交辦的;meeting 為 true 表示是會議裡的發言回合。 */
-export interface TaskFrom { id: string; name: string; meeting?: boolean }
+export interface TaskFrom {
+  id: string; name: string; meeting?: boolean;
+  /** 交辦者明確指定的專案(ask_node / start_meeting 的 project 參數);沒有就用接手節點的工作目錄所屬的專案。 */
+  project?: { id: string; name: string; git?: boolean };
+}
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
 export interface UsageWindow {
@@ -350,6 +354,8 @@ export interface DispatchEntry {
   taskId?: string;
   /** 交辦當下發起者是不是總管;舊資料沒有這個欄位。 */
   fromChief?: boolean;
+  /** 交辦者明確指定的專案;沒指定或舊資料沒有這個欄位。 */
+  project?: { id: string; name: string };
 }
 
 /**
