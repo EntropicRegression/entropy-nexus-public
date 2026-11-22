@@ -10,7 +10,8 @@ import { applyProject, dumpProjectsFile, loadUserTemplates, parseFlow, parseProj
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('[ok]', name); };
 
-const TEMPLATE = readFileSync(resolve(import.meta.dirname, '../src/main/flow/templates/implement-review.yaml'), 'utf8');
+// CI 在 Windows 上 checkout 會轉成 CRLF;測試用字串取代範本內容,先統一成 LF(解析本身兩種都接受,另有測試)
+const TEMPLATE = readFileSync(resolve(import.meta.dirname, '../src/main/flow/templates/implement-review.yaml'), 'utf8').replace(/\r\n/g, '\n');
 const base = () => parseFlow(TEMPLATE, 'builtin', 'implement-review.yaml');
 /** 把範本改一點再解析;edit 收到 YAML 文字。 */
 const variant = edit => parseFlow(edit(TEMPLATE));

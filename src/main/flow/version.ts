@@ -172,8 +172,18 @@ export function linkDeps(repoRoot: string, dir: string): { linked: string[]; fai
 
 const isLink = (p: string) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
 const WIN = process.platform === 'win32';
-/** 路徑比較用的正規化:絕對路徑、斜線統一、去掉結尾斜線;Windows 不分大小寫。 */
-const normPath = (p: string) => { const s = resolve(p).replace(/\\/g, '/').replace(/\/+$/, ''); return WIN ? s.toLowerCase() : s; };
+/**
+ * 實際路徑:展開 Windows 的 8.3 短名稱(例如 C:\Users\RUNNER~1\…),git 回報的一律是長名稱,不展開會比對不到。
+ * 路徑還不存在時,展開最近一層存在的上層,再接回其餘部分。
+ */
+const longPath = (p: string): string => {
+  const abs = resolve(p);
+  try { return realpathSync.native(abs); } catch { /* 不存在:往上找 */ }
+  const parent = dirname(abs);
+  return parent === abs ? abs : join(longPath(parent), basename(abs));
+};
+/** 路徑比較用的正規化:絕對路徑、展開短名稱、斜線統一、去掉結尾斜線;Windows 不分大小寫。 */
+const normPath = (p: string) => { const s = longPath(p).replace(/\\/g, '/').replace(/\/+$/, ''); return WIN ? s.toLowerCase() : s; };
 const samePath = (a: string, b: string) => normPath(a) === normPath(b);
 /** child 是否在 parent 底下(不含 parent 本身)。 */
 const isInside = (child: string, parent: string) => normPath(child).startsWith(`${normPath(parent)}/`);
