@@ -100,7 +100,8 @@ export function serializeFrontMatter(meta: Record<string, MetaValue>): string {
   return lines.join('\n') + '\n';
 }
 
-interface WriteRecord { mtime: number; size: number }
+/** edited:這個檔案曾被使用者改過(主控台改成附加過);之後一律附加,不再整份取代。 */
+interface WriteRecord { mtime: number; size: number; edited?: boolean }
 const REGISTRY = '.nexus-writes.json';
 
 function readRegistry(vault: string): Record<string, WriteRecord> {
@@ -117,7 +118,7 @@ export function editedByOthers(vault: string, rel: string): boolean {
   const abs = join(vault, rel);
   if (!existsSync(abs)) return false;
   const rec = readRegistry(vault)[rel];
-  if (!rec) return true;
+  if (!rec || rec.edited) return true;
   const st = statSync(abs);
   return Math.floor(st.mtimeMs) !== rec.mtime || st.size !== rec.size;
 }
@@ -162,7 +163,7 @@ export function writeMemory(vault: string, rel: string, meta: Record<string, Met
   renameSync(tmp, abs);
   const st = statSync(abs);
   const reg = readRegistry(vault);
-  reg[relPath] = { mtime: Math.floor(st.mtimeMs), size: st.size };
+  reg[relPath] = { mtime: Math.floor(st.mtimeMs), size: st.size, ...(action === 'appended' ? { edited: true } : {}) };
   saveRegistry(vault, reg);
   if (!Number.isFinite(masked)) masked = 0;
   return { path: relPath, action, masked };

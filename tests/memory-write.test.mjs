@@ -78,8 +78,11 @@ test('寫入:使用者改過的檔案不覆寫,改成附加一段', () => {
   assert.equal(r.action, 'appended');
   const text = readFileSync(abs, 'utf8');
   assert.ok(text.includes('使用者補的一句。') && text.includes('## 主控台補充(2026-11-21 08:00)') && text.includes('特長:新的內容'));
-  // 附加之後重新記下,下一次 agent 的取代可以生效
-  assert.equal(editedByOthers(vault, 'nodes/Hagemi.md'), false);
+  // 附加過的檔案一直算「使用者改過」:之後 agent 的寫入照樣附加,不會整份取代掉使用者的內容(2026-11-22 修正;原本附加後會重新登記,下一次就整份取代)
+  assert.equal(editedByOthers(vault, 'nodes/Hagemi.md'), true);
+  const again = writeMemory(vault, 'nodes/Hagemi.md', { 種類: 'node' }, '特長:第三版', 'replace', new Date('2026-11-21T09:00:00Z'));
+  assert.equal(again.action, 'appended');
+  assert.ok(readFileSync(abs, 'utf8').includes('使用者補的一句。'), '使用者的內容還在');
 });
 
 test('寫入:agent 沒寫過的既有檔案(使用者自己建立的)也只附加', () => {
