@@ -10,7 +10,7 @@ import { chiefStatsSection, STATS_BUDGET } from '../src/shared/node-stats.ts';
 import { register } from 'node:module';
 // 測試直接載入 .ts:src 裡的相對匯入沒有副檔名(給打包器用),這裡註冊一個解析規則補上 .ts
 register('data:text/javascript,' + encodeURIComponent(String.raw`export async function resolve(s,c,n){if(/^\.\.?\//.test(s)&&!/\.\w+$/.test(s)){try{return await n(s+'.ts',c)}catch{}}return n(s,c)}`), import.meta.url);
-const { getSection, memorySearch, memoryWrite, nodeProfilePath, readNodeStrengths, scoreText, searchMemory, setSection, staleReason } = await import('../src/main/memory-tools.ts');
+const { getSection, memoryRead, memorySearch, memoryWrite, nodeProfilePath, readNodeStrengths, scoreText, searchMemory, setSection, staleReason } = await import('../src/main/memory-tools.ts');
 
 let passed = 0;
 const tests = [];
@@ -23,7 +23,7 @@ const nodes = [{ id: 'n1', name: 'Hagemi', backendLabel: 'Claude Code', model: '
 
 function setup(extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'nexus-memtools-'));
-  for (const d of ['nodes', 'cases', 'knowledge', 'preferences']) mkdirSync(join(dir, d), { recursive: true });
+  for (const d of ['nodes', 'cases', 'knowledge', 'preferences', 'meetings']) mkdirSync(join(dir, d), { recursive: true });
   const notes = [];
   const ahead = { n: null };
   const deps = {
@@ -36,7 +36,7 @@ function setup(extra = {}) {
           if (f.isDirectory()) walk(r); else if (f.name.endsWith('.md')) out.push(entryFromFile(r, readFileSync(join(dir, r), 'utf8'), 0, 0));
         }
       };
-      for (const d of ['nodes', 'cases', 'knowledge', 'preferences']) walk(d);
+      for (const d of ['nodes', 'cases', 'knowledge', 'preferences', 'meetings']) walk(d);
       return out;
     },
     rescan: () => {},
@@ -247,6 +247,81 @@ test('總管守則:每個節點多一行特長,總長仍在預算內,超過時�
   const sm = chiefStatsSection(many, st, NOW, STATS_BUDGET, new Map(many.map(n => [n.id, '很會做事'.repeat(10)])));
   assert.ok(sm.length <= STATS_BUDGET && sm.includes('另有'), String(sm.length));
   assert.equal(chiefStatsSection(ns, st, NOW).includes('特長:'), false, '沒有側寫就不顯示');
+});
+
+const meetingFile = (status, project, topic, host = 'n1') => ['---', '種類: 會議紀錄', '範圍: 專案', `專案ID: ${project.id}`, `專案: ${project.name}`, `節點ID: ${host}`, '參與節點ID: [n1, n2]', `主題: ${topic}`, '更新時間: 2026-11-20', status === null ? '' : `狀態: ${status}`, '---', '# 逐字紀錄', `討論${topic}的重點是快取策略。`].filter(Boolean).join('\n');
+function meetingSetup() {
+  const env = setup();
+  const other = { id: 'c:/work/beta', name: 'beta' };
+  const w = (rel, text) => { mkdirSync(join(env.dir, rel.split('/').slice(0, -1).join('/')), { recursive: true }); writeFileSync(join(env.dir, rel), text); };
+  w('meetings/alpha/2026-11-20-未確認會.md', meetingFile('未確認', PROJ, '未確認會'));
+  w('meetings/alpha/2026-11-20-已確認會.md', meetingFile('已確認', PROJ, '已確認會'));
+  w('meetings/alpha/2026-11-20-退回會.md', meetingFile('退回', PROJ, '退回會'));
+  w('meetings/alpha/2026-11-20-空白狀態會.md', meetingFile(null, PROJ, '空白狀態會'));
+  w('meetings/beta/2026-11-20-別案會.md', meetingFile('已確認', other, '別案會'));
+  return env;
+}
+
+test('會議紀錄:索引成 meeting,標題取主題、nodeId 取主持人', () => {
+  const { dir } = meetingSetup();
+  const e = entryFromFile('meetings/alpha/2026-11-20-已確認會.md', readFileSync(join(dir, 'meetings/alpha/2026-11-20-已確認會.md'), 'utf8'), 0, 0);
+  assert.equal(e.kind, 'meeting');
+  assert.equal(e.title, '已確認會');
+  assert.equal(e.nodeId, 'n1');
+  assert.equal(e.scope, '專案');
+  assert.equal(e.projectId, 'c:/work/alpha');
+  assert.equal(e.status, '已確認');
+});
+
+test('會議紀錄:memory_search 只回已確認且同專案的,kind 與別名篩選有效,project 參數可查別專案', async () => {
+  const { deps } = meetingSetup();
+  const titles = hits => hits.map(h => h.entry.title).sort();
+  assert.deepEqual(titles(await searchMemory(deps, WORKER, { query: '快取' })), ['已確認會']);
+  assert.deepEqual(titles(await searchMemory(deps, WORKER, { query: '快取', kind: 'meeting' })), ['已確認會']);
+  assert.deepEqual(titles(await searchMemory(deps, WORKER, { query: '快取', kind: '會議' })), ['已確認會']);
+  assert.deepEqual(titles(await searchMemory(deps, WORKER, { query: '快取', kind: '會議紀錄' })), ['已確認會']);
+  assert.deepEqual(titles(await searchMemory(deps, WORKER, { query: '快取', kind: 'case' })), []);
+  assert.deepEqual(titles(await searchMemory(deps, WORKER, { query: '快取', project: 'beta' })), ['別案會']);
+  const text = await memorySearch(deps, WORKER, { query: '快取', kind: 'meeting' });
+  assert.ok(text.includes('[會議紀錄]'));
+  await assert.rejects(() => searchMemory(deps, WORKER, { kind: 'xyz' }), /meeting/);
+});
+
+test('會議紀錄:memory_read 拒絕未確認、退回、空白狀態與別專案的,已確認的讀得到', async () => {
+  const { deps, dir } = meetingSetup();
+  for (const n of ['未確認會', '退回會', '空白狀態會']) await assert.rejects(() => memoryRead(deps, WORKER, { path: `meetings/alpha/2026-11-20-${n}.md` }), /找不到這則記憶/);
+  await assert.rejects(() => memoryRead(deps, WORKER, { path: 'meetings/beta/2026-11-20-別案會.md' }), /其他專案/);
+  const out = await memoryRead(deps, WORKER, { path: 'meetings/alpha/2026-11-20-已確認會.md' });
+  assert.ok(out.includes('快取策略'));
+  assert.ok(existsSync(join(dir, '.nexus-heat.json')), '讀取會計入熱度');
+  assert.ok(readFileSync(join(dir, '.nexus-heat.json'), 'utf8').includes('meetings/alpha/2026-11-20-已確認會.md'));
+});
+
+test('會議紀錄:memory_write 不能寫 meeting(含別名),報錯說明由主控台自動寫入;其他種類不受影響', async () => {
+  const { deps, dir } = meetingSetup();
+  for (const kind of ['meeting', '會議', '會議紀錄', 'MEETING']) {
+    await assert.rejects(memoryWrite(deps, CHIEF, { kind, title: '偷寫', content: '內容' }), /會議紀錄由主控台在散會時自動寫入,不能用 memory_write/);
+  }
+  assert.ok(!existsSync(join(dir, 'knowledge')) || !readdirSyncSafe(join(dir, 'knowledge')).length, '沒有落進 knowledge');
+  const r = await memoryWrite(deps, CHIEF, { kind: 'knowledge', title: '正常知識', content: '照常寫入' });
+  assert.ok(r.includes('knowledge/'));
+});
+
+test('會議紀錄:writeMeetingRecord 實際寫檔後被索引成 meeting、狀態未確認,memory_search 查不到', async () => {
+  const { writeMeetingRecord } = await import('../src/main/meeting-record.ts');
+  const { deps, dir } = setup();
+  const res = writeMeetingRecord(dir, {
+    id: 'm1', topic: '獨特的鯨魚話題', hostId: 'n1', hostName: 'Hagemi', participants: [{ id: 'n2', name: 'Codex 一號' }],
+    projectId: PROJ.id, projectName: PROJ.name, startedAt: NOW, endedAt: NOW + 1000, endReason: '完成', conclusion: '結論鯨魚',
+    transcript: [{ round: 1, name: 'Codex 一號', nodeId: 'n2', text: '鯨魚發言' }],
+  });
+  const e = entryFromFile(res.path, readFileSync(join(dir, ...res.path.split('/')), 'utf8'), 0, 0);
+  assert.equal(e.kind, 'meeting');
+  assert.equal(e.status, '未確認');
+  assert.equal(e.title, '獨特的鯨魚話題');
+  assert.equal(e.projectId, PROJ.id);
+  assert.deepEqual(await searchMemory(deps, WORKER, { query: '鯨魚' }), []);
+  assert.deepEqual(await searchMemory(deps, WORKER, { query: '鯨魚', kind: 'meeting' }), []);
 });
 
 for (const [name, fn] of tests) { await fn(); passed++; console.log('[ok]', name); }

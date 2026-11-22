@@ -8,6 +8,7 @@ import { memoryRead, memorySearch, memoryWrite } from './memory-tools';
 import { buildLinks, dispatchTitle } from '../shared/collab';
 import { projectOf } from './project';
 import { chooseProject, folderHint, type KnownProject } from './project-choice';
+import { meetingRecordOf } from './meeting-record';
 
 /**
  * 節點互相呼叫:主控台開一個只聽本機迴路的 MCP 伺服器(Streamable HTTP,單純的 JSON 回應),
@@ -97,8 +98,14 @@ interface Meeting {
   chiefHost?: boolean;
   /** 主持人指定的專案:整場每一輪都記在這個專案。 */
   project?: KnownProject;
-  /** 會議紀錄;round 為 0 的是主控台的說明(略過、失敗、散會)。 */
-  transcript: Array<{ round: number; name: string; text: string }>;
+  /** 會議紀錄;round 為 0 的是主控台的說明(略過、失敗、散會)。nodeId:發言者的節點 id(主控台的說明是 null)。 */
+  transcript: Array<{ round: number; name: string; text: string; nodeId: string | null; inRound?: number }>;
+  /** 主持人用 meeting_say 結束會議時附帶的結語(寫進記憶庫的「結論」);沒有就是空字串。 */
+  conclusion: string;
+  /** 主持人太久沒發言而自動散會(記憶庫的結束原因記成「逾時」)。 */
+  timedOut?: boolean;
+  /** 沒指定 project 時,開會當下主持人工作目錄所屬的專案(寫會議紀錄用;散會時主持人可能已被刪除)。 */
+  hostProject?: { id: string; name: string };
   status: 'running' | 'done' | 'failed';
   error: string;
   /** 正在發言的節點那一回合的請求。 */
@@ -212,7 +219,7 @@ const TOOL_DEFS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: '關鍵字,空白分隔(中文直接寫詞即可,不分大小寫)。' },
-        kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好。不填就全部查。' },
+        kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference', 'meeting'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好、meeting 會議紀錄(使用者確認過的才查得到)。不填就全部查。' },
         node: { type: 'string', description: '只看和這個節點(名稱或 id)有關的記憶。' },
         project: { type: 'string', description: '指定專案(名稱或路徑);不填就是你目前的專案。' },
         subtype: { type: 'string', enum: ['decision', 'bookmark'], description: '只查專案知識的子類:decision 決策、bookmark 書籤(未完成的書籤排在前面)。不填就不限。' },
@@ -640,7 +647,8 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
       const decision = await core.requestApproval(callerId, '召開會議', `${members.map(a => a.name).join('、')}(最多 ${total} 輪):${topic.replace(/\s+/g, ' ').slice(0, 80)}`, `要召開一場會議,參與的節點:${who}。最多 ${total} 輪,每輪每個節點發言一次(各算一個回合,會用到它們的額度)${hostTurns ? ',每輪之間由召開者主持發言' : ''};允許後整場會議不再逐次詢問。\n\n主題:\n${topic}`);
       if (decision === 'deny') throw new Error('使用者拒絕召開這場會議。');
     }
-    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0, chiefHost: this.core?.isChief(callerId) ?? false, ...(project ? { project } : {}) };
+    const m: Meeting = { id: `m${randomUUID().slice(0, 7)}`, callerId, callerName: caller.name, topic, participants: members.map(a => ({ id: a.id, name: a.name })), rounds: total, createdAt: Date.now(), transcript: [], conclusion: '', status: 'running', error: '', current: null, waiters: new Set(), hostTurns, hostTurn: null, hostSeen: 0, chiefHost: this.core?.isChief(callerId) ?? false, ...(project ? { project } : {}) };
+    if (!project) { const hp = await projectOf(caller.cwd).catch(() => null); if (hp) m.hostProject = { id: hp.id, name: hp.name }; }
     this.meetings.set(m.id, m);
     this.publish();
     core.note(callerId, `會議開始(${m.id}):參與者 ${who};最多 ${total} 輪${hostTurns ? ',每輪之間輪到主持人發言' : ''}。中斷這個節點就會散會。`);
@@ -663,7 +671,7 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
         let skip = '';
         if (!agent) skip = '節點已經不在了';
         else try { this.checkReady(agent); } catch (err) { skip = String((err as Error).message).replace(/^節點「[^」]*」/, ''); }
-        if (skip) { this.record(m, 0, part.name, `(第 ${round} 輪略過:${skip})`); continue; }
+        if (skip) { this.record(m, 0, part.name, `(第 ${round} 輪略過:${skip})`, part.id, round); continue; }
         const news = m.transcript.slice(seen.get(part.id) ?? 0).filter(t => t.round > 0 && t.name !== part.name);
         seen.set(part.id, m.transcript.length);
         const prompt = [
@@ -688,10 +696,10 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
         this.publish();
         if (m.status !== 'running') return;
         const said = p.parts.join('\n\n').trim();
-        if (p.status === 'failed') { this.record(m, 0, part.name, `(第 ${round} 輪沒有完成發言:${p.error})${said ? `\n${said.slice(-MEETING_STATEMENT_MAX)}` : ''}`); continue; }
+        if (p.status === 'failed') { this.record(m, 0, part.name, `(第 ${round} 輪沒有完成發言:${p.error})${said ? `\n${said.slice(-MEETING_STATEMENT_MAX)}` : ''}`, part.id, round); continue; }
         spoke++;
         if (said.includes(NOTHING_TO_ADD)) nothing++;
-        this.record(m, round, part.name, said.slice(-MEETING_STATEMENT_MAX) || '(沒有文字發言)');
+        this.record(m, round, part.name, said.slice(-MEETING_STATEMENT_MAX) || '(沒有文字發言)', part.id);
       }
       if (!spoke) { this.endMeeting(m, 'failed', '這一輪沒有任何參與者完成發言'); return; }
       // 還有下一輪:交給主持人發言或結束(所有人都沒有補充時也由主持人決定)
@@ -701,7 +709,7 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
         if (end) break;
         continue;
       }
-      if (nothing === spoke) { this.record(m, 0, '主控台', `第 ${round} 輪所有人都表示沒有補充,提前結束。`); break; }
+      if (nothing === spoke) { this.record(m, 0, '主控台', `第 ${round} 輪所有人都表示沒有補充,提前結束。`, null, round); break; }
     }
     this.endMeeting(m, 'done', '');
   }
@@ -711,7 +719,8 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
     return new Promise<boolean>(resolve => {
       const timer = setTimeout(() => {
         if (m.hostTurn?.round !== round) return;
-        this.record(m, 0, '主控台', `主持人超過 ${Math.round(MEETING_TURN_MS / 60000)} 分鐘沒有發言,會議結束。`);
+        this.record(m, 0, '主控台', `主持人超過 ${Math.round(MEETING_TURN_MS / 60000)} 分鐘沒有發言,會議結束。`, null, round);
+        m.timedOut = true;
         m.hostTurn.resolve(true);
       }, MEETING_TURN_MS);
       m.hostTurn = { round, quiet, resolve: end => { clearTimeout(timer); m.hostTurn = null; resolve(end); } };
@@ -730,7 +739,8 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
     if (!turn) throw new Error('現在還沒輪到主持人發言(參與者還在發言)。請用 wait_reply 等到工具回傳「輪到你(主持人)發言」。');
     const said = text.trim();
     if (said.length > MAX_PROMPT) throw new Error(`發言太長(上限 ${MAX_PROMPT} 字)。`);
-    if (said) this.record(m, turn.round, `${m.callerName}(主持人)`, said);
+    if (said) this.record(m, turn.round, `${m.callerName}(主持人)`, said, m.callerId);
+    if (end && said) m.conclusion = said;
     if (end) this.record(m, 0, '主控台', '主持人結束了會議。');
     // 自己的發言不必再回給自己
     m.hostSeen = m.transcript.length;
@@ -751,8 +761,8 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
   }
 
   /** 記一則發言,並即時顯示在召開者的對話裡。 */
-  private record(m: Meeting, round: number, name: string, text: string): void {
-    m.transcript.push({ round, name, text });
+  private record(m: Meeting, round: number, name: string, text: string, nodeId: string | null = null, inRound?: number): void {
+    m.transcript.push({ round, name, text, nodeId, ...(inRound ? { inRound } : {}) });
     this.core?.note(m.callerId, round > 0 ? `【會議 ${m.id}|第 ${round} 輪|${name}】\n${text}` : `【會議 ${m.id}】${name === '主控台' ? '' : `${name} `}${text}`);
   }
 
@@ -766,7 +776,14 @@ ${prompt}`, [], 'user', 'interop', { id: caller.id, name: caller.name, ...(proje
     m.current = null;
     m.hostTurn?.resolve(true);
     // 有人發過言才算一場會議,記下同席的節點(給記憶庫統計與判例的參與節點用)
-    if (m.transcript.some(t => t.round > 0)) this.core?.recordMeeting({ id: m.id, startedAt: m.createdAt, endedAt: Date.now(), ids: [m.callerId, ...m.participants.map(x => x.id)], ...(m.chiefHost ? { chiefHost: true } : {}) });
+    const endedAt = Date.now();
+    if (m.transcript.some(t => t.round > 0)) {
+      this.core?.recordMeeting({ id: m.id, startedAt: m.createdAt, endedAt, ids: [m.callerId, ...m.participants.map(x => x.id)], ...(m.chiefHost ? { chiefHost: true } : {}) });
+      // 中止的會議把原因寫進紀錄(只放進記憶庫的紀錄,召開者的對話另有「會議中止」的說明)
+      const lastRound = Math.max(1, ...m.transcript.map(t => t.round || t.inRound || 0));
+      const transcript = status === 'failed' && error ? [...m.transcript, { round: 0, name: '主控台', nodeId: null, text: `會議中止:${error}`, inRound: lastRound }] : m.transcript;
+      this.core?.saveMeetingRecord(meetingRecordOf({ ...m, transcript, project: m.project ?? m.hostProject }, endedAt));
+    }
     this.publish();
     this.core?.note(m.callerId, status === 'done' ? `會議結束(${m.id}),共 ${m.transcript.filter(t => t.round > 0).length} 則發言。` : `會議中止(${m.id}):${error}`);
     for (const w of m.waiters) w();

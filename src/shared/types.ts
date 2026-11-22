@@ -211,7 +211,7 @@ export type TaskVerdict = 'accepted' | 'rejected' | null;
 export interface MemoryEntry {
   /** 相對於記憶庫資料夾的路徑,一律用 /。 */
   path: string;
-  kind: 'node' | 'case' | 'knowledge' | 'preference';
+  kind: 'node' | 'case' | 'knowledge' | 'preference' | 'meeting';
   scope: '全域' | '專案';
   projectId: string;
   nodeId: string;

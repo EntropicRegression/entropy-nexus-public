@@ -30,6 +30,7 @@ import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from 
 import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
 import { nodeProfilePath } from './memory-write';
+import { writeMeetingRecord, type MeetingRecordInput } from './meeting-record';
 import type { Store } from './store';
 import type { MemoryVault } from './memory-vault';
 import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
@@ -1277,6 +1278,27 @@ ${text}
     this.meetingLog = [...this.meetings().filter(x => x.startedAt >= keep && x.id !== m.id), m].slice(-200);
     this.store.setSetting('meetingLog', JSON.stringify(this.meetingLog));
     this.onStatsDirty?.();
+  }
+
+  /**
+   * interop 會議結束時呼叫:把逐字紀錄寫進記憶庫的 meetings/(狀態「未確認」,使用者確認後節點才查得到;格式見 meeting-record.ts)。
+   * 主持人沒指定專案時記到主持人工作目錄所屬的專案。沒有記憶庫或寫入失敗只在主持人的對話裡留一則說明,不影響會議本身。
+   */
+  saveMeetingRecord(input: MeetingRecordInput): void {
+    const vault = this.vault;
+    if (!vault) return;
+    const host = this.agents.get(input.hostId);
+    void (async () => {
+      let rec = input;
+      if (!rec.projectId && host?.cwd) {
+        const p = await projectOf(host.cwd).catch(() => null);
+        if (p) rec = { ...rec, projectId: p.id, projectName: p.name };
+      }
+      const r = writeMeetingRecord(vault.dir, rec);
+      // 不只靠資料夾監看(網路磁碟可能監看不到):寫完立刻重新索引
+      if (r) { try { vault.rescan(); } catch { /* 下次掃描會補上 */ } }
+      if (r) this.note(input.hostId, `會議紀錄已存進記憶庫:${r.path}(未確認,使用者在記憶庫確認後其他節點才查得到)。`);
+    })().catch(err => this.note(input.hostId, `會議紀錄沒有存進記憶庫:${String((err as Error)?.message ?? err)}`));
   }
 
   /**

@@ -81,20 +81,24 @@ export function safeName(s: string): string {
 }
 
 const needsQuote = (v: string) => v === '' || /^[\s[\]"'#]|[:#]\s|\s$/.test(v) || /[\r\n]/.test(v);
-const quote = (v: string) => `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, ' ')}"`;
+/** 雙引號字串:跳脫反斜線與雙引號;換行、單獨的 \r、其他控制字元(Tab 除外)、U+2028/2029 換成空白,YAML 才一定合法。 */
+const quote = (v: string) => `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')}"`;
 
-/** 把屬性寫成 YAML 區塊(只用到純量與單層清單;null、undefined 的欄位略過)。屬性值也會先遮罩。 */
-export function serializeFrontMatter(meta: Record<string, MetaValue>): string {
+/**
+ * 把屬性寫成 YAML 區塊(只用到純量與單層清單;null、undefined 的欄位略過)。屬性值也會先遮罩。
+ * quoteStrings 為 true 時,所有字串值(含清單內的字串)一律用雙引號、跳脫 \ 與 ",換行單行化;數字不加引號。預設只在必要時加引號。
+ */
+export function serializeFrontMatter(meta: Record<string, MetaValue>, quoteStrings = false): string {
   const lines = ['---'];
+  const one = (x: unknown, inList: boolean): string => {
+    const v = maskSecrets(String(x)).text;
+    if (quoteStrings && typeof x !== 'number') return quote(v);
+    return needsQuote(v) || (inList && /,/.test(v)) ? quote(v) : v;
+  };
   for (const [k, raw] of Object.entries(meta)) {
     if (raw === null || raw === undefined) continue;
-    if (Array.isArray(raw)) {
-      const items = raw.map(x => maskSecrets(String(x)).text).map(x => (needsQuote(x) || /,/.test(x) ? quote(x) : x));
-      lines.push(`${k}: [${items.join(', ')}]`);
-    } else {
-      const v = maskSecrets(String(raw)).text;
-      lines.push(`${k}: ${needsQuote(v) ? quote(v) : v}`);
-    }
+    if (Array.isArray(raw)) lines.push(`${k}: [${raw.map(x => one(x, true)).join(', ')}]`);
+    else lines.push(`${k}: ${one(raw, false)}`);
   }
   lines.push('---');
   return lines.join('\n') + '\n';
@@ -187,6 +191,8 @@ export const APPEND_RETRIES = 3;
 export interface WriteOptions {
   /** 測試用:在比對檔案版本、寫回之前呼叫(模擬寶庫或使用者剛好在這時改了檔案)。 */
   beforeCommit?: (abs: string, attempt: number) => void;
+  /** 檔頭的字串值一律用雙引號(會議紀錄用,名稱與主題可能含任何字元)。預設不變。 */
+  quoteStrings?: boolean;
 }
 
 export function writeMemory(vault: string, rel: string, meta: Record<string, MetaValue>, body: string, mode: 'replace' | 'append' = 'replace', now: Date = new Date(), opts: WriteOptions = {}): WriteResult {
@@ -201,10 +207,10 @@ export function writeMemory(vault: string, rel: string, meta: Record<string, Met
   const exists = existsSync(abs);
   if (!exists) {
     action = 'created';
-    text = serializeFrontMatter(meta) + '\n' + m.text.trim() + '\n';
+    text = serializeFrontMatter(meta, opts.quoteStrings) + '\n' + m.text.trim() + '\n';
   } else if (mode === 'replace' && !editedByOthers(vault, relPath)) {
     action = 'replaced';
-    text = serializeFrontMatter(meta) + '\n' + m.text.trim() + '\n';
+    text = serializeFrontMatter(meta, opts.quoteStrings) + '\n' + m.text.trim() + '\n';
   } else {
     // 附加(檔案被使用者改過,或明確要求附加):依「目前檔案內容」計算要附加的文字。原本要整份取代的寫入,只附有變動的章節;
     // 寫回前再比對一次檔案版本,讀取之後檔案被改過(寶庫或使用者剛好在寫)就重讀重算,不蓋掉別人剛寫的內容

@@ -7,8 +7,8 @@ import type { MemoryEntry } from '../shared/types';
  * 這個模組只負責讀取與索引(不依賴 Electron):掃描資料夾、解析屬性、把摘要寫進資料庫的索引表,檔案被外部改動後重新讀取。
  * 階段 1 沒有 agent 寫入;使用者(或之後的記憶庫管理 app)放進來的檔案也能被索引。
  */
-export const VAULT_DIRS = ['nodes', 'cases', 'knowledge', 'preferences'] as const;
-const KIND: Record<(typeof VAULT_DIRS)[number], MemoryEntry['kind']> = { nodes: 'node', cases: 'case', knowledge: 'knowledge', preferences: 'preference' };
+export const VAULT_DIRS = ['nodes', 'cases', 'knowledge', 'preferences', 'meetings'] as const;
+const KIND: Record<(typeof VAULT_DIRS)[number], MemoryEntry['kind']> = { nodes: 'node', cases: 'case', knowledge: 'knowledge', preferences: 'preference', meetings: 'meeting' };
 /** 只讀檔案開頭這麼多位元組來找屬性;一筆記憶不該大到哪裡去。 */
 const READ_MAX = 256 * 1024;
 
@@ -41,16 +41,18 @@ const README_V2 = `記憶庫資料夾
 `;
 /** 第一版說明檔(還沒有附屬資料的兩行)。 */
 const README_V1 = README_V2.replace('以底線 _ 開頭的資料夾(例如 nodes/封存/_圖像/)是附屬資料(圖像快照等),不是記憶:不會被索引,記憶庫管理 app 也應忽略。\n記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n\n', '');
-/** 目前的說明檔:補上熱度檔與管理 App 專屬的 .vault-awards.json,agent 已經會寫入。 */
-export const README = README_V2
+/** 第三版說明檔:補上熱度檔與管理 App 專屬的 .vault-awards.json,agent 已經會寫入(還沒有 meetings 資料夾)。 */
+const README_V3 = README_V2
   .replace('記憶庫根目錄的 .nexus-stats.json 是主控台定期寫出的節點統計(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n',
     '記憶庫根目錄的 .nexus-stats.json(節點統計)與 .nexus-heat.json(召回熱度)是主控台寫出的附屬檔(給管理 app 讀),.tmp 結尾的是寫入中的暫存檔,請忽略。\n'
     + '.vault-awards.json 是記憶寶庫管理 App 專屬檔,用來記錄手動頒發的光暈;主控台不讀不寫,請勿手動刪除。\n')
   .replace('主控台只負責讀取與建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n目前 agent 還不會寫入這裡(之後的版本才會),但放進來的檔案已經會被索引。\n',
     '主控台負責建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n'
     + '節點會透過記憶工具寫入(草稿與判例先標成「未確認」,在管理 app 確認後 agent 才查得到);你自己放進來的檔案也會被索引。\n');
+/** 目前的說明檔:子資料夾清單補上 meetings(會議紀錄)。 */
+export const README = README_V3.replace('  preferences  使用者偏好\n', '  preferences  使用者偏好\n  meetings     會議紀錄(每場會議結束後自動寫入,每個專案一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n');
 /** 主控台寫過的舊版說明檔;內容和其中一版完全相同(使用者沒改過)才換成新版。 */
-const OLD_READMES = [README_V1, README_V2];
+const OLD_READMES = [README_V1, README_V2, README_V3];
 
 /** 說明檔要寫成什麼:沒有檔案就寫新版;內容是主控台寫過的舊版(使用者沒改過)就換成新版;改過或已是新版回傳 null(不動)。 */
 export function readmeUpdate(existing: string | null): string | null {
@@ -62,24 +64,38 @@ export function readmeUpdate(existing: string | null): string | null {
 export type FrontValue = string | string[];
 export interface FrontMatter { meta: Map<string, FrontValue>; body: string; hasBlock: boolean }
 
+/** 雙引號字串內的跳脫:只還原 \" 與 \\,其他反斜線原樣保留(使用者手寫的 "C:\x" 不受影響)。 */
+const unescapeDouble = (s: string): string => s.replace(/\\(["\\])/g, '$1');
+
 const unquote = (v: string): string => {
   const t = v.trim();
-  return t.length >= 2 && ((t[0] === '"' && t.at(-1) === '"') || (t[0] === "'" && t.at(-1) === "'")) ? t.slice(1, -1) : t;
+  if (t.length >= 2 && t[0] === '"' && t.at(-1) === '"') return unescapeDouble(t.slice(1, -1));
+  if (t.length >= 2 && t[0] === "'" && t.at(-1) === "'") return t.slice(1, -1);
+  return t;
 };
 
-/** 「[a, b, "c, d"]」拆成清單(引號裡的逗號不拆)。 */
+/** 「[a, b, "c, d"]」拆成清單:引號只在項目開頭才算(O'Brien 的 ' 不是引號);雙引號內的逗號、#、單引號都保留,\" 與 \\ 會還原。 */
 function parseInlineList(v: string): string[] {
   const inner = v.trim().slice(1, -1);
-  const out: string[] = [];
-  let cur = '', quote = '';
-  for (const ch of inner) {
-    if (quote) { if (ch === quote) quote = ''; else cur += ch; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; continue; }
-    if (ch === ',' || ch === '，') { out.push(cur.trim()); cur = ''; continue; }
+  const out: Array<{ v: string; quoted: boolean }> = [];
+  let cur = '', quote = '', quoted = false;
+  const push = () => { out.push({ v: quoted ? cur : cur.trim(), quoted }); cur = ''; quoted = false; };
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      if (quote === '"' && ch === '\\' && (inner[i + 1] === '"' || inner[i + 1] === '\\')) { cur += inner[++i]; continue; }
+      if (ch === quote) { quote = ''; continue; }
+      cur += ch;
+      continue;
+    }
+    if ((ch === '"' || ch === "'") && cur.trim() === '' && !quoted) { quote = ch; quoted = true; cur = ''; continue; }
+    if (quoted && /\s/.test(ch)) continue;
+    if (ch === ',' || ch === '，') { push(); continue; }
     cur += ch;
   }
-  out.push(cur.trim());
-  return out.filter(Boolean);
+  push();
+  // 引號內的空字串項目保留(長度才對得上);未加引號的空白項目略過
+  return out.filter(x => x.quoted || x.v).map(x => x.v);
 }
 
 /**
@@ -124,6 +140,7 @@ const pick = (meta: Map<string, FrontValue>, keys: string[]): string => {
 const KIND_WORDS: Record<string, MemoryEntry['kind']> = {
   node: 'node', 節點側寫: 'node', 節點: 'node', case: 'case', 判例: 'case', 解法紀錄: 'case', 解法: 'case',
   knowledge: 'knowledge', 專案知識: 'knowledge', 知識: 'knowledge', preference: 'preference', 偏好: 'preference', 使用者偏好: 'preference',
+  meeting: 'meeting', 會議: 'meeting', 會議紀錄: 'meeting',
 };
 
 /** 子類只特別處理 decision / bookmark 英文寫法(轉成 決策 / 書籤);其他寫法原樣保留(去頭尾空白),使用者自己的分類不會被吃掉。 */
@@ -142,20 +159,20 @@ function parseTime(v: string): number {
 /**
  * 一個檔案的索引資料。rel 是相對於記憶庫的路徑(用 /)。
  * 種類:屬性「種類」寫的優先,否則看所在的子資料夾。範圍:屬性優先;沒寫時節點側寫與偏好是全域,有專案的是專案,其餘全域。
- * 專案:屬性「專案ID」→「專案」→ 路徑 cases|knowledge/<專案>/ 的資料夾名稱。標題:屬性 → 內文第一個 # 標題 → 檔名。
+ * 專案:屬性「專案ID」→「專案」→ 路徑 cases|knowledge|meetings/<專案>/ 的資料夾名稱。標題:屬性 → 內文第一個 # 標題 → 檔名。
  */
 export function entryFromFile(rel: string, text: string, mtime: number, size: number): MemoryEntry {
   const { meta, body } = parseFrontMatter(text);
   const parts = rel.split('/');
   const dirKind = KIND[parts[0] as keyof typeof KIND] ?? 'knowledge';
   const kind = KIND_WORDS[pick(meta, ['種類', 'kind', 'type']).toLowerCase()] ?? dirKind;
-  const folderProject = (parts[0] === 'cases' || parts[0] === 'knowledge') && parts.length > 2 ? parts[1] : '';
+  const folderProject = (parts[0] === 'cases' || parts[0] === 'knowledge' || parts[0] === 'meetings') && parts.length > 2 ? parts[1] : '';
   const projectId = pick(meta, ['專案ID', '專案id', 'project-id', 'projectId', '專案', 'project']) || folderProject;
   const scopeText = pick(meta, ['範圍', 'scope']);
   const scope: MemoryEntry['scope'] = /專案|project/i.test(scopeText) ? '專案' : /全域|global/i.test(scopeText) ? '全域'
     : kind === 'node' || kind === 'preference' ? '全域' : projectId ? '專案' : '全域';
   const heading = /^#\s+(.+)$/m.exec(body)?.[1].trim() ?? '';
-  const title = pick(meta, ['標題', '案由', 'title', 'name']) || heading || parts[parts.length - 1].replace(/\.md$/i, '');
+  const title = pick(meta, ['標題', '案由', '主題', 'title', 'name']) || heading || parts[parts.length - 1].replace(/\.md$/i, '');
   return {
     path: rel, kind, scope, projectId: scope === '專案' ? projectId : '', nodeId: pick(meta, ['節點ID', '節點id', 'node-id', 'nodeId', '節點', '承辦節點', 'node']),
     title, updatedAt: parseTime(pick(meta, ['更新時間', 'updated', 'updatedAt'])) || mtime, mtime, size, status: pick(meta, ['狀態', 'status']),
@@ -196,7 +213,7 @@ export class MemoryVault {
     this.rescan();
   }
 
-  /** 目前資料夾裡的 .md 檔(只看四個子資料夾,深度不限),回傳相對路徑。 */
+  /** 目前資料夾裡的 .md 檔(只看 VAULT_DIRS 的子資料夾,深度不限),回傳相對路徑。 */
   private files(): string[] {
     const out: string[] = [];
     const walk = (abs: string, rel: string) => {
