@@ -36,7 +36,10 @@ function compactWindows(windows: UsageWindow[]): UsageWindow[] {
   return [...worst.values()].slice(0, 2);
 }
 
-const winTitle = (backend: Backend, w: UsageWindow) => `${BACKEND_LABEL[backend]} 的${w.group && !w.label.includes(w.group) ? `「${w.group}」` : ''}${w.label}額度:已用 ${Math.round(w.used * 100)}%${w.resetsAt ? `,${when(w.resetsAt)} 重置` : ''}`;
+/** 額度條像血量:沒用過是滿的,用光是空的(剩餘百分比 = 100 − 已用,和節點資訊卡的血量條一致)。 */
+const leftPct = (w: UsageWindow) => 100 - Math.round(Math.max(0, Math.min(1, w.used)) * 100);
+
+const winTitle = (backend: Backend, w: UsageWindow) => `${BACKEND_LABEL[backend]} 的${w.group && !w.label.includes(w.group) ? `「${w.group}」` : ''}${w.label}額度:剩餘 ${leftPct(w)}%(已用 ${Math.round(w.used * 100)}%)${w.resetsAt ? `,${when(w.resetsAt)} 重置` : ''}`;
 
 function Bar({ value, level }: { value: number; level: string }) {
   return <span className={`dash-bar ${level}`}><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></span>;
@@ -118,7 +121,7 @@ export function Dashboard({ agents, caps, usage, data, quotaStop, observed, sele
         {observed.length > 0 && <button className={`ghost dash-ext ${extWaiting ? 'warn' : ''}`} onClick={onToggle} title="外部觀察節點(在主控台以外執行的 CLI);點一下在完整內容裡查看">外部 <b>{observed.length}</b></button>}
         <button className={`ghost dash-expand ${open ? 'on' : ''}`} onClick={onToggle} aria-expanded={open} title="完整內容:花費、今天的任務、每日預算設定、外部觀察節點">{open ? '收合' : '展開'}</button>
       </div>
-      <div className="dash-quota" role="button" tabIndex={0} aria-label="各後台的額度;點一下展開完整內容" onClick={onToggle} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}>
+      <div className="dash-quota" role="button" tabIndex={0} aria-label="各後台的剩餘額度;點一下展開完整內容" onClick={onToggle} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}>
         {backends.map(b => {
           const u = usage[b];
           const wins = compactWindows(u?.windows ?? []);
@@ -137,8 +140,8 @@ export function Dashboard({ agents, caps, usage, data, quotaStop, observed, sele
                   {wins.map(w => (
                     <div key={`${w.group ?? ''}:${w.label}`} className={`dq-win ${usedLevel(w.used, warnAt)}`} data-label={w.label} title={winTitle(b, w)}>
                       <span className="dq-label">{w.label}</span>
-                      <Bar value={w.used * 100} level={usedLevel(w.used, warnAt)} />
-                      <b className="dq-pct">{Math.round(w.used * 100)}%</b>
+                      <Bar value={leftPct(w)} level={usedLevel(w.used, warnAt)} />
+                      <b className="dq-pct">{leftPct(w)}%</b>
                       <span className="dq-reset">{w.resetsAt ? `${when(w.resetsAt)} 重置` : ''}</span>
                     </div>
                   ))}
@@ -270,8 +273,8 @@ export function DashboardFull({ agents, caps, usage, data, quotaStop, observed, 
             {u && u.windows.length > 0 ? u.windows.map(w => (
               <div key={`${w.group ?? ''}:${w.label}`} className={`df-win ${usedLevel(w.used, warnAt)}`} title={winTitle(b, w)}>
                 <span className="df-label">{w.group && !w.label.includes(w.group) ? `${w.group} · ` : ''}{w.label}</span>
-                <Bar value={w.used * 100} level={usedLevel(w.used, warnAt)} />
-                <b>{Math.round(w.used * 100)}%</b>
+                <Bar value={leftPct(w)} level={usedLevel(w.used, warnAt)} />
+                <b>{leftPct(w)}%</b>
                 <span className="df-reset">{w.resetsAt ? `${when(w.resetsAt)} 重置` : ''}</span>
               </div>
             )) : <div className="remote-note">{u?.unsupported ? '這個後台不提供剩餘額度。' : '尚未取得額度,這個後台的節點執行一次後會更新。'}</div>}
