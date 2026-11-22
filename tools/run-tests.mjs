@@ -25,6 +25,7 @@ const bash = file => ({ cmd: 'bash', args: [file] });
 /** 測試清單。min 是預估分鐘數(只用來顯示),timeout 是逾時分鐘數。 */
 const SUITES = [
   // ---- 單元測試
+  { name: 'script-syntax', group: 'unit', min: 0.1, ...node('tests/script-syntax.test.mjs') },
   { name: 'markdown', group: 'unit', min: 0.1, ...node('tests/markdown.test.mjs') },
   { name: 'project-choice', group: 'unit', min: 0.1, ...node('tests/project-choice.test.mjs') },
   { name: 'board-layout', group: 'unit', min: 0.1, ...node('tests/board-layout.test.mjs') },
