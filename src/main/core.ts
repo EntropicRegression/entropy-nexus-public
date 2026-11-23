@@ -20,7 +20,7 @@ import { createWorktree, mergeBack, openPullRequest, removeWorktree, worktreeSta
 import { formatCommentsPrompt, formatReviewPrompt } from '../shared/review';
 import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } from './portraits';
 import { characterImages } from './vault-images';
-import { readArchives, type MeetingRecord, type StatsInput } from './vault-stats';
+import { readArchives, type MeetingRecord, type SavepointSummary, type StatsInput } from './vault-stats';
 import { removeMedia } from './media';
 import { projectKindFromPath, projectOf } from './project';
 import { wakeTargetOf, type WakeTarget } from './wake';
@@ -30,7 +30,7 @@ import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from 
 import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
 import { addFrontMatterField, nodeProfilePath } from './memory-write';
-import { cleanStaleSavepointTemps, createSavepoint, defaultSessionRoots, savepointNote, type SavepointResult, type SessionRoots } from './session-savepoint';
+import { cleanStaleSavepointTemps, createSavepoint, defaultSessionRoots, savepointNote, savepointSummaries, sessionIndex, sessionMainExists, type SavepointResult, type SessionRoots } from './session-savepoint';
 import { writeMeetingRecord, type MeetingRecordInput } from './meeting-record';
 import { isDraftRequest, isMemoirRequest, waitForMemoir, type PromptOrigin } from './memoir';
 import type { Store } from './store';
@@ -750,6 +750,8 @@ export class Core {
       savepoint = await createSavepoint(this.vault.dir, { id: target.id, name: target.name, backend: target.backend, backendLabel: BACKEND_LABEL[target.backend], sessionId: target.sessionId, cwd: target.cwd }, this.sessionRoots)
         .catch(e => ({ ok: false as const, reason: String((e as Error)?.message ?? e) }));
       if (!savepoint.ok) console.error('建立對話存點失敗', savepoint.reason);
+      // 統計檔的存點清單要馬上看到這一份(markRemoved 之後會觸發重寫)
+      this.spCache.delete(target.id);
     }
     const wt = this.agents.get(id)?.worktree;
     if (wt) {
@@ -1492,13 +1494,47 @@ ${text}
       chiefId: this.chiefId,
       chiefTerms: this.terms(),
       projectKind: id => projectKindOf(id),
+      savepoints: id => this.savepointList(vault.dir, id),
+      sessionFileExists: (b, sid) => this.sessionFileOk(b, sid),
     };
+  }
+
+  /** 存點摘要的快取(每個節點 60 秒;建立存點時清掉那個節點的)。 */
+  private spCache = new Map<string, { at: number; list: SavepointSummary[] }>();
+  private savepointList(vaultDir: string, nodeId: string): SavepointSummary[] {
+    const hit = this.spCache.get(nodeId);
+    if (hit && Date.now() - hit.at < 60_000) return hit.list;
+    const list = savepointSummaries(vaultDir, nodeId);
+    this.spCache.set(nodeId, { at: Date.now(), list });
+    return list;
+  }
+
+  /**
+   * 工具資料夾裡還有沒有這段對話的主檔:每家每 60 秒掃一次資料夾建成 id 的集合(統計檔有上百個節點時不必各自走整棵資料夾)。
+   * 這是快照:閒置時檔案被清掉,要等下一次統計重寫才反映;真正接回時(S3)會再查一次。假資料後台一律當作還在(不查真正的家目錄)。
+   */
+  private sessionIdx = new Map<Backend, { at: number; ids: Set<string> }>();
+  private sessionFileOk(backend: Backend, sessionId: string): boolean {
+    if (this.capabilities.get(backend)?.simulated !== false) return true;
+    let hit = this.sessionIdx.get(backend);
+    if (!hit || Date.now() - hit.at >= 60_000) {
+      hit = { at: Date.now(), ids: sessionIndex(backend, this.sessionRoots) };
+      this.sessionIdx.set(backend, hit);
+    }
+    return hit.ids.has(sessionId.toLowerCase());
   }
 
   /** wake 網址用:節點在面板上、或是已終止還能接回(回傳要接回的 session 資料);都不是就是 null。 */
   wakeTarget(id: string): WakeTarget {
-    // 和統計檔的「可接回」用同一份已終止節點清單(loadRemovedAgents)與同一個判斷(canResume)
-    return wakeTargetOf(id, [...this.agents.values()], this.store.loadRemovedAgents().map(r => r.agent), p => existsSync(p));
+    // 和統計檔的「可接回」用同一份已終止節點清單(loadRemovedAgents)與同一個判斷(canWake:基本條件 + 原檔或存點)
+    const vault = this.vault;
+    return wakeTargetOf(id, [...this.agents.values()], this.store.loadRemovedAgents().map(r => r.agent), p => existsSync(p),
+      // 使用者主動觸發、只查一筆:即時查檔案(統計檔的索引最多 60 秒前,剛建立的對話可能還不在索引裡)
+      (b, sid) => this.capabilities.get(b)?.simulated !== false || sessionMainExists(b, sid, this.sessionRoots),
+      nodeId => {
+        const removed = this.store.loadRemovedAgents().find(r => r.agent.id === nodeId)?.agent;
+        return !!vault && !!removed?.sessionId && this.savepointList(vault.dir, nodeId).some(s => s.sessionId === removed.sessionId);
+      });
   }
   agentById(id: string): AgentInfo | undefined { return this.agents.get(id); }
 
@@ -1534,6 +1570,8 @@ ${text}
 
   setMemoryVault(v: MemoryVault): void {
     this.vault = v;
+    this.spCache.clear();
+    this.sessionIdx.clear();
     // 當機或強制關閉時留下的存點暫存資料夾(超過 1 小時)在啟動時清掉
     void cleanStaleSavepointTemps(v.dir).catch(e => console.error('清除存點暫存資料夾失敗', e));
   }

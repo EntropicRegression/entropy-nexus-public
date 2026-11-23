@@ -13,6 +13,8 @@ const sp = await import('../src/main/session-savepoint.ts');
 const { writeArchive } = await import('../src/main/memory-archive.ts');
 const { addFrontMatterField, writeMemory } = await import('../src/main/memory-write.ts');
 const { MemoryVault, parseFrontMatter, README } = await import('../src/main/memory-vault.ts');
+const { buildVaultStats } = await import('../src/main/vault-stats.ts');
+const { SAVEPOINT_RESTORE_SUPPORTED, wakeTargetOf } = await import('../src/main/wake.ts');
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log('[ok]', name); };
@@ -275,6 +277,136 @@ await test('記憶庫:存點裡的 .md(例如 Antigravity 的 brain)不會被索
   assert.ok(![...entries.keys()].some(p => p.includes('_存點')), JSON.stringify([...entries.keys()]));
   assert.match(README, /nodes\/封存\/_存點\/ 是終止節點時封存的完整原始對話/);
   assert.match(README, /沒有遮罩/);
+});
+
+// ---- S2:統計檔 ----
+
+await test('主檔還在不在:三家各自的主檔,附屬檔不算', () => {
+  const { roots } = fakeHome();
+  assert.equal(sp.sessionMainExists('claude', SID, roots), true);
+  assert.equal(sp.sessionMainExists('codex', CODEX, roots), true);
+  assert.equal(sp.sessionMainExists('antigravity', SID, roots), true);
+  assert.equal(sp.sessionMainExists('claude', 'aaaaaaaa-0000', roots), false);
+  assert.equal(sp.sessionMainExists('claude', '../x', roots), false);
+  const home = tmp('home');
+  const r2 = sp.defaultSessionRoots({ NEXUS_SESSION_HOME: home });
+  put(join(r2.agy, 'brain', SID, 'a.md'), 'x');
+  assert.equal(sp.sessionMainExists('antigravity', SID, r2), false, '只有 brain 不算');
+});
+
+await test('存點摘要:讀說明檔,新的在前;格式不對或別的節點的不列', async () => {
+  const { roots } = fakeHome();
+  const vault = tmp('vault');
+  const a = await sp.createSavepoint(vault, node(), roots, NOW);
+  const b = await sp.createSavepoint(vault, node(), roots, new Date(NOW.getTime() + 60000));
+  const broken = join(vault, 'nodes', '封存', '_存點', node().id, '20261101-000000');
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(join(broken, '存點.json'), 'not json');
+  const list = sp.savepointSummaries(vault, node().id);
+  assert.deepEqual(list.map(s => s.path), [b.path, a.path]);
+  assert.deepEqual({ ...list[1], time: '' }, { path: a.path, time: '', backend: 'claude', size: a.size, sessionId: SID });
+  assert.deepEqual(sp.savepointSummaries(vault, 'other'), []);
+});
+
+await test('統計檔:存點清單、可還原、原檔還在,以及「可接回」改成點喚醒會有結果', () => {
+  const sum = (o = {}) => ({ path: 'nodes/封存/_存點/r1/20261123-200509', time: '2026-11-23T20:05:09+08:00', backend: 'claude', size: 10, sessionId: 's-1', ...o });
+  const sps = {
+    r1: [sum({ path: 'nodes/封存/_存點/r1/b' }), sum({ path: 'nodes/封存/_存點/r1/a', sessionId: 's-old' })],
+    r2: [sum({ path: 'nodes/封存/_存點/r2/a', sessionId: 's-2' })],
+    live1: [sum({ path: 'nodes/封存/_存點/live1/a', sessionId: 's-live' })],
+  };
+  const files = new Set(['claude:s-2', 'claude:s-live']);
+  const out = buildVaultStats({
+    now: NOW.getTime(), portraitsDir: tmp('p'), archives: [], tasks: [], cases: [], dispatches: [], meetings: [], cliSessions: null,
+    live: [{ id: 'live1', name: '在線', character: '', backend: 'claude', sessionId: 's-live', cwd: 'C:/w', state: 'idle' }],
+    removed: [
+      { id: 'r1', name: '原檔沒了有存點', character: '', backend: 'claude', sessionId: 's-1', cwd: 'C:/w' },
+      { id: 'r2', name: '原檔還在', character: '', backend: 'claude', sessionId: 's-2', cwd: 'C:/w' },
+      { id: 'r3', name: '原檔沒了沒存點', character: '', backend: 'claude', sessionId: 's-3', cwd: 'C:/w' },
+      { id: 'r4', name: '目錄沒了', character: '', backend: 'claude', sessionId: 's-1', cwd: 'C:/gone' },
+    ],
+    dirExists: p => p !== 'C:/gone', images: () => ({ avatar: null, portrait: null }),
+    savepoints: id => sps[id] ?? (id === 'r4' ? [sum({ path: 'nodes/封存/_存點/r4/a' })] : []),
+    sessionFileExists: (b, s) => files.has(`${b}:${s}`),
+  });
+  const n = id => out.節點[id];
+  assert.deepEqual(n('r1').存點, [
+    { 路徑: 'nodes/封存/_存點/r1/b', 時間: '2026-11-23T20:05:09+08:00', 後台ID: 'claude', 大小: 10, 原檔還在: false, 可還原: true },
+    { 路徑: 'nodes/封存/_存點/r1/a', 時間: '2026-11-23T20:05:09+08:00', 後台ID: 'claude', 大小: 10, 原檔還在: null, 可還原: false },
+  ], '只有目前那段對話的存點可還原;舊 session 的存點原檔還在是 null');
+  // 還原(S3)支援之前,有可還原的存點也不算可接回,和喚醒網址一致
+  assert.equal(SAVEPOINT_RESTORE_SUPPORTED, false);
+  assert.equal(n('r1').session.可接回, false, '原檔沒了、還不能從存點還原');
+  assert.equal(n('r2').session.可接回, true, '原檔還在');
+  assert.equal(n('r2').存點[0].原檔還在, true);
+  assert.equal(n('r3').session.可接回, false, '原檔沒了也沒有存點');
+  assert.deepEqual(n('r3').存點, []);
+  assert.equal(n('r4').session.可接回, false, '工作目錄不在');
+  assert.equal(n('r4').存點[0].可還原, false);
+  assert.equal(n('live1').存點[0].可還原, false, '在面板上的節點不還原');
+  assert.equal(n('live1').session.可接回, false);
+  assert.ok(!JSON.stringify(out).includes('工作目錄":"C:/w"'), '存點清單不帶工作目錄');
+});
+
+await test('統計檔:沒提供存點與檔案檢查時沿用舊判斷,存點是空清單', () => {
+  const out = buildVaultStats({
+    now: NOW.getTime(), portraitsDir: tmp('p'), archives: [], tasks: [], cases: [], dispatches: [], meetings: [], cliSessions: null, live: [],
+    removed: [{ id: 'r1', name: 'x', character: '', backend: 'claude', sessionId: 's-1', cwd: 'C:/w' }],
+    dirExists: () => true, images: () => ({ avatar: null, portrait: null }),
+  });
+  assert.deepEqual(out.節點.r1.存點, []);
+  assert.equal(out.節點.r1.session.可接回, true);
+});
+
+await test('統計檔與喚醒網址:可接回與喚醒結果一致(有檔案檢查與存點時)', () => {
+  const removed = [
+    { id: 'ok', name: '原檔還在', character: '', backend: 'claude', sessionId: 's-ok', cwd: 'C:/w', model: '' },
+    { id: 'gone', name: '原檔沒了有存點', character: '', backend: 'claude', sessionId: 's-gone', cwd: 'C:/w', model: '' },
+    { id: 'none', name: '原檔沒了沒存點', character: '', backend: 'codex', sessionId: 's-none', cwd: 'C:/w', model: '' },
+  ];
+  const files = new Set(['claude:s-ok']);
+  const fileOk = (b, s) => files.has(`${b}:${s}`);
+  const sps = { gone: [{ path: 'p', time: 't', backend: 'claude', size: 1, sessionId: 's-gone' }] };
+  const out = buildVaultStats({
+    now: NOW.getTime(), portraitsDir: tmp('p'), archives: [], tasks: [], cases: [], dispatches: [], meetings: [], cliSessions: null, live: [], removed,
+    dirExists: () => true, images: () => ({ avatar: null, portrait: null }), savepoints: id => sps[id] ?? [], sessionFileExists: fileOk,
+  });
+  for (const r of removed) {
+    const t = wakeTargetOf(r.id, [], removed, () => true, fileOk, id => (sps[id] ?? []).length > 0);
+    assert.equal(out.節點[r.id].session.可接回, t?.kind === 'removed', r.id);
+  }
+  assert.match(wakeTargetOf('none', [], removed, () => true, fileOk).reason, /清除/);
+  assert.equal(wakeTargetOf('ok', [], removed, () => true).kind, 'removed', '沒提供檔案檢查時沿用舊判斷');
+});
+
+await test('索引:每家掃一次,判斷和 sessionMainExists 相同(含 Codex 的時間前綴與 archived_sessions)', () => {
+  const { roots } = fakeHome();
+  put(join(roots.codex, 'archived_sessions', 'rollout-2026-01-01T00-00-00-019aaaaa-0000-7000-8000-000000000001.jsonl'), 'x');
+  const cl = sp.sessionIndex('claude', roots);
+  const cx = sp.sessionIndex('codex', roots);
+  const ag = sp.sessionIndex('antigravity', roots);
+  assert.ok(cl.has(SID) && cl.has(OTHER));
+  assert.ok(!cl.has('agent-1'), '子代理資料夾裡的檔案不算');
+  assert.ok(cx.has(CODEX) && cx.has('019aaaaa-0000-7000-8000-000000000001'), 'sessions 與 archived_sessions 都收');
+  assert.ok(ag.has(SID) && !ag.has(`${SID}.db-wal`));
+  for (const [b, id] of [['claude', SID], ['codex', CODEX], ['antigravity', SID], ['claude', 'aaaaaaaa-0000'], ['codex', 'abcdefgh']]) {
+    assert.equal(sp.sessionIndex(b, roots).has(id.toLowerCase()), sp.sessionMainExists(b, id, roots), `${b}:${id}`);
+  }
+  assert.equal(sp.sessionIndex('claude', sp.defaultSessionRoots({ NEXUS_SESSION_HOME: tmp('empty') })).size, 0, '工具資料夾不存在時是空集合');
+});
+
+await test('存點摘要:說明檔的節點ID、後台ID、sessionId 不對時不列', async () => {
+  const { roots } = fakeHome();
+  const vault = tmp('vault');
+  const a = await sp.createSavepoint(vault, node(), roots, NOW);
+  const file = join(vault, ...a.path.split('/'), '存點.json');
+  const m = JSON.parse(readFileSync(file, 'utf8'));
+  for (const bad of [{ 節點ID: 'other' }, { 後台ID: 'gemini' }, { sessionId: '../x' }]) {
+    writeFileSync(file, JSON.stringify({ ...m, ...bad }));
+    assert.deepEqual(sp.savepointSummaries(vault, node().id), [], JSON.stringify(bad));
+  }
+  writeFileSync(file, JSON.stringify({ ...m, 總大小: 'x' }));
+  assert.equal(sp.savepointSummaries(vault, node().id)[0].size, 0, '大小不是數字時是 0');
 });
 
 console.log(`session-savepoint:${passed} 項通過`);

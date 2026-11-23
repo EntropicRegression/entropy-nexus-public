@@ -283,6 +283,68 @@ export function listSavepoints(vaultDir: string, nodeId: string): string[] {
     .map(n => `${SAVEPOINT_DIR}/${nodeId}/${n}`);
 }
 
+const BACKEND_IDS: readonly Backend[] = ['claude', 'codex', 'antigravity'];
+
+/**
+ * 一家工具資料夾裡所有對話主檔的 id(統計檔用:每家掃一次,之後每個節點只查 Set,不必各自走整棵資料夾)。
+ * 判斷和 sessionMainExists 相同:Claude 是 projects/<專案>/<id>.jsonl;Antigravity 是 conversations/<id>.db;
+ * Codex 是 sessions/**、archived_sessions/** 裡檔名 <id>.jsonl 或以 -<id>.jsonl 結尾的(收錄檔名在每個 - 之後的尾段)。
+ */
+export function sessionIndex(backend: Backend, roots: SessionRoots): Set<string> {
+  const ids = new Set<string>();
+  if (backend === 'claude') {
+    if (!isPlainDir(join(roots.claude, 'projects'))) return ids;
+    for (const p of list(join(roots.claude, 'projects'))) {
+      if (!p.isDirectory() || p.isSymbolicLink()) continue;
+      for (const f of list(join(roots.claude, 'projects', p.name))) if (f.isFile() && !f.isSymbolicLink() && f.name.endsWith('.jsonl')) ids.add(f.name.slice(0, -6).toLowerCase());
+    }
+  } else if (backend === 'antigravity') {
+    if (!isPlainDir(join(roots.agy, 'conversations'))) return ids;
+    for (const f of list(join(roots.agy, 'conversations'))) if (f.isFile() && !f.isSymbolicLink() && f.name.endsWith('.db')) ids.add(f.name.slice(0, -3).toLowerCase());
+  } else if (backend === 'codex') {
+    const walk = (rel: string, depth: number) => {
+      if (depth < 0 || !isPlainDir(join(roots.codex, ...rel.split('/')))) return;
+      for (const e of list(join(roots.codex, ...rel.split('/')))) {
+        if (e.isSymbolicLink()) continue;
+        if (e.isDirectory()) walk(`${rel}/${e.name}`, depth - 1);
+        else if (e.isFile() && e.name.toLowerCase().endsWith('.jsonl')) {
+          const base = e.name.slice(0, -6).toLowerCase();
+          ids.add(base);
+          for (let i = base.indexOf('-'); i >= 0; i = base.indexOf('-', i + 1)) ids.add(base.slice(i + 1));
+        }
+      }
+    };
+    walk('sessions', 4);
+    walk('archived_sessions', 4);
+  }
+  return ids;
+}
+
+/** 工具資料夾裡還有沒有這段對話的主檔(不跟隨連結);sessionId 格式不對時是 false。 */
+export function sessionMainExists(backend: Backend, sessionId: string, roots: SessionRoots): boolean {
+  if (!SESSION_RE.test(sessionId)) return false;
+  if (backend === 'claude') {
+    if (!isPlainDir(join(roots.claude, 'projects'))) return false;
+    return list(join(roots.claude, 'projects')).some(p => p.isDirectory() && !p.isSymbolicLink() && isPlainFile(join(roots.claude, 'projects', p.name, `${sessionId}.jsonl`)));
+  }
+  if (backend === 'antigravity') return isPlainFile(join(roots.agy, 'conversations', `${sessionId}.db`));
+  if (backend === 'codex') return codexFiles(roots.codex, sessionId).length > 0;
+  return false;
+}
+
+/** 一個節點的存點摘要(說明檔讀得到、而且是這個節點的才列;新的在前)。給統計檔用。 */
+export function savepointSummaries(vaultDir: string, nodeId: string): Array<{ path: string; time: string; backend: Backend; size: number; sessionId: string }> {
+  const out: Array<{ path: string; time: string; backend: Backend; size: number; sessionId: string }> = [];
+  for (const path of listSavepoints(vaultDir, nodeId)) {
+    const m = readSavepoint(vaultDir, path);
+    // 統計檔是對外的契約:說明檔欄位不對的存點不列
+    if (!m || m.節點ID !== nodeId || typeof m.建立時間 !== 'string' || !BACKEND_IDS.includes(m.後台ID) || !SESSION_RE.test(m.sessionId)) continue;
+    const size = Number(m.總大小);
+    out.push({ path, time: m.建立時間, backend: m.後台ID, size: Number.isFinite(size) && size >= 0 ? size : 0, sessionId: m.sessionId });
+  }
+  return out;
+}
+
 /** 用在刪除結果的說明文字。 */
 export function savepointNote(r: SavepointResult): string {
   if (!r.ok) return `沒有建立對話存點:${r.reason}。`;
