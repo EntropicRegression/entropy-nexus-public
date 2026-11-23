@@ -103,6 +103,40 @@ function makeRepo(name, files, ignore) {
   await wt.removeWorktree(d1.info, true);
   await wt.removeWorktree(d2.info, true);
 
+  // 情境 E:已被移除的獨立工作區在原位置重建(接回終止過的節點)
+  const e = makeRepo('repo-e', { 'a.txt': 'a\n' }, '');
+  // E1:工作區有提交、資料夾被刪但分支還在 → 沿用原分支
+  const e1 = await wt.createWorktree(e, 'Back', 'eeeeee555555');
+  write(e1.info.path, 'done.txt', 'work\n');
+  git(e1.info.path, 'add', '-A'); git(e1.info.path, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'work');
+  wt.unlinkWorktreeLinks?.(e1.info.path);
+  fs.rmSync(e1.info.path, { recursive: true, force: true });
+  check('E1 可以重建', wt.canRebuildWorktree(e1.info));
+  const r1 = await wt.rebuildWorktree(e1.info);
+  check('E1 沿用原分支,工作成果還在', fs.existsSync(path.join(e1.info.path, 'done.txt')) && /沿用原分支/.test(r1.note), r1.note);
+  check('E1 重建後不能再重建(路徑已有東西)', !wt.canRebuildWorktree(e1.info));
+  let threw = '';
+  try { await wt.rebuildWorktree(e1.info); } catch (err) { threw = err.message; }
+  check('E1 路徑被佔用時說明原因', /已經有東西/.test(threw), threw);
+  await wt.removeWorktree(e1.info, true);
+  // E2:乾淨的工作區照終止規則被移除(連分支)→ 從 base 重開同名分支
+  const e2 = await wt.createWorktree(e, 'Clean', 'ffffff666666');
+  check('E2 乾淨的工作區照規則被移除', await wt.removeWorktree(e2.info, false));
+  const r2 = await wt.rebuildWorktree(e2.info);
+  check('E2 從 base 重開同名分支', fs.existsSync(path.join(e2.info.path, 'README.md')) && git(e2.info.path, 'rev-parse', '--abbrev-ref', 'HEAD') === e2.info.branch && /重開分支/.test(r2.note), `${r2.note}`);
+  await wt.removeWorktree(e2.info, true);
+  // 情境 F:選另一個獨立工作區當版本庫時,repoRoot 是主版本庫;基準是那個工作區目前的分支
+  const f = makeRepo('repo-f', {}, '');
+  const f1 = await wt.createWorktree(f, 'First', 'aaaa11112222');
+  const f2 = await wt.createWorktree(f1.info.path, 'Second', 'bbbb33334444');
+  check('F repoRoot 是主版本庫,不是被選的工作區', path.resolve(f2.info.repoRoot) === path.resolve(f), `${f2.info.repoRoot}`);
+  check('F 基準是被選工作區的分支', f2.info.base === f1.info.branch, f2.info.base);
+  check('F 工作區資料夾都在主控台的工作區資料夾底下', wt.insideWorktreeHome(f1.info.path) && wt.insideWorktreeHome(f2.info.path) && !wt.insideWorktreeHome(f));
+  await wt.removeWorktree(f2.info, true);
+  await wt.removeWorktree(f1.info, true);
+  // E3:版本庫不在了 → 不能重建
+  check('E3 版本庫不在時不能重建', !wt.canRebuildWorktree({ ...e2.info, repoRoot: path.join(base, 'gone') }));
+
   console.log(failures ? `[test] 共 ${failures} 項失敗` : '[test] 全部通過');
   fs.rmSync(base, { recursive: true, force: true });
   process.exit(failures ? 1 : 0);

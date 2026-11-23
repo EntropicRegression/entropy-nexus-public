@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { BACKEND_LABEL, needsRestoreOf, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type MoveTarget, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
+import { BACKEND_LABEL, needsRelocateOf, needsRestoreOf, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type MoveTarget, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -75,20 +75,38 @@ async function handleWake(raw: string): Promise<void> {
   if (target.kind === 'unavailable') { await notice(`「${target.name}」無法接回:${target.reason}。`, 'error'); return; }
   const r = await dialog.showMessageBox(win, { type: 'question', title: '喚醒節點', message: `要接回 ${target.name} 的舊對話嗎?`, detail: '會把這個已封存的節點放回面板,繼續原本的對話。', buttons: ['接回', '取消'], defaultId: 1, cancelId: 1, noLink: true });
   if (r.response !== 0) return;
-  try { await core.openOldSession(target.input); }
-  catch (e) {
-    const msg = String((e as Error)?.message ?? e);
-    const need = needsRestoreOf(msg);
-    if (!need) { await notice(`接回失敗:${msg}`, 'error'); return; }
-    // 原本的對話檔已被工具清掉:先問再從存點還原
-    const ask = await dialog.showMessageBox(win, {
-      type: 'question', title: '喚醒節點', message: `「${target.name}」的對話已經被 ${need.後台} 清除了。要從存點還原嗎?`,
-      detail: `存點建立於 ${need.時間.replace('T', ' ').slice(0, 16)},大小 ${(need.大小 / 1024 / 1024).toFixed(1)} MB。會把對話檔放回 ${need.後台} 原本的位置(不覆蓋任何現有檔案),再接回這個節點。`,
-      buttons: ['還原並接回', '取消'], defaultId: 1, cancelId: 1, noLink: true,
-    });
-    if (ask.response !== 0) return;
-    try { await core.openOldSession({ ...target.input, restoreFromSavepoint: true }); }
-    catch (e2) { await notice(`還原失敗:${String((e2 as Error)?.message ?? e2)}`, 'error'); }
+  // 接回途中可能要再確認:獨立工作區已被刪掉(先問再重建)、對話檔已被工具清掉(先問再從存點還原),每一步都先問
+  const input = { ...target.input };
+  for (let step = 0; step < 3; step++) {
+    try { await core.openOldSession(input); return; }
+    catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      const place = needsRelocateOf(msg);
+      const need = needsRestoreOf(msg);
+      if (place?.kind === 'worktree' && !input.rebuildWorktree) {
+        const ask = await dialog.showMessageBox(win, {
+          type: 'question', title: '喚醒節點', message: `「${target.name}」原本的獨立工作區已經被移除了。要在原本的位置重建再接回嗎?`,
+          detail: `會用分支 ${place.branch} 在原本的位置重建工作區(分支已被刪掉時從原本的基準分支重開),再用同一個 session 續接。`,
+          buttons: ['重建並接回', '取消'], defaultId: 1, cancelId: 1, noLink: true,
+        });
+        if (ask.response !== 0) return;
+        input.rebuildWorktree = true;
+        continue;
+      }
+      if (need && !input.restoreFromSavepoint) {
+        const ask = await dialog.showMessageBox(win, {
+          type: 'question', title: '喚醒節點', message: `「${target.name}」的對話已經被 ${need.後台} 清除了。要從存點還原嗎?`,
+          detail: `存點建立於 ${need.時間.replace('T', ' ').slice(0, 16)},大小 ${(need.大小 / 1024 / 1024).toFixed(1)} MB。會把對話檔放回 ${need.後台} 原本的位置(不覆蓋任何現有檔案),再接回這個節點。`,
+          buttons: ['還原並接回', '取消'], defaultId: 1, cancelId: 1, noLink: true,
+        });
+        if (ask.response !== 0) return;
+        input.restoreFromSavepoint = true;
+        continue;
+      }
+      // 換到別的資料夾要在「開啟舊 session」裡選資料夾,喚醒網址不提供
+      await notice(place?.kind === 'folder' ? `「${target.name}」原本的工作目錄已經不在了。請到主控台的「開啟舊 session」選一個新的資料夾接回。` : `接回失敗:${msg}`, 'error');
+      return;
+    }
   }
 }
 

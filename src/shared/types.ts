@@ -505,6 +505,20 @@ export interface OpenOldSessionInput {
   model: string;
   /** 原本的對話檔已被工具清掉時,使用者同意從存點還原(先問再還原:第一次不帶,收到 NEEDS_RESTORE 的錯誤再帶 true 重試)。 */
   restoreFromSavepoint?: boolean;
+  /** 原本的獨立工作區已被刪掉時,使用者同意在原位置重建(先問再做:收到 NEEDS_RELOCATE 再帶 true 重試)。 */
+  rebuildWorktree?: boolean;
+  /** 原本的工作目錄已不在(不是獨立工作區)時,使用者選的新資料夾(絕對路徑)。 */
+  newCwd?: string;
+}
+
+/** openOldSession 的工作目錄已不在、需要使用者決定時,錯誤訊息的開頭;後面接 JSON。 */
+export const NEEDS_RELOCATE = 'NEXUS_NEEDS_RELOCATE:';
+export type RelocateNeed = { kind: 'worktree'; branch: string; path: string } | { kind: 'folder'; path: string };
+/** 從錯誤訊息取出「工作目錄不在、需要決定」的資料;不是這種錯誤時是 null。 */
+export function needsRelocateOf(message: string): RelocateNeed | null {
+  const i = message.indexOf(NEEDS_RELOCATE);
+  if (i < 0) return null;
+  try { return JSON.parse(message.slice(i + NEEDS_RELOCATE.length)); } catch { return null; }
 }
 
 /** openOldSession 需要使用者同意從存點還原時,錯誤訊息的開頭;後面接 JSON {時間, 大小, 後台}。 */

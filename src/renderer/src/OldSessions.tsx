@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BACKEND_LABEL, needsRestoreOf, type Backend, type Capability, type OldSession } from '../../shared/types';
+import { BACKEND_LABEL, needsRelocateOf, needsRestoreOf, type Backend, type Capability, type OldSession } from '../../shared/types';
 import { ForkPanel } from './Fork';
 import { BACKEND_COLOR, hex } from './theme';
 
@@ -30,7 +30,9 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
   // 可能正在別處使用的對話,要按第二次才開啟
   const [confirm, setConfirm] = useState('');
   // 對話檔已被工具清掉、有存點時,問要不要還原
-  const [restoreAsk, setRestoreAsk] = useState<{ s: OldSession; text: string } | null>(null);
+  // 接回途中要使用者決定的事:從存點還原、重建已被刪掉的獨立工作區、選新的資料夾;每一步都先問,同意後帶上累積的選項重試
+  type Flags = { restoreFromSavepoint?: boolean; rebuildWorktree?: boolean; newCwd?: string };
+  const [ask, setAsk] = useState<{ s: OldSession; flags: Flags; kind: 'restore' | 'worktree' | 'folder'; text: string } | null>(null);
   // 分支:新節點有自己的 session,不佔用這個舊 session;只有支援的後台可以用
   const [forking, setForking] = useState('');
   const [caps, setCaps] = useState<Capability[]>([]);
@@ -58,22 +60,31 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
     return c;
   }, [list]);
 
-  const open = async (s: OldSession, restore = false) => {
-    if (!restore && s.maybeActive && confirm !== key(s)) { setConfirm(key(s)); return; }
+  const open = async (s: OldSession, flags: Flags = {}) => {
+    if (!Object.keys(flags).length && s.maybeActive && confirm !== key(s)) { setConfirm(key(s)); return; }
     setBusy(key(s));
     setError('');
-    setRestoreAsk(null);
+    setAsk(null);
     try {
-      const agent = await window.nexus.openOldSession({ backend: s.backend, sessionId: s.sessionId, cwd: s.cwd, agentId: s.agentId, name: (names[key(s)] ?? s.name).trim(), character: s.character, model: s.model, ...(restore ? { restoreFromSavepoint: true } : {}) });
+      const agent = await window.nexus.openOldSession({ backend: s.backend, sessionId: s.sessionId, cwd: s.cwd, agentId: s.agentId, name: (names[key(s)] ?? s.name).trim(), character: s.character, model: s.model, ...flags });
       onOpened(agent.id);
     } catch (e) {
       const msg = String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-      // 原本的對話檔已被工具清掉:先問再從存點還原
       const need = needsRestoreOf(msg);
-      if (need) setRestoreAsk({ s, text: `「${s.name}」的對話已經被 ${need.後台} 清除了。存點建立於 ${need.時間.replace('T', ' ').slice(0, 16)}(${(need.大小 / 1024 / 1024).toFixed(1)} MB),要還原並接回嗎?會把對話檔放回原本的位置,不覆蓋任何現有檔案。` });
+      const place = needsRelocateOf(msg);
+      if (place?.kind === 'worktree') setAsk({ s, flags, kind: 'worktree', text: `「${s.name}」原本的獨立工作區已經被移除了。要在原本的位置用分支 ${place.branch} 重建(分支已被刪掉時從原本的基準分支重開),再用同一個 session 接回嗎?` });
+      else if (place?.kind === 'folder') setAsk({ s, flags, kind: 'folder', text: `「${s.name}」原本的工作目錄已經不在了。要選一個新的資料夾,用同一個 session 在那裡接回嗎?對話內容會保留。` });
+      else if (need) setAsk({ s, flags, kind: 'restore', text: `「${s.name}」的對話已經被 ${need.後台} 清除了。存點建立於 ${need.時間.replace('T', ' ').slice(0, 16)}(${(need.大小 / 1024 / 1024).toFixed(1)} MB),要還原並接回嗎?會把對話檔放回原本的位置,不覆蓋任何現有檔案。` });
       else setError(msg);
       setBusy('');
     }
+  };
+  const answer = async () => {
+    if (!ask) return;
+    if (ask.kind === 'restore') return open(ask.s, { ...ask.flags, restoreFromSavepoint: true });
+    if (ask.kind === 'worktree') return open(ask.s, { ...ask.flags, rebuildWorktree: true });
+    const p = await window.nexus.pickDirectory();
+    if (p) return open(ask.s, { ...ask.flags, newCwd: p });
   };
 
   return (
@@ -93,11 +104,11 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
         <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
       </header>
       {error && <div className="rv-note err">{error}</div>}
-      {restoreAsk && (
+      {ask && (
         <div className="rv-note os-restore">
-          {restoreAsk.text}
-          <button className="primary" disabled={busy !== ''} onClick={() => void open(restoreAsk.s, true)}>還原並接回</button>
-          <button className="ghost" onClick={() => setRestoreAsk(null)}>取消</button>
+          {ask.text}
+          <button className="primary" disabled={busy !== ''} onClick={() => void answer()}>{ask.kind === 'restore' ? '還原並接回' : ask.kind === 'worktree' ? '重建並接回' : '選擇資料夾…'}</button>
+          <button className="ghost" onClick={() => setAsk(null)}>取消</button>
         </div>
       )}
       <div className="os-list">
@@ -121,8 +132,8 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
             </div>
             <input className="os-name" value={names[key(s)] ?? s.name} onChange={e => setNames(n => ({ ...n, [key(s)]: e.target.value }))}
               title={s.source === 'nexus' ? '上次使用的名稱,會直接沿用' : '第一次開啟:這個名稱會跟著這個 session 保存'} aria-label="節點名稱" />
-            <button className="primary" disabled={!s.cwdExists || busy !== '' || !(names[key(s)] ?? s.name).trim()} onClick={() => void open(s)}
-              title={s.cwdExists ? '建立節點並接回這個 session' : '原本的工作目錄已經不存在'}>{busy === key(s) ? '開啟中…' : !s.cwdExists ? '資料夾不存在' : confirm === key(s) ? '確定開啟?' : '開啟'}</button>
+            <button className="primary" disabled={(!s.cwdExists && s.source !== 'nexus') || busy !== '' || !(names[key(s)] ?? s.name).trim()} onClick={() => void open(s)}
+              title={s.cwdExists ? '建立節點並接回這個 session' : s.source === 'nexus' ? '原本的工作目錄已經不存在:接回時可以重建原本的獨立工作區,或選一個新的資料夾' : '原本的工作目錄已經不存在'}>{busy === key(s) ? '開啟中…' : !s.cwdExists ? (s.source === 'nexus' ? '重建或換資料夾接回' : '資料夾不存在') : confirm === key(s) ? '確定開啟?' : '開啟'}</button>
             <span title={forkWhy || '分支出新節點,有自己的 session,不會佔用這個舊 session'}>
               <button className={forking === key(s) ? 'on' : ''} disabled={forkWhy !== '' || busy !== ''} onClick={() => setForking(f => (f === key(s) ? '' : key(s)))}>分支</button>
             </span>

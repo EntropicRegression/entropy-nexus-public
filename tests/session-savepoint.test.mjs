@@ -15,7 +15,7 @@ const { addFrontMatterField, writeMemory } = await import('../src/main/memory-wr
 const { MemoryVault, parseFrontMatter, README } = await import('../src/main/memory-vault.ts');
 const { buildVaultStats } = await import('../src/main/vault-stats.ts');
 const { SAVEPOINT_RESTORE_SUPPORTED, wakeTargetOf } = await import('../src/main/wake.ts');
-const { NEEDS_RESTORE, needsRestoreOf } = await import('../src/shared/types.ts');
+const { NEEDS_RELOCATE, NEEDS_RESTORE, needsRelocateOf, needsRestoreOf } = await import('../src/shared/types.ts');
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log('[ok]', name); };
@@ -408,6 +408,30 @@ await test('存點摘要:說明檔的節點ID、後台ID、sessionId 不對時�
   }
   writeFileSync(file, JSON.stringify({ ...m, 總大小: 'x' }));
   assert.equal(sp.savepointSummaries(vault, node().id)[0].size, 0, '大小不是數字時是 0');
+});
+
+await test('工作區轉移 W2:獨立工作區被刪掉但能重建的節點算可接回,統計檔與喚醒網址一致', () => {
+  const removed = [
+    { id: 'wt', name: '能重建', character: '', backend: 'claude', sessionId: 's-wt', cwd: 'C:/gone-wt', model: '' },
+    { id: 'no', name: '不能重建', character: '', backend: 'claude', sessionId: 's-no', cwd: 'C:/gone-no', model: '' },
+  ];
+  const dirExists = p => !p.startsWith('C:/gone');
+  const rebuildable = id => id === 'wt';
+  const out = buildVaultStats({
+    now: NOW.getTime(), portraitsDir: tmp('p'), archives: [], tasks: [], cases: [], dispatches: [], meetings: [], cliSessions: null, live: [], removed,
+    dirExists, images: () => ({ avatar: null, portrait: null }), sessionFileExists: () => true, rebuildable,
+  });
+  assert.equal(out.節點.wt.session.可接回, true);
+  assert.equal(out.節點.wt.session.工作目錄存在, false, '工作目錄存在照實報告');
+  assert.equal(out.節點.no.session.可接回, false);
+  assert.equal(wakeTargetOf('wt', [], removed, dirExists, () => true, () => false, rebuildable).kind, 'removed');
+  assert.equal(wakeTargetOf('no', [], removed, dirExists, () => true, () => false, rebuildable).kind, 'unavailable');
+  assert.equal(wakeTargetOf('wt', [], removed, dirExists, () => true).kind, 'unavailable', '沒提供重建判斷時照舊');
+});
+
+await test('工作區轉移 W2:NEEDS_RELOCATE 錯誤讀得回資料', () => {
+  assert.deepEqual(needsRelocateOf(`Error: ${NEEDS_RELOCATE}{"kind":"worktree","branch":"nexus/a-1","path":"p"}`), { kind: 'worktree', branch: 'nexus/a-1', path: 'p' });
+  assert.equal(needsRelocateOf('其他錯誤'), null);
 });
 
 // ---- S3:還原 ----

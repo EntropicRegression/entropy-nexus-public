@@ -5,7 +5,7 @@ import { homedir, hostname, networkInterfaces } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import QRCode from 'qrcode';
 import type { ApprovalDecision, AuditEntry, Backend, RemoteAccess, RemoteRole, RemoteStatus, Update } from '../shared/types';
-import { needsRestoreOf } from '../shared/types';
+import { needsRelocateOf, needsRestoreOf } from '../shared/types';
 import { actionOf, auditDetail, denial, filterSnapshot, filterUpdate, FULL, httpRule, normalizeAccess, rpcRule, visible, type Rule } from './access';
 import { allowAttachments } from './attachments';
 import type { Core } from './core';
@@ -564,6 +564,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         } catch (e) {
           // 手機版不提供從存點還原(要在電腦上確認):把內部標記換成說明
           if (needsRestoreOf(String((e as Error)?.message ?? e))) { json(res, 409, { error: '這段對話已經被工具清除了,需要在電腦的主控台上確認從存點還原。' }); return; }
+          if (needsRelocateOf(String((e as Error)?.message ?? e))) { json(res, 409, { error: '原本的工作目錄已經不在了,需要在電腦的主控台上確認重建工作區或選新的資料夾。' }); return; }
           throw e;
         }
         return;
