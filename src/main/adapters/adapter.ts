@@ -22,6 +22,8 @@ export interface StartOptions {
    * null 表示這個功能關閉,或這個節點不適用(子代理)。
    */
   interop?: { name: string; url: string; configFile: string; tools: string[]; agy: { dir: string; settings: string; server: string } | null } | null;
+  /** 只有 Antigravity 用:使用者的工具白名單(agy 的 permissions.allow 規則),啟動時合併進 --settings。見 shared/agy-allow.ts。 */
+  agyAllow?: string[];
 }
 
 export type Emit = (e: AdapterEvent, subId?: string) => void;

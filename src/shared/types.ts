@@ -1,6 +1,7 @@
 // 主行程、preload 與畫面共用的型別。畫面只認這裡定義的狀態與事件。
 
 import type { DashboardData } from './dashboard';
+import type { DecisionChoice, FlowRunView, FlowStartInput, FlowTemplateInfo, ProjectFlowConfig } from './flow';
 
 export type Backend = 'claude' | 'codex' | 'antigravity';
 
@@ -104,10 +105,19 @@ export interface AgentInfo {
  * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
  * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
  */
-export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot';
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive' | 'case' | 'draft' | 'flow';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
-export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource }
+export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource; from?: TaskFrom }
+
+/** 節點互相呼叫(或會議)時,指令是哪個節點交辦的;meeting 為 true 表示是會議裡的發言回合。 */
+export interface TaskFrom {
+  id: string; name: string; meeting?: boolean;
+  /** 交辦者明確指定的專案(ask_node / start_meeting 的 project 參數);沒有就用接手節點的工作目錄所屬的專案。 */
+  project?: { id: string; name: string; git?: boolean };
+  /** 協作流程的交辦(id 是 flow:<流程 id>):判例偵測不收、不算判例的參與節點。 */
+  flow?: { runId: string; assignmentId: string; stepId: string };
+}
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
 export interface UsageWindow {
@@ -184,6 +194,42 @@ export interface TaskInfo {
   changes?: TaskChanges | null;
   /** 這個任務的指令是從哪裡送出的;舊資料沒有這個欄位。 */
   source?: SpeechSource;
+  /** source 為 interop 時:是哪個節點交辦的(任務卡顯示「由 … 交辦」);舊資料沒有這個欄位。 */
+  from?: TaskFrom;
+  /** 交辦當下節點所在的專案(之後不會依節點目前的工作目錄重算);舊資料沒有這個欄位。 */
+  project?: { id: string; name: string; /** 專案根目錄是不是 git 版本庫(交辦當下記下);舊資料沒有這個欄位。 */ git?: boolean };
+  /**
+   * 使用者驗收:accepted 已驗收、rejected 退回、null 或沒有 = 尚未判斷。和 status 分開:
+   * status 只代表回合有沒有正常結束,驗收才代表結果對不對。使用者按任務卡的按鈕、或把審查評論送回節點時(自動退回)會設定。
+   */
+  verdict?: TaskVerdict;
+  /** 這個任務寫成的判例案號(例如 2026-0003);有值就不會再請節點撰寫。 */
+  caseId?: string;
+  /** 已請承辦節點撰寫判例、還在等它提交。 */
+  casePending?: boolean;
+}
+export type TaskVerdict = 'accepted' | 'rejected' | null;
+
+/** 記憶庫裡一筆記憶(一個 .md 檔)在資料庫索引中的樣子。 */
+export interface MemoryEntry {
+  /** 相對於記憶庫資料夾的路徑,一律用 /。 */
+  path: string;
+  kind: 'node' | 'case' | 'knowledge' | 'preference' | 'meeting' | 'memoir';
+  scope: '全域' | '專案';
+  projectId: string;
+  nodeId: string;
+  title: string;
+  /** 記憶自己標的更新時間(front matter 的「更新時間」),沒有就用檔案修改時間。 */
+  updatedAt: number;
+  /** 檔案修改時間(毫秒),用來判斷檔案有沒有被改過。 */
+  mtime: number;
+  size: number;
+  /** 例如 未確認 / 已確認 / 退回;沒寫就是空字串。 */
+  status: string;
+  /** 子類:knowledge 的 決策 / 書籤(屬性「子類」);沒寫就是空字串。 */
+  subtype: string;
+  /** 這筆取代的舊檔路徑(屬性「取代」,去掉 [[ ]]);沒寫就是空字串。 */
+  supersedes: string;
 }
 
 /** 轉接器送給核心服務的事件。 */
@@ -191,10 +237,11 @@ export type AdapterEvent =
   /** outcome:回合是被中斷才回到待命的(包括後台自己取消),不是正常完成。 */
   | { type: 'state'; state: AgentState; detail?: string; outcome?: 'interrupted' }
   | { type: 'message'; role: 'user' | 'agent'; text: string }
-  | { type: 'tool'; phase: 'start' | 'end'; name: string; summary: string; detail?: string; failed?: boolean }
+  /** paths:轉接器取得的結構化檔案路徑(Codex 的檔案修改、ACP 的工具參數),協作流程的範圍合約用來判斷寫入。 */
+  | { type: 'tool'; phase: 'start' | 'end'; name: string; summary: string; detail?: string; failed?: boolean; paths?: string[] }
   /** 工具結果或 agent 產生的圖片。path 是本機檔案(工作目錄內或主控台的媒體資料夾),圖片內容不進事件紀錄。 */
   | { type: 'image'; path: string; caption?: string }
-  | { type: 'approval_request'; requestId: string; tool: string; summary: string; detail?: string; canAllowSession?: boolean }
+  | { type: 'approval_request'; requestId: string; tool: string; summary: string; detail?: string; canAllowSession?: boolean; paths?: string[] }
   | { type: 'approval_resolved'; requestId: string; decision: ApprovalDecision }
   | { type: 'session'; sessionId: string }
   | { type: 'subagent'; phase: 'start' | 'end'; subId: string; name: string; failed?: boolean }
@@ -274,6 +321,70 @@ export interface Snapshot {
   chiefId: string | null;
   /** 總覽儀表的資料:每日預算、花費與今天的任務統計。 */
   dashboard: DashboardData;
+  /** 目前進行中的協作連線(節點呼叫節點、會議);面板上畫成連線。 */
+  links: LinkInfo[];
+  /** 進行中的會議(會議室虛擬節點)。 */
+  meetings?: MeetingView[];
+  /** 分派紀錄:最近的節點交辦(新的在前,最多 50 筆)。 */
+  dispatches: DispatchEntry[];
+  /** 協作流程(新的在前);只有桌面畫面的快照才附上。 */
+  flows?: FlowRunView[];
+}
+
+/** 一條進行中的協作連線:ask 是 from 呼叫 to[0];meeting 是主持人 from 與每位參與者 to。 */
+export interface LinkInfo {
+  id: string;
+  kind: 'ask' | 'meeting';
+  from: string;
+  to: string[];
+  label?: string;
+  startedAt: number;
+  active: boolean;
+  /** 會議:目前正在發言的參與者。 */
+  speaker?: string;
+}
+
+/**
+ * 進行中的一場會議(主面板的「會議室」虛擬節點,任務清單 2-7)。會議室不是 agent:不在 agents 裡、不能被 ask_node 呼叫、
+ * 不出現在 list_nodes、不寫進統計檔與側寫、不算同時執行的上限。會議結束就從清單移除(紀錄在記憶庫的 meetings/)。
+ */
+export interface MeetingView {
+  id: string;
+  topic: string;
+  hostId: string;
+  hostName: string;
+  /** 參與者,不含主持人。 */
+  participants: Array<{ id: string; name: string }>;
+  /** 目前第幾輪(還沒開始是 0)。 */
+  round: number;
+  rounds: number;
+  /** 正在發言的節點 id;輪到主持人時是主持人;都沒有時是 null。 */
+  speakerId: string | null;
+  startedAt: number;
+  /** 逐字紀錄(依時間順序)。round 為 0 的是主控台的說明(略過、失敗等),inRound 是它發生在第幾輪;nodeId 是發言者(主控台的說明是 null)。 */
+  transcript: Array<{ round: number; name: string; nodeId: string | null; text: string; inRound?: number }>;
+}
+
+export type DispatchStatus = 'running' | 'done' | 'failed' | 'timeout';
+
+/** 分派紀錄的一筆:一次 ask_node。 */
+export interface DispatchEntry {
+  id: string;
+  startedAt: number;
+  endedAt: number | null;
+  fromId: string;
+  fromName: string;
+  toId: string;
+  toName: string;
+  /** 指令的簡短標題。 */
+  title: string;
+  status: DispatchStatus;
+  /** 被呼叫節點因此產生的任務(花費從任務查);沒有時為空。 */
+  taskId?: string;
+  /** 交辦當下發起者是不是總管;舊資料沒有這個欄位。 */
+  fromChief?: boolean;
+  /** 交辦者明確指定的專案;沒指定或舊資料沒有這個欄位。 */
+  project?: { id: string; name: string };
 }
 
 /**
@@ -337,6 +448,14 @@ export interface Update {
   chiefId?: string | null;
   /** 總覽儀表的資料有變(花費、預算用量、任務統計、換日)。 */
   dashboard?: DashboardData;
+  /** 目前進行中的協作連線(整份取代)。 */
+  links?: LinkInfo[];
+  /** 進行中的會議有變動(開會、發言、換人、散會)時的完整清單。 */
+  meetings?: MeetingView[];
+  /** 分派紀錄(整份取代)。 */
+  dispatches?: DispatchEntry[];
+  /** 單筆協作流程新增或更新。 */
+  flow?: FlowRunView;
 }
 
 export interface CreateAgentInput {
@@ -558,8 +677,8 @@ export interface NexusApi {
    * 後台能內嵌的類型直接交給模型看,其他的由轉接器把路徑寫進指令並以 note 事件說明。
    */
   send(id: string, text: string, images?: string[]): Promise<void>;
-  /** 修改節點的名稱、角色或模型。換模型會重新啟動 session(對話內容保留)。 */
-  updateAgent(id: string, patch: { name?: string; character?: string; model?: string }): Promise<AgentInfo>;
+  /** 修改節點的名稱、角色、模型或權限模式。換模型或權限模式會重新啟動 session(對話內容保留)。 */
+  updateAgent(id: string, patch: { name?: string; character?: string; model?: string; permissionMode?: PermissionMode }): Promise<AgentInfo>;
   pickFiles(): Promise<string[]>;
   /** 把剪貼簿貼上的圖片存成暫存檔(只收圖片、有大小上限),回傳檔案路徑。 */
   savePastedImage(mime: string, data: ArrayBuffer): Promise<string>;
@@ -597,9 +716,32 @@ export interface NexusApi {
   getAvatar(character: string): Promise<string | null>;
   /** 讀取角色卡(立繪資料夾\<角色>\persona.md);超過 max 字的部分會截掉,truncated 為 true。 */
   getPersona(character: string): Promise<{ text: string; truncated: boolean; max: number }>;
+  /** Antigravity 的工具白名單(所有 Antigravity 節點共用,agy 的 permissions.allow 規則);只有完整權限。 */
+  getAgyAllow(): Promise<string[]>;
+  /** 儲存白名單(一行一條或字串陣列);格式不對的規則會丟出說明。節點要重新啟動才會套用。回傳整理後的清單。 */
+  setAgyAllow(rules: string[] | string): Promise<string[]>;
   /** 儲存角色卡;使用這個角色的節點會在下一則指令前收到新的角色設定。 */
   setPersona(character: string, text: string): Promise<void>;
   clearFinishedTasks(): Promise<void>;
+  /** 使用者驗收或退回一個已結束的任務(再按一次同樣的結果即取消);null 表示清除判斷。 */
+  setTaskVerdict(taskId: string, verdict: TaskVerdict): Promise<void>;
+  /** 「記下這個解法」:請承辦節點把這個已結束的任務寫成判例(狀態先是未確認)。回傳給使用者看的說明。 */
+  markCase(taskId: string): Promise<string>;
+  /** 對話草稿按鈕要用的資訊:上次儲存到哪一筆事件(seq)、累積多少字才顯示按鈕。 */
+  /** memoirBusy:回憶錄請求還在進行;removing:節點正在刪除流程中(兩者都由主控台判斷,對話視窗關掉再開也一樣)。 */
+  draftInfo(id: string): Promise<{ lastSeq: number; threshold: number; memoirBusy: boolean; removing: boolean }>;
+  /** 「儲存這段記憶」:請這個節點把上次儲存之後的對話整理成草稿(狀態未確認),回傳給使用者看的說明。 */
+  requestDraft(id: string): Promise<string>;
+  /** 「寫回憶錄」:請這個節點用第一人稱寫一章回憶錄(狀態未確認;每個節點每天最多 3 份),回傳給使用者看的說明。 */
+  requestMemoir(id: string): Promise<string>;
+  /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
+  getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
+  /** 刪除節點並先歸檔進記憶庫:summary 先請節點(不行就請總管)寫工作總結,stats 只存統計;memoir 為 true 時先請節點寫一章回憶錄。歸檔失敗不擋刪除,note 說明結果。 */
+  removeAgentArchived(id: string, mode: 'summary' | 'stats', memoir?: boolean): Promise<{ archive: string | null; note: string }>;
+  /** 找這些名稱(依序:節點名稱、角色)的最新封存;沒有就是 null。 */
+  findMemoryArchive(names: string[]): Promise<{ path: string; date: string; name: string } | null>;
+  /** 把封存的特長與解決問題的流程接回這個節點的側寫;封存裡沒有這兩段時回傳 null。 */
+  attachMemoryArchive(agentId: string, archivePath: string): Promise<string | null>;
   /** 取得一個任務期間的檔案變更;任務還在執行時回傳到目前為止的變更。 */
   getTaskChanges(taskId: string): Promise<ChangeSet>;
   listOldSessions(): Promise<OldSession[]>;
@@ -642,5 +784,23 @@ export interface NexusApi {
   /** 從節點或舊 session 分支出新節點;新節點有自己的 session,來源不受影響。 */
   forkAgent(input: ForkAgentInput): Promise<AgentInfo>;
   pickDirectory(): Promise<string | null>;
+  // ---- 協作流程(只有完整權限;畫面在 M4) ----
+  flowTemplates(): Promise<FlowTemplateInfo[]>;
+  flowList(): Promise<FlowRunView[]>;
+  /** 這個資料夾所屬專案的流程設定(projects.yaml);沒有設定時 config 為 null。 */
+  flowProjectConfig(cwd: string): Promise<{ projectId: string; projectName: string; config: ProjectFlowConfig | null; errors: string[] }>;
+  flowSetProjectConfig(cfg: ProjectFlowConfig): Promise<void>;
+  flowStart(input: FlowStartInput): Promise<FlowRunView>;
+  flowPause(runId: string): Promise<FlowRunView>;
+  flowResume(runId: string): Promise<FlowRunView>;
+  flowStop(runId: string): Promise<FlowRunView>;
+  /** 回應待決事項(pending.id);reassign 要給 agentId,needs_ruling 的 continue 可附 note(會轉給下一步)。 */
+  flowDecide(runId: string, decisionId: string, choice: DecisionChoice, payload?: { agentId?: string; note?: string }): Promise<FlowRunView>;
+  /** 未回報時手動補報;參數和 step_report 工具相同(assignment_id 可省略)。 */
+  flowManualReport(runId: string, args: Record<string, unknown>): Promise<FlowRunView>;
+  /** 授權卡:允許(include 是要納入的範圍外檔案)或拒絕(deny)。 */
+  flowApprove(runId: string, cardId: string, opts?: { deny?: boolean; include?: string[]; message?: string }): Promise<FlowRunView>;
+  /** 流程 late/ 底下的遲到回報檔案。 */
+  flowLateFiles(runId: string): Promise<string[]>;
   onUpdate(cb: (u: Update) => void): () => void;
 }

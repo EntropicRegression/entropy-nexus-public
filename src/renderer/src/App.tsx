@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
+  BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type DispatchEntry, type LinkInfo, type MeetingView, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
 import type { DashboardData } from '../../shared/dashboard';
+import type { FlowRunView } from '../../shared/flow';
 import { Dashboard, DashboardFull } from './Dashboard';
 import { HoverCard } from './Hover';
 import { VoicePanel } from './Voice';
@@ -11,7 +12,9 @@ import { PersonaEditor } from './PersonaEditor';
 import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
-import { Dialog } from './Dialog';
+import { FlowApply, FlowDetail } from './Flow';
+import { Dialog, MeetingDialog } from './Dialog';
+import { AgyAllowEditor } from './AgyAllow';
 import { BoardScene, type BoardMore } from './board';
 import { chime, enqueueSpeech, initSpeech, isMuted, setMuted, stopSpeaking } from './sound';
 import { BACKEND_COLOR, ZONE_TITLE, hex } from './theme';
@@ -23,6 +26,24 @@ const ATTENTION: Record<AgentState, number> = { awaiting: 0, error: 1, lost: 1, 
 /** 瀏覽器版的遠端裝置可能不是完整權限(操作或唯讀);桌面視窗一律是完整。 */
 const fullAccess = !window.nexus.access || window.nexus.access.role === 'full';
 
+/** 畫面保留的流程:未結束的全部留著,已結束的只留最近 50 筆(主行程仍有完整紀錄)。 */
+function capFlows(list: FlowRunView[]): FlowRunView[] {
+  const done = list.filter(r => r.status === 'halted' || r.status === 'stopped' || r.status === 'completed');
+  if (done.length <= 50) return list;
+  const keep = new Set(done.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(r => r.id));
+  return list.filter(r => !(r.status === 'halted' || r.status === 'stopped' || r.status === 'completed') || keep.has(r.id));
+}
+
+/** 流程詳情裡有正在輸入或還沒送出的內容(手動補報表單、裁示欄、提交訊息):Esc 不要關掉詳情。 */
+function flowPanelBusy(): boolean {
+  const panel = document.querySelector('.flow-detail');
+  if (!panel) return false;
+  const active = document.activeElement;
+  if (active && panel.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return true;
+  if (panel.querySelector('.flow-manual, .flow-force, .flow-reassign')) return true;
+  return [...panel.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>('textarea, input[type="text"], input:not([type])')].some(x => x.value.trim() !== '');
+}
+
 export function App() {
   const [agents, setAgents] = useState<Record<string, AgentInfo>>({});
   const [events, setEvents] = useState<NexusEvent[]>([]);
@@ -33,6 +54,13 @@ export function App() {
   /** 新增節點面板是不是從總管區塊的「+」打開的(新增後指定為總管,也可以直接指定現有節點)。 */
   const [addingChief, setAddingChief] = useState(false);
   const [chiefId, setChiefId] = useState<string | null>(null);
+  const [links, setLinks] = useState<LinkInfo[]>([]);
+  // 進行中的會議(主面板的會議室虛擬節點)、打開旁聽的會議室,以及它散會時最後的樣子(顯示「會議已結束」後關閉)
+  const [meetings, setMeetings] = useState<MeetingView[]>([]);
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [roomEnded, setRoomEnded] = useState<MeetingView | null>(null);
+  const roomLast = useRef<MeetingView | null>(null);
+  const [dispatches, setDispatches] = useState<DispatchEntry[]>([]);
   const [maxActive, setMaxActive] = useState(4);
   const [quotaStop, setQuotaStop] = useState(0);
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -52,6 +80,10 @@ export function App() {
   const [dash, setDash] = useState<DashboardData | null>(null);
   const [showDash, setShowDash] = useState(false);
   const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null);
+  // 協作流程(M4):只有桌面畫面的快照附上 flows;null 表示這個畫面沒有流程功能(遠端或功能沒啟用),不顯示流程的操作
+  const [flows, setFlows] = useState<FlowRunView[] | null>(null);
+  const [flowOpen, setFlowOpen] = useState<string | null>(null);
+  const [flowApply, setFlowApply] = useState(false);
   const [muted, setMutedState] = useState(isMuted());
   // 主面板的節點在六角形裡顯示角色的 Q 版頭像(角色資料夾裡有 avatar 圖檔時);預設開啟,設定會記住
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
@@ -88,10 +120,14 @@ export function App() {
       setMaxActive(s.maxActive);
       setQuotaStop(s.quotaStop);
       setChiefId(s.chiefId ?? null);
+      setLinks(s.links ?? []);
+      setMeetings(s.meetings ?? []);
+      setDispatches(s.dispatches ?? []);
       setTasks(s.tasks);
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
       setDash(prev => prev ?? s.dashboard ?? null);
+      if (Array.isArray(s.flows)) setFlows(capFlows(s.flows));
     });
     const off = window.nexus.onUpdate(u => {
       if (u.agent) { const a = u.agent; setAgents(prev => ({ ...prev, [a.id]: a })); }
@@ -117,6 +153,10 @@ export function App() {
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.dashboard) setDash(u.dashboard);
+      if (u.flow) { const f = u.flow; setFlows(prev => { const list = prev ?? []; return capFlows(list.some(x => x.id === f.id) ? list.map(x => (x.id === f.id ? f : x)) : [f, ...list]); }); }
+      if (u.links) setLinks(u.links);
+      if (u.meetings) setMeetings(u.meetings);
+      if (u.dispatches) setDispatches(u.dispatches);
       if (u.autopilot !== undefined) setAutopilot(u.autopilot);
       if (u.chiefId !== undefined) setChiefId(u.chiefId);
       if (u.observed) {
@@ -147,7 +187,9 @@ export function App() {
       if (a) setSelectedId(a.id);
       return !!a;
     };
-    return () => { delete dbg.__nexusSelect; };
+    // 自我檢查用:直接打開某個流程的詳情(任務面板的流程卡可能因為清單太長被收起來)
+    dbg.__nexusFlowOpen = (id: string) => { setShowDash(false); setFlowApply(false); setFlowOpen(id); return true; };
+    return () => { delete dbg.__nexusSelect; delete dbg.__nexusFlowOpen; };
   }, []);
   // Alt+N 的順序:需要你的排最前面;子節點緊跟在呼叫它的節點後面
   const roster = useMemo(() => {
@@ -155,6 +197,25 @@ export function App() {
     return roots.flatMap(r => [r, ...list.filter(a => a.parentId === r.id).sort((a, b) => a.createdAt - b.createdAt)]);
   }, [list, agents]);
   const selected = selectedId ? agents[selectedId] ?? null : null;
+  // 會議室和節點的對話視窗同時只開一個:打開節點就關掉會議室
+  useEffect(() => { if (selectedId) { setRoomId(null); setRoomEnded(null); } }, [selectedId]);
+  // 流程的浮動面板會蓋住對話視窗的右半部:打開節點的對話視窗時關掉流程詳情與套用流程對話框
+  useEffect(() => { if (selectedId) { setFlowOpen(null); setFlowApply(false); } }, [selectedId]);
+  const openRoom = (id: string) => { setSelectedId(null); setRoomEnded(null); setRoomId(id); };
+  const liveRoom = roomId ? meetings.find(m => m.id === roomId) ?? null : null;
+  if (liveRoom) roomLast.current = liveRoom;
+  // 旁聽中的會議散會了:會議室在面板上立刻消失;旁聽視窗留下最後的內容、顯示「會議已結束」,稍後自動關閉
+  useEffect(() => {
+    if (!roomId || liveRoom || roomEnded) return;
+    if (roomLast.current?.id === roomId) setRoomEnded(roomLast.current); else setRoomId(null);
+  }, [roomId, liveRoom, roomEnded]);
+  useEffect(() => {
+    if (!roomEnded) return;
+    const t = setTimeout(() => { setRoomId(cur => (cur === roomEnded.id ? null : cur)); setRoomEnded(null); }, 1800);
+    return () => clearTimeout(t);
+  }, [roomEnded]);
+  const room = liveRoom ?? (roomEnded && roomEnded.id === roomId ? roomEnded : null);
+  const closeRoom = () => { setRoomId(null); setRoomEnded(null); };
   // 快捷鍵。終端機模式下按鍵都交給原生 CLI,只保留 F1
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -165,7 +226,9 @@ export function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'n') { e.preventDefault(); if (fullAccess) setAdding(true); return; }
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); if (fullAccess) setShowOld(true); return; }
       if (e.key === 'Escape' && !reviewId && !showOld) {
-        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (showDash) setShowDash(false); else if (selectedId) setSelectedId(null);
+        // 新增節點的面板開著時,Esc 不要關掉底下的對話視窗或會議室(面板要按「取消」關)
+        // 套用流程的對話框開著時 Esc 不關(避免打到一半的主題不見),要按「取消」或 ✕
+        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (flowApply) return; else if (flowOpen) { if (!flowPanelBusy()) setFlowOpen(null); } else if (showDash) setShowDash(false); else if (adding) return; else if (selectedId) setSelectedId(null); else if (roomId) closeRoom();
         return;
       }
       if (!e.altKey || e.ctrlKey) return;
@@ -183,11 +246,14 @@ export function App() {
       } else if (k === 'w' && selectedId) {
         e.preventDefault();
         setSelectedId(null);
+      } else if (k === 'w' && roomId) {
+        e.preventDefault();
+        closeRoom();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agents, roster, selectedId, reviewId, showOld, showKeys, showMore, showDash]);
+  }, [agents, roster, selectedId, roomId, reviewId, showOld, showKeys, showMore, showDash, adding, flowApply, flowOpen]);
   const reviewTask = reviewId ? tasks.find(t => t.id === reviewId) ?? null : null;
   // 對話視窗的「變更」按鈕:這個節點最近一個有變更資料的任務
   const latestTask = (agentId: string) => tasks.filter(t => t.agentId === agentId && t.changes).sort((a, b) => b.startedAt - a.startedAt)[0]?.id ?? null;
@@ -245,7 +311,9 @@ ${c.note}` : ''}`}>
         </div>
       </header>
 
-      {showDash && <DashboardFull agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
+      {flowApply && flows && fullAccess && <FlowApply agents={list} onClose={() => setFlowApply(false)} onStarted={id => { setFlowApply(false); setFlowOpen(id); }} />}
+      {!flowApply && flowOpen && flows && fullAccess && (() => { const r = flows.find(x => x.id === flowOpen); return r ? <FlowDetail key={r.id} run={r} agents={list} onClose={() => setFlowOpen(null)} /> : null; })()}
+      {showDash && <DashboardFull dispatches={dispatches} tasks={tasks} agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
       {showView && (
@@ -299,18 +367,20 @@ ${c.note}` : ''}`}>
           <div><span>顯示這張表</span><kbd>F1</kbd></div>
         </div>
       )}
-      <main className={`stage ${selected ? 'dim' : ''}`}>
-        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
+      <main className={`stage ${selected || room ? 'dim' : ''}`}>
+        <Board agents={list} selectedId={selectedId} avatars={avatarsOn} chiefId={chiefId} links={links} meetings={meetings} roomId={room ? room.id : null} onRoom={openRoom} onSelect={setSelectedId} onHover={setHover} onAddChief={() => { if (fullAccess) { setAdding(true); setAddingChief(true); } }} />
         {hover && agents[hover.id] && <HoverCard agent={agents[hover.id]} usage={usage[agents[hover.id].backend]} x={hover.x} y={hover.y} />}
         {selected && <Dialog key={selected.id} agent={selected} cap={caps.find(c => c.backend === selected.backend)} parentName={selected.parentId ? agents[selected.parentId]?.name ?? '' : ''} reviewTaskId={latestTask(selected.id)} onReview={setReviewId} onClose={() => setSelectedId(null)} onOpen={setSelectedId} isChief={selected.id === chiefId} />}
+        {room && !selected && <MeetingDialog key={room.id} meeting={room} agents={agents} ended={roomEnded?.id === room.id} onClose={closeRoom} />}
         {reviewTask && <Review key={reviewTask.id} task={reviewTask} agents={list} onClose={() => setReviewId(null)} />}
         {showOld && <OldSessions onOpened={id => { setShowOld(false); setSelectedId(id); }} onClose={() => setShowOld(false)} />}
       </main>
 
       {/* 右側欄:最上面是常駐的總覽儀表(原本節點清單的位置),下面是任務面板與新增節點 */}
       <aside className="sidebar">
-        <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => setShowDash(v => !v)} onSelect={setSelectedId} />
-        {!adding && <TaskPanel tasks={tasks} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
+        <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => { setShowDash(v => !v); setFlowOpen(null); setFlowApply(false); }} onSelect={setSelectedId} />
+        {!adding && <TaskPanel tasks={tasks} chiefId={chiefId} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId}
+          flows={fullAccess ? flows : null} onOpenFlow={id => { setSelectedId(null); setShowDash(false); setFlowApply(false); setFlowOpen(id); }} onApplyFlow={() => { setSelectedId(null); setShowDash(false); setFlowOpen(null); setFlowApply(true); }} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>
@@ -353,14 +423,20 @@ function describe(e: NexusEvent): string {
 }
 
 /** PixiJS 主面板的 React 外殼。 */
-function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
+function Board({ agents, selectedId, avatars, chiefId, links, meetings, roomId, onRoom, onSelect, onHover, onAddChief }: { agents: AgentInfo[]; selectedId: string | null; avatars: boolean; chiefId: string | null; links: LinkInfo[]; meetings: MeetingView[]; roomId: string | null; onRoom: (meetingId: string) => void; onSelect: (id: string | null) => void; onHover: (h: { id: string; x: number; y: number } | null) => void; onAddChief: () => void }) {
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
   const addChiefRef = useRef(onAddChief);
   addChiefRef.current = onAddChief;
+  const roomRef = useRef(onRoom);
+  roomRef.current = onRoom;
+  const latestRooms = useRef({ meetings, roomId });
+  latestRooms.current = { meetings, roomId };
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<BoardScene | null>(null);
   const latest = useRef({ agents, selectedId, avatars, chiefId });
+  const latestLinks = useRef(links);
+  latestLinks.current = links;
   latest.current = { agents, selectedId, avatars, chiefId };
   // 區塊排不下時「另外 N 個」的清單:點面板上的標記打開,列出被收起來的節點
   const [more, setMore] = useState<BoardMore | null>(null);
@@ -378,11 +454,13 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
 
   useEffect(() => {
     let dead = false;
-    const s = new BoardScene(id => { s.closeMore(); onSelect(id); }, h => hoverRef.current(h), () => addChiefRef.current(), setMore);
+    const s = new BoardScene(id => { s.closeMore(); onSelect(id); }, h => hoverRef.current(h), () => addChiefRef.current(), setMore, id => roomRef.current(id));
     void s.init(host.current!).then(() => {
       if (dead) { s.destroy(); return; }
       scene.current = s;
       s.setAvatars(latest.current.avatars);
+      s.setLinks(latestLinks.current);
+      s.setMeetings(latestRooms.current.meetings, latestRooms.current.roomId);
       s.sync(latest.current.agents, latest.current.selectedId, latest.current.chiefId);
     });
     return () => { dead = true; scene.current?.destroy(); scene.current = null; };
@@ -390,6 +468,8 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
 
   useEffect(() => { scene.current?.sync(agents, selectedId, chiefId); }, [agents, selectedId, chiefId]);
   useEffect(() => { scene.current?.setAvatars(avatars); }, [avatars]);
+  useEffect(() => { scene.current?.setLinks(links); }, [links]);
+  useEffect(() => { scene.current?.setMeetings(meetings, roomId); }, [meetings, roomId]);
 
   // 清單放在標記的上方或下方(看哪邊空間大),不超出面板
   const box = host.current?.parentElement;
@@ -409,10 +489,17 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
       {more && moreStyle && (
         <div className="board-more" ref={moreRef} style={moreStyle} role="dialog" aria-label={`${zoneName}區塊的其他節點`}>
           <div className="bm-head">
-            <b>{zoneName}</b><span>另外 {more.ids.length} 個</span>
+            <b>{zoneName}</b><span>另外 {more.ids.length + more.rooms.length} 個</span>
             <button className="ghost" aria-label="關閉清單" onClick={() => scene.current?.closeMore()}>×</button>
           </div>
           <div className="bm-list">
+            {more.rooms.map(id => meetings.find(m => m.id === id)).filter((m): m is MeetingView => !!m).map(m => (
+              <button key={m.id} className="bm-row bm-room" onClick={() => { scene.current?.closeMore(); onRoom(m.id); }} title={`旁聽會議「${m.topic}」`}>
+                <i />
+                <span className="bm-name">會議室 · {m.topic}</span>
+                <span className="bm-state">{m.round > 0 ? `第 ${m.round}/${m.rounds} 輪` : '開場'}</span>
+              </button>
+            ))}
             {more.ids.map(id => agents.find(a => a.id === id)).filter((a): a is AgentInfo => !!a).map(a => (
               <button key={a.id} className={`bm-row s-${a.state}`} onClick={() => { scene.current?.closeMore(); onSelect(a.id); }} title={`打開「${a.name}」的對話視窗`}>
                 <i style={{ background: hex(BACKEND_COLOR[a.backend]) }} />
@@ -428,7 +515,9 @@ function Board({ agents, selectedId, avatars, chiefId, onSelect, onHover, onAddC
 }
 
 function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; agents: AgentInfo[]; chief?: boolean; onDone: () => void }) {
-  const firstUsable = caps.find(c => c.available)?.backend ?? 'claude';
+  // 總管的預設建議(tests/chief-real 的實測:Claude Code 的 sonnet 最快、回覆最精簡):有就預選,沒有就照一般節點
+  const chiefClaude = chief ? caps.find(c => c.backend === 'claude' && c.available) : undefined;
+  const firstUsable = chiefClaude?.backend ?? caps.find(c => c.available)?.backend ?? 'claude';
   const [name, setName] = useState('');
   const [character, setCharacter] = useState('');
   const [characters, setCharacters] = useState<string[]>([]);
@@ -437,7 +526,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
   const [backend, setBackend] = useState<Backend>(firstUsable);
   const [cwd, setCwd] = useState('');
   const [mode, setMode] = useState<PermissionMode>('ask');
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(chiefClaude?.models.includes('sonnet') ? 'sonnet' : '');
   const [isolate, setIsolate] = useState(false);
   const [dir, setDir] = useState<DirInfo | null>(null);
   // 資料夾改變後查一下它是不是 git 版本庫,決定能不能用獨立工作區
@@ -448,13 +537,25 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
     return () => { alive = false; clearTimeout(t); };
   }, [cwd]);
   const [error, setError] = useState('');
+  // 名稱或角色對得上封存的記憶時問要不要接回(刪除節點時歸檔的工作履歷)
+  const [archive, setArchive] = useState<{ path: string; date: string; name: string } | null>(null);
+  const [attach, setAttach] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    const names = [name.trim(), character.trim()].filter(Boolean);
+    if (!names.length) { setArchive(null); return; }
+    const t = setTimeout(() => { void window.nexus.findMemoryArchive(names).then(r => { if (alive) setArchive(r); }).catch(() => { if (alive) setArchive(null); }); }, 250);
+    return () => { alive = false; clearTimeout(t); };
+  }, [name, character]);
   const cap = caps.find(c => c.backend === backend);
   // 同一個資料夾已有節點時提醒:它們會互相覆寫,變更檢視也分不出是誰改的
   const norm = (p: string) => p.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
   const sameDir = cwd.trim() ? agents.filter(a => !a.parentId && norm(a.cwd) === norm(cwd)) : [];
   const create = async () => {
     try {
-      await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode, ...(chief ? { chief: true } : {}) });
+      const made = await window.nexus.createAgent({ isolate, name, character, model, backend, cwd, permissionMode: cap?.approvals === false ? 'ask' : mode, ...(chief ? { chief: true } : {}) });
+      // 接回封存的記憶失敗不影響節點建立
+      if (archive && attach) await window.nexus.attachMemoryArchive(made.id, archive.path).catch(() => null);
       onDone();
     } catch (e) {
       setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
@@ -471,6 +572,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
       <div className="addform-body">
       {chief && <>
         <p className="note">總管負責接收你交代的事(可以在它的對話視窗用語音說),判斷交給哪個節點,再用節點互相呼叫分派出去。建議用「每次詢問」模式:每次分派前會先問你。</p>
+        <p className="note">預設建議:Claude Code 搭配 sonnet 模型。實測(tests/chief-real)它是反應最快、回覆最精簡的組合,適合只負責判斷與分派的總管;已為你預選,可以自行更換。</p>
         {candidates.length > 0 && <div className="chief-pick">
           <span className="note">直接指定現有節點:</span>
           {candidates.map(a => <button key={a.id} onClick={() => void pickChief(a.id)} title={`${BACKEND_LABEL[a.backend]}${a.model ? ` · ${a.model}` : ''}`}>{a.name}</button>)}
@@ -489,6 +591,10 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
         {characters.length === 0 && <span className="note">還沒有自訂立繪。按「資料夾」看放置方式。</span>}
       </label>
       {character && <PersonaEditor character={character} />}
+      {archive && <label className="check addform-archive" title="封存是刪除節點時存進記憶庫的工作履歷">
+        <span><input type="checkbox" checked={attach} onChange={e => setAttach(e.target.checked)} /> 找到 {archive.name} 的封存記憶({archive.date}),要接回嗎?</span>
+        <span className="note">接回後,封存裡的特長與解決問題的流程會複製進新節點的側寫。</span>
+      </label>}
       <label>後台 CLI
         <select value={backend} onChange={e => { setBackend(e.target.value as Backend); setModel(''); }}>
           {caps.map(c => (
@@ -499,6 +605,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
         </select>
         {cap && <span className="note">{cap.note}</span>}
       </label>
+      {backend === 'antigravity' && <AgyAllowEditor />}
       <label>模型
         <input list="model-options" value={model} onChange={e => setModel(e.target.value)} placeholder="預設(使用 CLI 的設定)" />
         <datalist id="model-options">{(cap?.models ?? []).map(m => <option key={m} value={m} />)}</datalist>
@@ -524,6 +631,7 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
               <option value="auto">自動執行</option>
             </select>
             {mode === 'auto' && <span className="note warn">修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。節點上會標示 AUTO。</span>}
+            {chief && mode === 'auto' && <span className="note warn">總管會在不問你的情況下,把工作交給其他節點執行。建議維持「每次詢問」,分派前先由你確認。</span>}
           </label>
         )}
       </div>

@@ -188,6 +188,22 @@ export function probeAcp(cfg: AcpConfig): Promise<{ name: string; version: strin
 
 interface PendingPermission { rpcId: number | string; options: Json[] }
 
+/** 工具參數裡的檔案路徑(頂層與下一層的 path、file_path、TargetFile 之類,加上 ACP 的 locations[].path)。 */
+function toolPaths(input: Json, locations: unknown): string[] {
+  const keys = /^(?:path|file_?path|notebook_path|target_?file|absolute_?path|destination|new_path|old_path)$/i;
+  const out: string[] = [];
+  const take = (o: unknown, depth: number) => {
+    if (!o || typeof o !== 'object' || depth > 1) return;
+    for (const [k, v] of Object.entries(o as Json)) {
+      if (typeof v === 'string' && keys.test(k) && v.length < 1000) out.push(v);
+      else if (v && typeof v === 'object') take(v, depth + 1);
+    }
+  };
+  take(input, 0);
+  if (Array.isArray(locations)) for (const l of locations) if (typeof l?.path === 'string') out.push(l.path);
+  return [...new Set(out)].slice(0, 50);
+}
+
 function subagentName(input: Json, fallback: string): string {
   for (const k of ['Role', 'Name', 'SubagentName', 'TaskName', 'description', 'Task', 'Prompt', 'prompt']) {
     if (typeof input[k] === 'string' && input[k].trim()) return input[k].trim().split('\n')[0].slice(0, 40);
@@ -482,7 +498,9 @@ export class AcpSession implements AdapterSession {
         if (typeof prompt === 'string') this.emit({ type: 'message', role: 'user', text: prompt }, id);
         this.emit({ type: 'state', state: 'working', detail: `${this.cfg.label} 不回報子代理的進度` }, id);
       }
-      this.emit({ type: 'tool', phase: 'start', name: tool.name, summary: tool.summary, detail: JSON.stringify(input, null, 2).slice(0, 4000) });
+      // 明細只留 4000 字,檔案路徑在截斷前另外取出(協作流程的範圍合約用來判斷寫入)
+      const paths = toolPaths(input, u.locations);
+      this.emit({ type: 'tool', phase: 'start', name: tool.name, summary: tool.summary, detail: JSON.stringify(input, null, 2).slice(0, 4000), ...(paths.length ? { paths } : {}) });
       if (!this.permissions.size) this.emit({ type: 'state', state: 'working', detail: `${tool.name} · ${tool.summary}` });
     }
     if (u.status === 'completed' || u.status === 'failed') {

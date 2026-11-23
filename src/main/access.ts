@@ -1,4 +1,4 @@
-import type { RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
+import type { DispatchEntry, LinkInfo, MeetingView, RemoteAccess, RemoteRole, Snapshot, Update } from '../shared/types';
 import type { DashboardData } from '../shared/dashboard';
 
 /**
@@ -55,6 +55,15 @@ const RPC: Record<string, Rule> = {
   history: read('agent'),
   worktreeStatus: read('agent'),
   taskChanges: read('task'),
+  // 驗收:操作以上的角色、只限看得到的節點(依任務 id 找節點)
+  taskVerdict: operate('task'),
+  // 記下解法:請節點撰寫判例,等於對節點下指令,所以和驗收一樣是操作以上的角色、只限看得到的節點
+  markCase: operate('task'),
+  // 儲存這段記憶:請節點整理對話草稿,等於對節點下指令;只看資訊的 draftInfo 是唯讀
+  draftInfo: read('agent'),
+  requestDraft: operate('agent'),
+  // 寫回憶錄:同樣等於對節點下指令
+  requestMemoir: operate('agent'),
   send: operate('agent'),
   enqueue: operate('agent'),
   cancelQueued: operate('agent'),
@@ -69,7 +78,8 @@ const RPC: Record<string, Rule> = {
   // 角色的 Q 版頭像:只是畫面上的圖,看得到節點的角色就能讀
   getAvatar: read(),
   // 只有完整角色能用,而且只是讀取或太頻繁,不寫紀錄
-  remoteStatus: ADMIN_QUIET, remoteAudit: ADMIN_QUIET, observeStatus: ADMIN_QUIET, getPersona: ADMIN_QUIET, oldSessions: ADMIN_QUIET,
+  remoteStatus: ADMIN_QUIET, remoteAudit: ADMIN_QUIET, observeStatus: ADMIN_QUIET, getPersona: ADMIN_QUIET, oldSessions: ADMIN_QUIET, getAgyAllow: ADMIN_QUIET,
+  findMemoryArchive: ADMIN_QUIET,
   inspectDir: ADMIN_QUIET, termAttach: ADMIN_QUIET, termWrite: ADMIN_QUIET, termResize: ADMIN_QUIET,
 };
 
@@ -126,13 +136,38 @@ function limitDashboard(d: DashboardData, see: (id: string) => boolean): Dashboa
   return { ...d, spend: d.spend.filter(r => see(r.agentId)), tasks: d.tasks.filter(r => see(r.agentId)) };
 }
 
+/**
+ * 遠端裝置只看得到兩端都看得到的連線;會議只留看得到的參與者(主持人看不到就整條拿掉)。
+ * see 判斷節點 id 是否在這支裝置的範圍內(見 access.ts)。
+ */
+export function filterLinks(links: LinkInfo[], see: (id: string) => boolean): LinkInfo[] {
+  const out: LinkInfo[] = [];
+  for (const l of links) {
+    if (!see(l.from)) continue;
+    const to = l.to.filter(see);
+    if (!to.length || (l.kind === 'ask' && to.length !== l.to.length)) continue;
+    out.push({ ...l, to, ...(l.speaker && !to.includes(l.speaker) ? { speaker: undefined } : {}) });
+  }
+  return out;
+}
+
+/** 分派紀錄只留兩端都看得到的。 */
+export const filterDispatches = (list: DispatchEntry[], see: (id: string) => boolean): DispatchEntry[] => list.filter(d => see(d.fromId) && see(d.toId));
+
+/** 進行中的會議(會議室):主持人與所有參與者都看得到才給(逐字紀錄含每個人的發言,不做部分遮蔽)。 */
+export const filterMeetings = (list: MeetingView[], see: (id: string) => boolean): MeetingView[] => list.filter(m => see(m.hostId) && m.participants.every(p => see(p.id)));
+
 /** 狀態快照只留這支裝置看得到的節點;非完整角色不提供外部觀察節點與立繪資料夾的位置。 */
-export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
+export function filterSnapshot<T extends Pick<Snapshot, 'agents' | 'tasks'> & Partial<Pick<Snapshot, 'events' | 'observed' | 'portraitsDir' | 'dashboard' | 'links' | 'dispatches' | 'meetings'>>>(s: T, access: RemoteAccess, rootOf: (id: string) => string | null): T {
   if (access.role === 'full') return s;
   const see = (id: string) => visible(access, rootOf(id));
   const out = { ...s, agents: s.agents.filter(a => see(a.id)), tasks: s.tasks.filter(t => see(t.agentId)) };
   if (s.events) out.events = s.events.filter(e => see(e.agentId));
   if (s.dashboard) out.dashboard = limitDashboard(s.dashboard, see);
+  // 協作連線與分派紀錄:兩端都看得到的才給
+  if (s.links) out.links = filterLinks(s.links, see);
+  if (s.dispatches) out.dispatches = filterDispatches(s.dispatches, see);
+  if (s.meetings) out.meetings = filterMeetings(s.meetings, see);
   if ('observed' in s) out.observed = [];
   if ('portraitsDir' in s) out.portraitsDir = '';
   return out;
@@ -155,6 +190,9 @@ export function filterUpdate(u: Update, access: RemoteAccess, rootOf: (id: strin
   if (u.removedId !== undefined) out.removedId = u.removedId;
   if (u.usage) out.usage = u.usage;
   if (u.dashboard) out.dashboard = limitDashboard(u.dashboard, see);
+  if (u.links) out.links = filterLinks(u.links, see);
+  if (u.dispatches) out.dispatches = filterDispatches(u.dispatches, see);
+  if (u.meetings) out.meetings = filterMeetings(u.meetings, see);
   if (u.maxActive !== undefined) out.maxActive = u.maxActive;
   if (u.quotaStop !== undefined) out.quotaStop = u.quotaStop;
   if (u.autopilot !== undefined) out.autopilot = u.autopilot;
@@ -169,10 +207,14 @@ export function auditDetail(action: string, input: Record<string, any>): string 
     case 'approval': return input.decision === 'allow' ? '允許' : input.decision === 'allow_session' ? '本次都允許' : input.decision === 'deny' ? '拒絕' : cut(input.decision, 20);
     case 'answer': return input.answers ? cut(Object.values(input.answers).flat().join('、')) : '略過';
     case 'create': return cut(`${input.backend ?? ''} ${input.name ?? ''} ${input.cwd ?? ''}${input.permissionMode === 'auto' ? '(自動)' : ''}`);
-    case 'updateAgent': return cut([input.name && `名稱 ${input.name}`, input.model !== undefined && `模型 ${input.model || '預設'}`, input.character !== undefined && `角色 ${input.character || '無'}`].filter(Boolean).join(','));
+    case 'updateAgent': return cut([input.name && `名稱 ${input.name}`, input.model !== undefined && `模型 ${input.model || '預設'}`, input.character !== undefined && `角色 ${input.character || '無'}`, input.permissionMode && `權限 ${input.permissionMode === 'auto' ? '自動' : '詢問'}`].filter(Boolean).join(','));
     case 'setPersona': return cut(input.character);
     case 'settings': return cut([Number.isInteger(input.maxActive) && `同時上限 ${input.maxActive}`, Number.isInteger(input.quotaStop) && `額度上限 ${input.quotaStop}%`].filter(Boolean).join(','));
     case 'commitTask': return cut(input.message);
+    case 'markCase': return '記下解法(請節點撰寫判例)';
+    case 'requestDraft': return '儲存這段記憶(請節點整理草稿)';
+    case 'requestMemoir': return '寫回憶錄(請節點寫一章回憶錄)';
+    case 'taskVerdict': return input.verdict === 'accepted' ? '驗收' : input.verdict === 'rejected' ? '退回' : '清除驗收';
     case 'setDailyBudget': return cut(`${input.backend ?? ''} 每日預算 ${input.percent === null || input.percent === undefined ? '預設' : `${input.percent}%`}`);
     default: return '';
   }

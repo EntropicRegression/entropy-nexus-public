@@ -1,7 +1,7 @@
 // 會議功能的驗收(用戶端):扮演各節點的 CLI,用 MCP(Streamable HTTP)連到主控台的工具服務。
 // 主控台那邊的動作與對話紀錄檢查在 tests/meeting.e2e.js。
 // 用法:node tests/meeting-client.mjs <主控台記錄檔> <資料資料夾>
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [logFile, dataDir] = process.argv.slice(2);
@@ -124,6 +124,33 @@ try {
   check('全部【無補充】時仍輪到主持人,並註明沒有補充', !q1.error && q1.text.includes(HT) && q1.text.includes('所有參與者都表示沒有補充'), q1.text);
   const q2 = await finish('Host', await call('Host', 'meeting_say', { request_id: rid(q1.text), end: true }));
   check('主持人只用 end 結束(不附發言)', !q2.error && q2.text.startsWith('會議結束。') && entries(q2.text).length === 1 && !q2.text.includes('(主持人)('), q2.text);
+
+  // ---- 13. 會議紀錄自動存進記憶庫(未確認;確認後節點才查得到,格式見 docs/記憶設計討論.md 第五輪)
+  const vault = join(dataDir, 'memory-vault');
+  const meetingFiles = () => { try { return readdirSync(join(vault, 'meetings'), { recursive: true }).map(String).filter(f => f.endsWith('.md')); } catch { return []; } };
+  let closing = null;
+  for (let i = 0; i < 40 && !closing; i++) {
+    closing = meetingFiles().map(f => ({ f, text: readFileSync(join(vault, 'meetings', f), 'utf8') })).find(x => x.text.includes('HOST-CLOSING')) ?? null;
+    if (!closing) await wait(250);
+  }
+  check('散會後記憶庫的 meetings/ 有這場會議的紀錄', !!closing, meetingFiles().join(', '));
+  if (closing) {
+    const t = closing.text;
+    check('會議紀錄的檔頭:種類、狀態未確認、主持人、參與者兩清單、輪數、結束原因', /^種類: "會議紀錄"$/m.test(t) && /^狀態: "未確認"$/m.test(t) && /^主持人: "Host"$/m.test(t) && /^參與者: \["HP1", "HP2"\]$/m.test(t) && /^參與節點ID: \["/m.test(t) && /^輪數: 2$/m.test(t) && /^結束原因: "完成"$/m.test(t), t.slice(0, 600));
+    check('結語成為最前面的「結論」與摘要,不在逐字紀錄裡重複', /^摘要: "HOST-CLOSING"$/m.test(t) && /\n## 結論\n\n> HOST-CLOSING\n/.test(t) && t.split('HOST-CLOSING').length === 3, t);
+    check('逐字紀錄依輪次:## 第 N 輪、### 名稱 · 節點ID、內容逐行加 > ', t.includes('## 第 1 輪') && t.includes('## 第 2 輪') && /### HP1 · \S+\n\n> SAY-HP1-R1/.test(t) && /### Host · \S+\n\n> HOST-ASKS-R1/.test(t) && !t.includes('(主持人)') && !t.includes('主持人結束了會議'), t);
+    const hidden = await call('Host', 'memory_search', { query: 'HOST-CLOSING', kind: 'meeting' });
+    check('未確認的會議紀錄節點查不到', !hidden.error && !hidden.text.includes('HOST-CLOSING'), hidden.text);
+    const rel = `meetings/${closing.f.replaceAll('\\', '/')}`;
+    check('未確認的會議紀錄,直接給路徑也讀不到', (await call('Host', 'memory_read', { path: rel })).error);
+    // 使用者在記憶庫確認(寶庫 App 會把狀態改成已確認);記憶庫監看到改動後重新索引
+    writeFileSync(join(vault, 'meetings', closing.f), t.replace(/^狀態: "未確認"$/m, '狀態: "已確認"'));
+    let found = null;
+    for (let i = 0; i < 40 && !found; i++) { const r = await call('Host', 'memory_search', { query: 'HOST-CLOSING', kind: 'meeting' }); if (r.text.includes(rel)) found = r; else await wait(250); }
+    check('確認後節點用 memory_search(kind meeting)查得到', !!found, found?.text);
+    const read = await call('Host', 'memory_read', { path: rel });
+    check('確認後 memory_read 讀得到全文', !read.error && read.text.includes('SAY-HP2-R2'), read.text.slice(0, 300));
+  }
 
   console.log(`[client] ${bad ? `有 ${bad} 項不符` : '用戶端全部通過'}`);
 } catch (err) {

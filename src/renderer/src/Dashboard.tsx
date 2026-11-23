@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type Backend, type BackendUsage, type Capability, type ObservedSession, type UsageWindow } from '../../shared/types';
+import { BACKEND_LABEL, STATE_LABEL, type AgentInfo, type Backend, type BackendUsage, type Capability, type DispatchEntry, type ObservedSession, type TaskInfo, type UsageWindow } from '../../shared/types';
 import {
   dashWarnings, defaultDailyBudget, formatTokens, formatUsd, percentText, quotaWarnPercent, statusGroups, sumSpend, totalTasks, warningText,
   type BudgetStatus, type Cost, type DashboardData, type DashWarning,
 } from '../../shared/dashboard';
+import { dispatchRow, durationText } from '../../shared/collab';
 import { ago, when } from './Hover';
 import { ObservedRows } from './Observe';
 import { BACKEND_COLOR, STATE_COLOR, hex } from './theme';
@@ -29,13 +30,28 @@ const usedLevel = (used: number, warnAt: number) => (used * 100 >= warnAt ? 'cri
  */
 function compactWindows(windows: UsageWindow[]): UsageWindow[] {
   const plain = windows.filter(w => !w.group);
-  if (plain.length) return plain.slice(0, 2);
+  if (plain.length) return byLength(plain).slice(0, 2);
   const worst = new Map<string, UsageWindow>();
   for (const w of windows) { const m = worst.get(w.label); if (!m || w.used > m.used) worst.set(w.label, w); }
-  return [...worst.values()].slice(0, 2);
+  return byLength([...worst.values()]).slice(0, 2);
 }
 
-const winTitle = (backend: Backend, w: UsageWindow) => `${BACKEND_LABEL[backend]} 的${w.group && !w.label.includes(w.group) ? `「${w.group}」` : ''}${w.label}額度:已用 ${Math.round(w.used * 100)}%${w.resetsAt ? `,${when(w.resetsAt)} 重置` : ''}`;
+/** 額度視窗的長度(小時),用來排序:各家回傳的順序不一(Antigravity 每週在前),統一短的在上、長的在下。認不出的排最後。 */
+function windowHours(label: string): number {
+  const n = Number(/(\d+(?:\.\d+)?)/.exec(label)?.[1] ?? 1);
+  if (/小時|hour|\bh\b/i.test(label)) return n;
+  if (/週|周|week/i.test(label)) return 168 * (/(\d)/.test(label) ? n : 1);
+  if (/月|month/i.test(label)) return 720 * (/(\d)/.test(label) ? n : 1);
+  if (/日|天|day/i.test(label)) return 24 * (/(\d)/.test(label) ? n : 1);
+  return Number.MAX_SAFE_INTEGER;
+}
+/** 依視窗長短排序(穩定排序:同長度維持原順序,例如依模型分組的同一種視窗)。 */
+const byLength = (list: UsageWindow[]): UsageWindow[] => [...list].sort((a, b) => windowHours(a.label) - windowHours(b.label));
+
+/** 額度條像血量:沒用過是滿的,用光是空的(剩餘百分比 = 100 − 已用,和節點資訊卡的血量條一致)。 */
+const leftPct = (w: UsageWindow) => 100 - Math.round(Math.max(0, Math.min(1, w.used)) * 100);
+
+const winTitle = (backend: Backend, w: UsageWindow) => `${BACKEND_LABEL[backend]} 的${w.group && !w.label.includes(w.group) ? `「${w.group}」` : ''}${w.label}額度:剩餘 ${leftPct(w)}%(已用 ${Math.round(w.used * 100)}%)${w.resetsAt ? `,${when(w.resetsAt)} 重置` : ''}`;
 
 function Bar({ value, level }: { value: number; level: string }) {
   return <span className={`dash-bar ${level}`}><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></span>;
@@ -117,7 +133,7 @@ export function Dashboard({ agents, caps, usage, data, quotaStop, observed, sele
         {observed.length > 0 && <button className={`ghost dash-ext ${extWaiting ? 'warn' : ''}`} onClick={onToggle} title="外部觀察節點(在主控台以外執行的 CLI);點一下在完整內容裡查看">外部 <b>{observed.length}</b></button>}
         <button className={`ghost dash-expand ${open ? 'on' : ''}`} onClick={onToggle} aria-expanded={open} title="完整內容:花費、今天的任務、每日預算設定、外部觀察節點">{open ? '收合' : '展開'}</button>
       </div>
-      <div className="dash-quota" role="button" tabIndex={0} aria-label="各後台的額度;點一下展開完整內容" onClick={onToggle} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}>
+      <div className="dash-quota" role="button" tabIndex={0} aria-label="各後台的剩餘額度;點一下展開完整內容" onClick={onToggle} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}>
         {backends.map(b => {
           const u = usage[b];
           const wins = compactWindows(u?.windows ?? []);
@@ -136,8 +152,8 @@ export function Dashboard({ agents, caps, usage, data, quotaStop, observed, sele
                   {wins.map(w => (
                     <div key={`${w.group ?? ''}:${w.label}`} className={`dq-win ${usedLevel(w.used, warnAt)}`} data-label={w.label} title={winTitle(b, w)}>
                       <span className="dq-label">{w.label}</span>
-                      <Bar value={w.used * 100} level={usedLevel(w.used, warnAt)} />
-                      <b className="dq-pct">{Math.round(w.used * 100)}%</b>
+                      <Bar value={leftPct(w)} level={usedLevel(w.used, warnAt)} />
+                      <b className="dq-pct">{leftPct(w)}%</b>
                       <span className="dq-reset">{w.resetsAt ? `${when(w.resetsAt)} 重置` : ''}</span>
                     </div>
                   ))}
@@ -202,7 +218,40 @@ function BudgetInput({ status }: { status: BudgetStatus }) {
  * 總覽儀表的完整內容(浮動面板,開在右側欄的左邊):提醒、各後台的全部額度與每日預算、
  * 今天與本週的花費(依後台與節點)、今天的任務統計、外部觀察節點。
  */
-export function DashboardFull({ agents, caps, usage, data, quotaStop, observed, onClose, onSelect }: Omit<DashProps, 'open' | 'onToggle' | 'selectedId'> & { onClose: () => void }) {
+/** 分派紀錄:最近的節點交辦。點一列打開被呼叫節點的對話視窗。 */
+function DispatchLog({ list, tasks, alive, onSelect }: { list: DispatchEntry[]; tasks: TaskInfo[]; alive: Set<string>; onSelect: (id: string) => void }) {
+  const [now, setNow] = useState(Date.now());
+  const running = list.some(d => d.status === 'running');
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  if (!list.length) return <p className="remote-note">節點用 ask_node 交辦工作給其他節點後,會記在這裡(保留 30 天、最多 50 筆)。</p>;
+  return (
+    <table className="df-table df-dispatch">
+      <thead><tr><th>時間</th><th>誰 → 誰</th><th>內容</th><th>狀態</th><th>耗時</th><th>花費</th></tr></thead>
+      <tbody>
+        {list.map(d => {
+          const r = dispatchRow(d, now, tasks);
+          const ok = alive.has(d.toId);
+          return (
+            <tr key={d.id} data-row={`dispatch:${d.id}`} data-status={d.status} className={`df-agent ${ok ? '' : 'gone'}`} onClick={() => { if (ok) onSelect(d.toId); }} title={ok ? `打開「${d.toName}」的對話視窗` : '節點已不在面板上'}>
+              <td className="df-dtime">{when(d.startedAt)}</td>
+              <td className="df-dwho">{d.fromName} → {d.toName}</td>
+              <td className="df-dtitle">{d.title}</td>
+              <td className={`df-dstatus s-${d.status}`}>{r.status}</td>
+              <td className="df-dtime">{durationText(r.durationMs)}</td>
+              <td className="df-dtime">{r.cost ? `${formatTokens(r.cost.tokens)}${r.cost.usd > 0 ? ` · ${formatUsd(r.cost.usd)}` : ''}` : '—'}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+export function DashboardFull({ agents, caps, usage, data, quotaStop, observed, dispatches, tasks: allTasks, onClose, onSelect }: Omit<DashProps, 'open' | 'onToggle' | 'selectedId'> & { dispatches: DispatchEntry[]; tasks: TaskInfo[]; onClose: () => void }) {
   const warnings = useWarnings(agents, usage, data, quotaStop);
   const warnAt = quotaWarnPercent(quotaStop);
   const backends = shownBackends(caps, usage);
@@ -233,11 +282,11 @@ export function DashboardFull({ agents, caps, usage, data, quotaStop, observed, 
         return (
           <div key={b} className="df-backend" data-backend={b}>
             <div className="df-bhead"><i style={{ background: hex(BACKEND_COLOR[b]) }} /><b>{BACKEND_LABEL[b]}</b>{u && u.windows.length > 0 && u.updatedAt > 0 && <span>{ago(u.updatedAt)}更新</span>}</div>
-            {u && u.windows.length > 0 ? u.windows.map(w => (
+            {u && u.windows.length > 0 ? byLength(u.windows).map(w => (
               <div key={`${w.group ?? ''}:${w.label}`} className={`df-win ${usedLevel(w.used, warnAt)}`} title={winTitle(b, w)}>
                 <span className="df-label">{w.group && !w.label.includes(w.group) ? `${w.group} · ` : ''}{w.label}</span>
-                <Bar value={w.used * 100} level={usedLevel(w.used, warnAt)} />
-                <b>{Math.round(w.used * 100)}%</b>
+                <Bar value={leftPct(w)} level={usedLevel(w.used, warnAt)} />
+                <b>{leftPct(w)}%</b>
                 <span className="df-reset">{w.resetsAt ? `${when(w.resetsAt)} 重置` : ''}</span>
               </div>
             )) : <div className="remote-note">{u?.unsupported ? '這個後台不提供剩餘額度。' : '尚未取得額度,這個後台的節點執行一次後會更新。'}</div>}
@@ -287,6 +336,9 @@ export function DashboardFull({ agents, caps, usage, data, quotaStop, observed, 
         <span data-stat="interrupted">中斷 <b>{tasks.interrupted}</b></span>
         <span data-stat="running">進行中 <b>{tasks.running}</b></span>
       </div>
+
+      <div className="remote-sub">分派紀錄</div>
+      <DispatchLog list={dispatches} tasks={allTasks} alive={new Set(agents.map(a => a.id))} onSelect={onSelect} />
 
       {/* 外部觀察節點只給完整權限(遠端的操作、唯讀角色收不到這份資料) */}
       {fullAccess && <>

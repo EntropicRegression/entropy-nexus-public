@@ -90,6 +90,23 @@ export async function diffTrees(cwd: string, base: string, end: string): Promise
   return { source: 'git', note: '', files: list.slice(0, MAX_FILES), truncated: list.length > MAX_FILES };
 }
 
+/**
+ * 兩張快照之間改了哪些檔案(只有路徑與狀態,不取 patch,也沒有 diffTrees 的 300 筆上限)。
+ * 不偵測改名:改名會拆成一筆刪除加一筆新增,範圍比對與提交才不會漏掉舊路徑。
+ */
+export async function changedPaths(cwd: string, base: string, end: string): Promise<{ path: string; status: 'A' | 'M' | 'D' }[]> {
+  const r = await git(cwd, ['diff', '--name-status', '--no-renames', '-z', base, end]);
+  if (!r.ok) throw new Error('比對快照失敗');
+  const parts = r.out.split('\0');
+  const out: { path: string; status: 'A' | 'M' | 'D' }[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const code = parts[i], path = parts[i + 1];
+    if (!code || !path) continue;
+    out.push({ path, status: code[0] === 'A' ? 'A' : code[0] === 'D' ? 'D' : 'M' });
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 const EDIT_TOOLS = /^(Write|Edit|MultiEdit|NotebookEdit|Patch|write_file|write_to_file|replace_file_content|multi_replace_file_content|edit_file)$/i;
 
 /**
@@ -160,23 +177,35 @@ export async function revertChanges(cwd: string, base: string, end: string, path
   return result;
 }
 
-/** 把一個任務改過的檔案提交成一筆 commit。提交的是這些檔案「現在」的內容。 */
-export async function commitChanges(cwd: string, base: string, end: string, message: string): Promise<string> {
+/**
+ * 把一個任務改過的檔案提交成一筆 commit。提交的是這些檔案「現在」的內容。
+ * only 有值時只提交其中列出的檔案(協作流程的授權卡:範圍外的檔案要使用者勾選才納入);不在這次變更裡的路徑會被忽略。
+ */
+export async function commitChanges(cwd: string, base: string, end: string, message: string, only?: string[]): Promise<string> {
   const root = await repoRoot(cwd);
   if (!root) throw new Error('找不到 git 版本庫');
-  const paths = (await diffTrees(cwd, base, end)).files.map(f => f.path);
-  if (!paths.length) throw new Error('這個任務沒有可以提交的修改。');
-  // 提交走使用者自己的 git 設定(包含換行轉換),不套用快照用的設定
-  const add = await gitFull(root, ['add', '-A', '--', ...paths]);
+  const pick = only ? new Set(only.map(p => p.replace(/\\/g, '/'))) : null;
+  const paths = (await changedPaths(cwd, base, end)).map(f => f.path).filter(p => !pick || pick.has(p));
+  if (!paths.length) throw new Error(pick ? '選取的檔案沒有可以提交的修改。' : '這個任務沒有可以提交的修改。');
+  // 提交走使用者自己的 git 設定(包含換行轉換),不套用快照用的設定。
+  // 路徑多到可能超過 Windows 命令列長度上限(約 32K 字元)時,改從 stdin 傳路徑清單(--pathspec-from-file,git 2.26 起支援)
+  const many = paths.reduce((n, p) => n + p.length + 3, 0) > PATHS_ON_CMDLINE_MAX;
+  const input = many ? `${paths.join('\0')}\0` : undefined;
+  const spec = many ? ['--pathspec-from-file=-', '--pathspec-file-nul'] : ['--', ...paths];
+  const add = await gitFull(root, ['add', '-A', ...spec], input);
   if (!add.ok) throw new Error('暫存檔案失敗');
-  const c = await gitFull(root, ['commit', '-m', message, '--', ...paths]);
+  const c = await gitFull(root, ['commit', '-m', message, ...spec], input);
   if (!c.ok) throw new Error(`提交失敗:${(c.err || c.out).split('\n').slice(-2).join(' ').slice(0, 240)}`);
   return (await git(root, ['rev-parse', '--short', 'HEAD'])).out.trim();
 }
 
-function gitFull(cwd: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+/** 命令列上直接列路徑的總長度上限;超過就改用 --pathspec-from-file。 */
+const PATHS_ON_CMDLINE_MAX = 8000;
+
+function gitFull(cwd: string, args: string[], input?: string): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise(resolve => {
-    execFile('git', ['-c', 'core.quotepath=false', ...args], { cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 30000 },
+    const child = execFile('git', ['-c', 'core.quotepath=false', ...args], { cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 30000 },
       (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout), err: String(stderr) }));
+    if (input !== undefined) child.stdin?.end(input);
   });
 }

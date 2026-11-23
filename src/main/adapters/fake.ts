@@ -1,8 +1,10 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { attachmentKind, type AdapterEvent, type ApprovalDecision, type Backend, type Capability } from '../../shared/types';
+import { MEMOIR_PROMPT_LEAD } from '../../shared/memory-draft';
 import { saveImage } from '../media';
 import { pathOnlyNote, withPaths, type Adapter, type AdapterSession, type StartOptions } from './adapter';
 
@@ -76,6 +78,8 @@ class FakeSession implements AdapterSession {
   private stopped = false;
   private busy = false;
   private lazySession = false;
+  /** 測試用:這個回合不理會中斷(協作流程的 stubborn 動作,模擬中斷無效的節點)。 */
+  private stubborn = false;
   /** 測試用:會議腳本(見 runTurn 的「〔測試發言:…〕」)。 */
   private script = '';
   private waiting: { requestId: string; resume: (d: ApprovalDecision) => void } | null = null;
@@ -110,7 +114,7 @@ class FakeSession implements AdapterSession {
   }
 
   interrupt(): void {
-    if (!this.busy) return;
+    if (!this.busy || this.stubborn) return;
     // 清掉計時器後,進行中的回合會停在原地不再繼續
     this.clearTimers();
     if (this.asking) { this.emit({ type: 'question_resolved', requestId: this.asking.requestId, answers: null }); this.asking = null; }
@@ -142,6 +146,24 @@ class FakeSession implements AdapterSession {
 
   private async runTurn(_text: string): Promise<void> {
     this.emit({ type: 'state', state: 'planning', detail: '思考中' });
+    // 【只給驗收測試用】協作流程(tests/flow.sh):交辦或提醒裡含「〔測試流程:…〕」時照腳本做,見 flowTurn
+    if (_text.includes('〔測試流程:') && /^assignment_id:/m.test(_text)) { await this.flowTurn(_text); return; }
+    // 【只給驗收測試用】〔測試寫檔:路徑=內容;路徑2=內容2〕:在工作目錄寫檔後結束回合(模擬流程外的人改了正本)
+    const writeMark = /〔測試寫檔:([^〕]*)〕/.exec(_text);
+    if (writeMark) {
+      this.emit({ type: 'state', state: 'working', detail: '測試寫檔' });
+      await this.wait(200);
+      const done: string[] = [];
+      for (const pair of writeMark[1].split(';')) {
+        const i = pair.indexOf('=');
+        if (i <= 0) continue;
+        const rel = pair.slice(0, i).trim();
+        if (this.writeRel(this.opts.cwd, rel, pair.slice(i + 1))) done.push(rel);
+      }
+      this.emit({ type: 'message', role: 'agent', text: `已寫檔:${done.join('、') || '(無)'}` });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
     // 【只給驗收測試用】會議的指令開頭固定是主控台的說明,用不上「圖片測試」。
     // 指令裡含「〔測試發言:名稱=第1輪|第2輪;名稱2=…〕」時,輪到「名稱」發言就約 0.9 秒後直接回覆對應那一輪的內容
     // (輪數取自指令裡的「現在是第 N 輪」,超過的用最後一段;「\n」會換成換行)。
@@ -171,6 +193,108 @@ class FakeSession implements AdapterSession {
       await this.wait(300);
       this.emit({ type: 'usage', ...(u.windows ? { windows: u.windows.map(w => ({ ...w, resetsAt: w.resetsAt ?? null })) } : {}), ...(u.spent ? { spent: u.spent } : {}) });
       this.emit({ type: 'message', role: 'agent', text: '用量已回報。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    // 【只給驗收測試用】判例(長期記憶階段 3):
+    //   NEXUS_FAKE_CASE=1 時,收到主控台的「判例撰寫請求」就照格式呼叫 case_submit 提交一份固定內容的判例
+    //   (處理經過裡放了一組假金鑰,測試遮罩;參照先例取請求裡列出的第一個 [[案號]],沒有就寫「無」);
+    //   請求裡的任務標題含〔測試重複提交〕時再提交一次,看主控台是否擋下。結果以 [case] 開頭的 note 事件回報。
+    //   〔測試中途出錯〕:回合中途出現一次錯誤事件,之後仍正常完成(模擬失敗後才成功)。
+    if (process.env.NEXUS_FAKE_CASE === '1' && _text.includes('(主控台:判例撰寫請求。')) {
+      this.emit({ type: 'state', state: 'working', detail: '撰寫判例' });
+      await this.wait(400);
+      const url = this.opts.interop?.url;
+      const taskId = /任務編號:([0-9a-f-]{36})/.exec(_text)?.[1] ?? '';
+      const precedent = /^- \[\[(\d{4}-\d{4,})\]\]/m.exec(_text)?.[1];
+      const args = {
+        task_id: taskId, title: `測試判例 ${taskId.slice(0, 8)}`, keywords: ['測試', '判例'], facts: '假資料節點遇到測試指定的狀況。', issue: '驗證判例的撰寫與提交流程。',
+        process: '先試了第一種做法沒用;設定 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 之後改走第二種。\n## 不該出現的二級標題\n內容', conclusion: '改用第二種做法。', reasoning: '第一種做法的前提不成立。',
+        scope: '只適用於假資料測試。', precedents: precedent ? `參考 [[${precedent}]]` : '無',
+      };
+      const submit = async (): Promise<string> => {
+        if (!url) return 'no-interop-url';
+        try {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'case_submit', arguments: args } }) });
+          const j = await r.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+          return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+        } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+      };
+      this.emit({ type: 'note', text: `[case] ${await submit()}` });
+      if (_text.includes('〔測試重複提交〕')) this.emit({ type: 'note', text: `[case] ${await submit()}` });
+      this.emit({ type: 'message', role: 'agent', text: '判例已提交。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    // 【只給驗收測試用】對話草稿(長期記憶階段 4.5):
+    //   NEXUS_FAKE_DRAFT=1 時,收到主控台的「記憶草稿請求」就呼叫 memory_draft 提交一份固定內容的草稿:
+    //   對話片段含〔測試知識〕時寫專案知識(子類決策),否則寫使用者偏好;含〔測試重複提交〕時再提交一次,看主控台是否擋下。
+    //   結果以 [draft] 開頭的 note 事件回報。
+    if (process.env.NEXUS_FAKE_DRAFT === '1' && _text.includes('(主控台:記憶草稿請求。')) {
+      this.emit({ type: 'state', state: 'working', detail: '整理草稿' });
+      await this.wait(300);
+      const url = this.opts.interop?.url;
+      const knowledge = _text.includes('〔測試知識〕');
+      const args = knowledge
+        ? { kind: 'knowledge', title: '測試草稿知識', content: '決定改用第二種做法。\n使用者要求:api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456', subtype: 'decision' }
+        : { kind: 'preference', title: '測試草稿偏好', content: '使用者偏好回報要精簡。' };
+      const submit = async (): Promise<string> => {
+        if (!url) return 'no-interop-url';
+        try {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'memory_draft', arguments: args } }) });
+          const j = await r.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+          return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+        } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+      };
+      this.emit({ type: 'note', text: `[draft] ${await submit()}` });
+      if (_text.includes('〔測試重複提交〕')) this.emit({ type: 'note', text: `[draft] ${await submit()}` });
+      this.emit({ type: 'message', role: 'agent', text: '草稿已提交。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    // 【只給驗收測試用】回憶錄:
+    //   NEXUS_FAKE_MEMOIR=1 時,收到主控台的「回憶錄請求」就依序用 memory_draft(kind memoir)提交四次:
+    //   缺「## 不確定之處」(應被拒收)、起日晚於迄日(應被拒收)、合格的一份(參數裡偽造 節點ID / 節點 / 後台,應被忽略;
+    //   正文含假金鑰與本機絕對路徑,應被遮罩)、再交一次(同一個請求應被擋)。結果以 [memoir] 開頭的 note 事件回報。
+    if (process.env.NEXUS_FAKE_MEMOIR === '1' && _text.includes(MEMOIR_PROMPT_LEAD)) {
+      this.emit({ type: 'state', state: 'working', detail: '寫回憶錄' });
+      await this.wait(300);
+      const url = this.opts.interop?.url;
+      const good = '我在這段期間幫使用者整理了部署流程。設定檔在 C:\\Users\\example\\star\\deploy.json,金鑰 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 不該留下。\n\n## 來源\n\n這個 session 的對話。\n\n## 不確定之處\n\n無';
+      const forged = { 節點ID: 'node-forged', 節點: '冒名者', 後台: '假後台', node_id: 'node-forged', node: '冒名者', backend: 'fake' };
+      const attempts = [
+        { kind: 'memoir', title: '測試回憶錄', period: '2026-11-16/2026-11-17', content: '只有正文。\n\n## 來源\n\n對話。' },
+        { kind: 'memoir', title: '測試回憶錄', period: '2026-11-18/2026-11-16', content: good },
+        { kind: 'memoir', title: '測試回憶錄', period: '2026-11-16/2026-11-17', content: good, ...forged },
+        { kind: '回憶錄', title: '測試回憶錄', period: '2026-11-16', content: good },
+      ];
+      const submit = async (args: Record<string, unknown>): Promise<string> => {
+        if (!url) return 'no-interop-url';
+        try {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'memory_draft', arguments: args } }) });
+          const j = await r.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+          return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+        } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+      };
+      for (const args of attempts) this.emit({ type: 'note', text: `[memoir] ${await submit(args)}` });
+      this.emit({ type: 'message', role: 'agent', text: '回憶錄已提交。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    if (_text.includes('〔測試中途出錯〕')) {
+      this.emit({ type: 'state', state: 'working', detail: '測試執行' });
+      await this.wait(300);
+      this.emit({ type: 'error', message: '模擬錯誤:中途失敗後重試' });
+      await this.wait(300);
+      this.emit({ type: 'message', role: 'agent', text: '完成。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    // 【只給驗收測試用】刪除節點前的歸檔提示(正式指令裡本來就有的標記):約 0.3 秒後回一段固定的工作總結;
+    // 「〔歸檔總結〕」是節點自己寫,「〔歸檔總結:總管代寫〕」是總管代寫(開頭不同,測試才分得出來)。
+    if (_text.includes('〔歸檔總結')) {
+      await this.wait(300);
+      this.emit({ type: 'message', role: 'agent', text: `${_text.includes('〔歸檔總結:總管代寫〕') ? '總管代寫的總結' : '節點自己的總結'}\n1. 習慣的做法:先讀程式再動手\n2. 常用工具與步驟:Read、Edit\n3. 成功的模式:小步修改\n4. 常見的失誤:忘了跑測試` });
       this.emit({ type: 'state', state: 'idle', detail: '' });
       return;
     }
@@ -250,6 +374,118 @@ class FakeSession implements AdapterSession {
     FakeSession.used = Math.min(0.97, FakeSession.used + 0.07 + Math.random() * 0.06);
     this.context = Math.min(190000, this.context + 9000 + Math.round(Math.random() * 14000));
     this.emit({ type: 'usage', windows: [{ label: '5 小時', used: FakeSession.used, resetsAt: Math.round(Date.now() / 1000) + 3 * 3600 }, { label: '每週', used: FakeSession.used * 0.6, resetsAt: Math.round(Date.now() / 1000) + 4 * 86400 }], context: { used: this.context, max: 200000 }, spent: { tokens: 8000 + Math.round(Math.random() * 20000), usd: 0.004 + Math.random() * 0.02 } });
+    this.emit({ type: 'message', role: 'agent', text: '完成。' });
+    this.emit({ type: 'state', state: 'idle', detail: '' });
+  }
+
+  /** 在 root 底下寫一個相對路徑的檔案(拒絕絕對路徑與 ..)。 */
+  private writeRel(root: string, rel: string, content: string): boolean {
+    if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) return false;
+    const file = join(root, rel);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${content.replace(/\\n/g, '\n')}\n`);
+    return true;
+  }
+
+  /**
+   * 【只給驗收測試用】協作流程的假節點。腳本寫在主題裡:〔測試流程:規則;規則…〕,規則是「鍵=動作,動作…」。
+   * 鍵:<步驟>#<第幾次>(提醒的回合加 ~r,例如 implement#1~r),找不到再找 <步驟>、<步驟>~r、*、*~r。
+   * 沒有對應的規則時:實作步驟只回報、審查步驟回報可合併。動作:
+   *   write:路徑:內容      在工作目錄(正本)寫檔        writecopy:路徑:內容  在審查副本裡寫檔
+   *   report / ok         回報(審查步驟是 mergeable)  fix:項目             審查回報 changes_required,必修一項
+   *   ruling:項目         審查填 needs_ruling、實作填 questions
+   *   bad                 送一份驗證不過的回報(實作填 verdict、審查 mergeable 卻有必修)
+   *   late:毫秒           回合照常結束,過這麼久才回報(不受中斷影響)
+   *   wait:毫秒           停在回合裡這麼久             commit               在工作目錄 git commit(違規)
+   *   none                不回報                       stubborn             這個回合不理會中斷(模擬停不下來的節點)
+   *   ask:指令            像 Claude Code 的詢問模式:送出 Bash 的工具啟動事件,再詢問授權,等使用者(或主控台自動)回應
+   *   tool:指令           像自動允許的模式:只送 Bash 的工具啟動事件,停 3 秒(不真的執行)
+   *   writedata:路徑:內容  寫到主控台資料夾(NEXUS_DATA_DIR)底下,例如 flows/x.yaml(模擬節點寫入流程定義資料夾)
+   *   scope:路徑:原因     之後的實作回報附上一筆 scope_exceptions
+   * 每個動作的結果以 [flow] 開頭的 note 事件回報。
+   */
+  private async flowTurn(text: string): Promise<void> {
+    this.emit({ type: 'state', state: 'working', detail: '測試流程' });
+    const script = /〔測試流程:([^〕]*)〕/.exec(text)?.[1] ?? '';
+    const aid = /^assignment_id:(\S+)/m.exec(text)?.[1] ?? '';
+    const m = /^流程步驟:([\w-]+)\(第 (\d+) 次\)/m.exec(text);
+    const step = m?.[1] ?? '', n = m?.[2] ?? '1';
+    const remind = text.startsWith('(主控台:step_report 提醒。');
+    const review = /^審查副本:/m.test(text);
+    const copy = /^審查副本:(.+)$/m.exec(text)?.[1]?.trim() ?? '';
+    const rules = new Map(script.split(';').map(r => r.trim()).filter(Boolean).map(r => { const i = r.indexOf('='); return [r.slice(0, i).trim(), r.slice(i + 1).trim()] as [string, string]; }));
+    const r = remind ? '~r' : '';
+    const value = rules.get(`${step}#${n}${r}`) ?? rules.get(`${step}${r}`) ?? rules.get(`*${r}`) ?? (review ? 'ok' : 'report');
+    const url = this.opts.interop?.url;
+    const call = async (args: Record<string, unknown>): Promise<string> => {
+      if (!url) return 'no-interop-url';
+      try {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'step_report', arguments: args } }) });
+        const j = await res.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+        return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+      } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+    };
+    const exceptions: { path: string; reason: string }[] = [];
+    const base = (): Record<string, unknown> => review
+      ? { assignment_id: aid, summary: `假資料審查:${step} 第 ${n} 次`, verdict: 'mergeable', commands_run: [{ command: 'node check.js', result: '通過' }] }
+      : { assignment_id: aid, summary: `假資料實作:${step} 第 ${n} 次`, commands_run: [{ command: 'node check.js', result: '通過' }], not_verified: ['假資料節點沒有真的驗證'], ...(exceptions.length ? { scope_exceptions: [...exceptions] } : {}) };
+    for (const act of value.split(',').map(x => x.trim()).filter(Boolean)) {
+      const [name, ...rest] = act.split(':');
+      const arg = rest.join(':');
+      let out = '';
+      if (name === 'write' || name === 'writecopy') {
+        const j = arg.indexOf(':');
+        const rel = j < 0 ? arg : arg.slice(0, j), content = j < 0 ? '' : arg.slice(j + 1);
+        const root = name === 'write' ? this.opts.cwd : copy;
+        out = root && this.writeRel(root, rel, content) ? `寫入 ${rel}` : `無法寫入 ${rel}`;
+      } else if (name === 'report' || name === 'ok') out = await call(base());
+      else if (name === 'fix') out = await call({ ...base(), verdict: 'changes_required', must_fix: [arg || '請修正'] });
+      else if (name === 'ruling') out = await call(review ? { ...base(), needs_ruling: [arg || '請裁示'] } : { ...base(), questions: [arg || '請裁示'] });
+      else if (name === 'bad') out = await call(review ? { ...base(), verdict: 'mergeable', must_fix: ['矛盾的必修'] } : { ...base(), verdict: 'mergeable' });
+      else if (name === 'late') {
+        const ms = Number(arg) || 3000;
+        // 不用 this.after:中斷時計時器會被清掉,遲到的回報要照樣送出
+        setTimeout(() => { void call(base()).then(t => { if (!this.stopped) this.emit({ type: 'note', text: `[flow] late → ${t}` }); }); }, ms).unref?.();
+        out = `${ms} 毫秒後回報`;
+      } else if (name === 'wait') { await this.wait(Number(arg) || 1000); out = '等待結束'; }
+      else if (name === 'commit') {
+        try {
+          execFileSync('git', ['add', '-A'], { cwd: this.opts.cwd, windowsHide: true });
+          execFileSync('git', ['-c', 'user.name=fake', '-c', 'user.email=fake@example.com', 'commit', '-q', '-m', 'fake commit'], { cwd: this.opts.cwd, windowsHide: true });
+          out = '已 commit';
+        } catch (e) { out = `commit 失敗 ${(e as Error).message.split('\n')[0]}`; }
+      } else if (name === 'ask' || name === 'tool') {
+        const detail = JSON.stringify({ command: arg, description: '測試流程' }, null, 2);
+        this.emit({ type: 'tool', phase: 'start', name: 'Bash', summary: arg.slice(0, 80), detail });
+        if (name === 'ask') {
+          const requestId = randomUUID();
+          this.emit({ type: 'approval_request', requestId, tool: 'Bash', summary: arg.slice(0, 80), detail });
+          this.emit({ type: 'state', state: 'awaiting', detail: `Bash · ${arg.slice(0, 60)}` });
+          const decision = await new Promise<ApprovalDecision>(resolve => {
+            this.waiting = { requestId, resume: d => { this.emit({ type: 'approval_resolved', requestId, decision: d }); resolve(d); } };
+          });
+          this.emit({ type: 'state', state: 'working', detail: '測試流程' });
+          out = `授權結果 ${decision}`;
+        } else {
+          await this.wait(3000);
+          this.emit({ type: 'tool', phase: 'end', name: 'Bash', summary: arg.slice(0, 80) });
+          out = '工具結束(沒有真的執行)';
+        }
+      } else if (name === 'scope') {
+        const j = arg.indexOf(':');
+        exceptions.push({ path: j < 0 ? arg : arg.slice(0, j), reason: j < 0 ? '範圍外' : arg.slice(j + 1) });
+        out = `之後的回報附上 scope_exceptions(${exceptions.length} 筆)`;
+      } else if (name === 'writedata') {
+        const j = arg.indexOf(':');
+        const rel = j < 0 ? arg : arg.slice(0, j), content = j < 0 ? '' : arg.slice(j + 1);
+        const root = process.env.NEXUS_DATA_DIR ?? '';
+        out = root && this.writeRel(root, rel, content) ? `寫入主控台資料夾 ${rel}` : `無法寫入主控台資料夾 ${rel}`;
+      } else if (name === 'none') out = '不回報';
+      else if (name === 'stubborn') { this.stubborn = true; out = '這個回合不理會中斷'; }
+      else out = `不認得的動作 ${name}`;
+      this.emit({ type: 'note', text: `[flow] ${act.slice(0, 60)} → ${out.slice(0, 300)}` });
+    }
+    this.stubborn = false;
     this.emit({ type: 'message', role: 'agent', text: '完成。' });
     this.emit({ type: 'state', state: 'idle', detail: '' });
   }

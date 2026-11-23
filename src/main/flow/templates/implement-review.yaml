@@ -1,0 +1,28 @@
+# 內建流程:實作 → 隔離審查 → 修正 → 複審。格式見 docs/協作流程實作計畫.md §2。
+# next 省略時走定義順序的下一步;done 表示流程通過、進入收尾(授權卡),halt 表示停機。
+id: implement-review
+name: 實作 → 隔離審查 → 修正 → 複審
+version: 1
+description: 實作者寫完交審;審查者在隔離副本上審查;有必修就退回修正再複審。
+roles:
+  implementer: { mode: write,  description: 實作與修正 }
+  reviewer:    { mode: review, description: 隔離審查與複審 }
+limits:
+  max_rejections: 2
+  max_minutes: 180
+  step_minutes: 45
+  reminder_minutes: 10
+  max_dispatches: 12
+scope:
+  allowed_paths: []
+  forbidden_actions: [commit, push, dist]
+verify:
+  commands:
+    - { id: typecheck, run: npm run typecheck, timeout: 300 }
+    - { id: unit, run: npm test, timeout: 600, needs: [typecheck] }
+steps:
+  - { id: implement, label: 實作, role: implementer, mode: write, verify: true, on_reject: fix }
+  - { id: review, label: 隔離審查, role: reviewer, mode: review, on_reject: fix, next: done }
+  - { id: fix, label: 修正, role: implementer, mode: write, continue_session: true, verify: true, on_reject: fix, next: review }
+finish:
+  offer: [commit]

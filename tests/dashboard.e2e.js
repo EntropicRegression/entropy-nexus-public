@@ -50,10 +50,10 @@
     const R5 = now + 3 * 3600 + 120, RW = now + 4 * 86400;
     ok(await report(A.id, { windows: [{ label: '5 小時', used: 0.42, resetsAt: R5 }, { label: '每週', used: 0.10, resetsAt: RW }], spent: { tokens: 12000, usd: 0.05 } }), '甲回報用量(5 小時 42%、每週 10%)');
     const five = quota('claude', '5 小時'), weekly = quota('claude', '每週');
-    ok(text($('.dq-pct', five)) === '42%' && $('.dash-bar > span', five)?.style.width === '42%', '5 小時額度條顯示 42%(數字與長度)', `${text(five)} / ${$('.dash-bar > span', five)?.style.width}`);
+    ok(text($('.dq-pct', five)) === '58%' && $('.dash-bar > span', five)?.style.width === '58%', '5 小時額度已用 42%:額度條像血量,顯示剩餘 58%(數字與長度)', `${text(five)} / ${$('.dash-bar > span', five)?.style.width}`);
     ok(text($('.dq-reset', five)) === `${when(R5)} 重置` && $('.dq-reset', five).getBoundingClientRect().width > 0, '5 小時額度顯示重置時間', `${text($('.dq-reset', five))} ≠ ${when(R5)} 重置`);
-    ok(text($('.dq-pct', weekly)) === '10%' && $('.dash-bar > span', weekly)?.style.width === '10%' && text($('.dq-reset', weekly)) === `${when(RW)} 重置`, '每週額度條顯示 10% 與重置時間', text(weekly));
-    ok(five.title.includes('已用 42%') && five.title.includes(when(R5)), '額度條的提示文字也有百分比與重置時間', five.title);
+    ok(text($('.dq-pct', weekly)) === '90%' && $('.dash-bar > span', weekly)?.style.width === '90%' && text($('.dq-reset', weekly)) === `${when(RW)} 重置`, '每週額度已用 10%:顯示剩餘 90% 與重置時間', text(weekly));
+    ok(five.title.includes('剩餘 58%') && five.title.includes('已用 42%') && five.title.includes(when(R5)), '額度條的提示文字也有百分比與重置時間', five.title);
     ok(text(budgetChip('claude')) === '今天 0% / 14.3%' && budgetChip('claude').classList.contains('b-ok'), '今天第一筆讀數是起點:今天已用 0%,預設預算 14.3%', text(budgetChip('claude')));
     ok($$('.dash .dq[data-backend="codex"] .dq-none').length === 1 && !budgetChip('codex'), '其他後台不受影響(Codex 仍然沒有額度資料)');
     let d = (await snap()).dashboard;
@@ -84,7 +84,7 @@
     const full = await until(() => $('.dash-full'), 3000);
     ok(!!full && $('.dash .dash-expand').getAttribute('aria-expanded') === 'true', '點儀表展開完整內容');
     const fb = backend => $(`.dash-full .df-backend[data-backend="${backend}"]`);
-    ok($$('.df-win', fb('claude')).length === 2 && text($$('.df-win', fb('claude'))[1]).includes('30%') && text($$('.df-win', fb('claude'))[1]).includes(`${when(RW)} 重置`), '完整內容列出這個後台全部的額度', text(fb('claude')));
+    ok($$('.df-win', fb('claude')).length === 2 && text($$('.df-win', fb('claude'))[1]).includes('70%') && text($$('.df-win', fb('claude'))[1]).includes(`${when(RW)} 重置`), '完整內容列出這個後台全部的額度', text(fb('claude')));
     ok(text($('.df-used', fb('claude'))) === '20%' && $('.df-budget', fb('claude')).classList.contains('b-over') && $('.df-budget-input', fb('claude')).value === '14.3', '預算區塊:今天已用 20%、每日預算 14.3%', text($('.df-budget', fb('claude'))));
     ok($$('.dash-full .df-warn').some(e => text(e).includes('超過每日預算')), '完整內容的提醒區也列出超過預算');
     ok($('.df-budget-reset', fb('claude')).disabled, '還沒調整過預算時「預設」按鈕不能按');
@@ -120,7 +120,7 @@
 
     // ---------- 7. 額度快滿的提醒;設了額度上限時提早提醒
     await report(B.id, { windows: [{ label: '5 小時', used: 0.93, resetsAt: R5 }, { label: '每週', used: 0.52, resetsAt: RW }], spent: { tokens: 5000 } });
-    ok(quota('codex', '5 小時').classList.contains('crit') && text($('.dq-pct', quota('codex', '5 小時'))) === '93%', 'Codex 的 5 小時額度 93%:額度條轉成紅色', quota('codex', '5 小時').className);
+    ok(quota('codex', '5 小時').classList.contains('crit') && text($('.dq-pct', quota('codex', '5 小時'))) === '7%', 'Codex 的 5 小時額度已用 93%(剩 7%):額度條轉成紅色', quota('codex', '5 小時').className);
     ok(warns().includes('Codex 的5 小時額度已用 93%,快滿了'), '出現額度快滿的提醒', warns());
     ok(!$$('.dash-full .df-warn').some(e => text(e).includes('每週額度已用 52%')), '每週 52% 還沒到門檻,不提醒');
     await window.nexus.setQuotaStop(55);
@@ -238,7 +238,7 @@
     await wait(1800);
     const dh = $('.dash').getBoundingClientRect(), th = $('.tasks').getBoundingClientRect(), ah = $('button.add').getBoundingClientRect();
     ok(dh.height <= 230 && th.height >= 150 && ah.bottom <= innerHeight + 1, '960×540:儀表不高於 230,任務面板至少 150 高,新增按鈕在畫面內', { dash: dh.height, tasks: th.height, add: ah.bottom, h: innerHeight });
-    ok(text($('.dq-pct', quota('claude', '每週'))) === '7%' && quota('claude', '每週').title.includes('重置'), '小視窗仍顯示百分比,重置時間在提示文字');
+    ok(text($('.dq-pct', quota('claude', '每週'))) === '93%' && quota('claude', '每週').title.includes('重置'), '小視窗仍顯示百分比,重置時間在提示文字');
     await shot('6-small');
     $('.dash .dash-expand').click();
     const sf = (await until(() => $('.dash-full'), 3000))?.getBoundingClientRect();

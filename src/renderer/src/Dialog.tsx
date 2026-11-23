@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
-import { ATTACHMENT_LABEL, attachmentKind, BACKEND_LABEL, STATE_LABEL, type AgentInfo, type ApprovalDecision, type Capability, type NexusEvent, type WorktreeStatus } from '../../shared/types';
+import { memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { ATTACHMENT_LABEL, attachmentKind, BACKEND_LABEL, STATE_LABEL, type AgentInfo, type ApprovalDecision, type Capability, type MeetingView, type NexusEvent, type PermissionMode, type WorktreeStatus } from '../../shared/types';
 import { Markdown, MdImage } from './Markdown';
 import { PersonaEditor } from './PersonaEditor';
 import { Portrait } from './Portrait';
 import { TerminalView } from './Terminal';
 import { QuestionPanel } from './Question';
+import { AgyAllowEditor } from './AgyAllow';
 import { ForkPanel } from './Fork';
 import { MicButton } from './Voice';
+import { accumulatedChars, shouldOfferDraft } from '../../shared/memory-draft';
 
 type Item =
   | { kind: 'user'; seq: number; text: string }
@@ -110,6 +112,25 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   }, [a.id]);
 
   const items = useMemo(() => toItems(events), [events]);
+  // 儲存這段記憶:上次儲存之後累積的對話夠多才出現按鈕;按下後記下涵蓋到哪一筆事件,按鈕消失到下一個門檻(進度存在主控台,換視窗不會重來)
+  const [draft, setDraft] = useState<{ lastSeq: number; threshold: number; memoirBusy: boolean; removing: boolean } | null>(null);
+  const [draftMsg, setDraftMsg] = useState('');
+  const refreshDraft = () => { if (!isSub) void window.nexus.draftInfo(a.id).then(setDraft, () => setDraft(null)); };
+  useEffect(() => { setDraft(null); setDraftMsg(''); refreshDraft(); }, [a.id]);
+  // 回憶錄請求進行中、刪除流程中由主控台判斷:節點狀態或佇列變了就重新問(回合結束後按鈕恢復;對話視窗關掉再開也維持停用)
+  useEffect(() => { refreshDraft(); }, [a.state, a.queued.length]);
+  const draftChars = useMemo(() => (draft ? accumulatedChars(events, draft.lastSeq) : 0), [events, draft]);
+  const offerDraft = !isSub && !a.terminal && draft !== null && shouldOfferDraft(draftChars, draft.threshold);
+  const requestDraft = () => {
+    setDraftMsg('');
+    window.nexus.requestDraft(a.id).then(msg => { setDraftMsg(msg); void window.nexus.draftInfo(a.id).then(setDraft); }, e => setDraftMsg(clean(e)));
+  };
+  // 寫回憶錄:不看累積字數,最上層的對話模式節點都可以按;節點用第一人稱寫一章(未確認),每天最多 3 份由主控台把關
+  const offerMemoir = !isSub && !a.terminal;
+  const requestMemoir = () => {
+    setDraftMsg('');
+    window.nexus.requestMemoir(a.id).then(msg => { setDraftMsg(msg); refreshDraft(); }, e => setDraftMsg(clean(e)));
+  };
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
@@ -179,12 +200,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   };
   // 節點設定:名稱、角色、模型
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: a.name, character: a.character, model: a.model });
+  const [form, setForm] = useState<{ name: string; character: string; model: string; permissionMode: PermissionMode }>({ name: a.name, character: a.character, model: a.model, permissionMode: a.permissionMode });
   const [characters, setCharacters] = useState<string[]>([]);
   const [note, setNote] = useState('');
   const clean = (e: unknown) => String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
   const openSettings = () => {
-    setForm({ name: a.name, character: a.character, model: a.model });
+    setForm({ name: a.name, character: a.character, model: a.model, permissionMode: a.permissionMode });
     setNote('');
     setEditing(v => !v);
     void window.nexus.getSnapshot().then(s => setCharacters(s.characters));
@@ -221,6 +242,27 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   };
   // 分支對話:需要後台支援,而且節點已經有 session
   const [forking, setForking] = useState(false);
+  // 終止最上層節點:先確認要不要請它寫工作總結再歸檔進記憶庫(ask = 等使用者選,busy = 正在寫總結)
+  // memoir = 選好總結方式後,再問一次要不要先寫回憶錄(節點離線、異常或在終端機模式時寫不了,不問)
+  const [rm, setRm] = useState<null | 'ask' | 'memoir' | 'busy'>(null);
+  const [rmNote, setRmNote] = useState('');
+  const [rmMode, setRmMode] = useState<'summary' | 'stats'>('summary');
+  const chooseRemove = (mode: 'summary' | 'stats') => {
+    // 離線、終端機模式、異常狀態的節點寫不了回憶錄,不多問
+    if (offline || a.terminal || a.state === 'error') { void removeWith(mode, false); return; }
+    setRmMode(mode);
+    setRm('memoir');
+  };
+  const removeWith = async (mode: 'summary' | 'stats', memoir: boolean) => {
+    setRm('busy');
+    setDraft(d => (d ? { ...d, removing: true } : d));
+    setRmNote(memoir
+      // 和主控台的上限一致:回憶錄最多 3 分鐘(逾時中斷後再等回合結束最多 15 秒);工作總結節點自己最多 3 分鐘,寫不出來改請總管代寫再最多 3 分鐘
+      ? (mode === 'summary' ? '正在請它寫回憶錄與工作總結:回憶錄最多等約 3 分鐘,工作總結最多等 3 分鐘(寫不出來改請總管代寫,再等最多 3 分鐘),合計最多約 9 分鐘…' : '正在請它寫回憶錄(最多等約 3 分鐘),之後歸檔統計…')
+      : (mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘(寫不出來改請總管代寫,再等最多 3 分鐘)…' : '正在歸檔統計…'));
+    try { await window.nexus.removeAgentArchived(a.id, mode, memoir); }
+    catch (e) { setRmNote(`終止失敗:${String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`); setRm('ask'); refreshDraft(); }
+  };
   const forkWhy = !cap?.fork ? `${BACKEND_LABEL[a.backend]} 不支援分支對話。` : !a.sessionId ? '這個節點還沒有 session(先對話一次),沒有可以分支的內容。' : '';
   const lastAgentSeq = items.findLast(i => i.kind === 'agent')?.seq ?? -1;
   const p = a.pendingApproval;
@@ -254,10 +296,30 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             : <button className="need-op" onClick={() => void window.nexus.sleep(a.id)} disabled={busy} title="結束行程並保留 session">休眠</button>}
           {isSub
             ? <button className="need-full" onClick={() => void window.nexus.removeAgent(a.id)} title="只從面板移除,不會停止子代理">從面板移除</button>
-            : <button className="danger need-full" onClick={() => void window.nexus.removeAgent(a.id)}>終止</button>}
+            : <button className="danger need-full" onClick={() => setRm(r => r ?? 'ask')} disabled={rm === 'busy'}>終止</button>}
           <button className={`ghost dlg-full ${full ? 'on' : ''}`} onClick={toggleFull} title={full ? '還原成下半部(Alt+F)' : '向上展開到佔滿面板(Alt+F)'} aria-label={full ? '還原對話視窗' : '展開對話視窗'}>{full ? '▼ 還原' : '▲ 展開'}</button>
           <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
         </header>
+
+        {rm && !isSub && (
+          <div className="dlg-settings dlg-remove need-full">
+            {rm === 'memoir'
+              ? <span className="muted">刪除前,要不要也請「{a.name}」用第一人稱寫一章回憶錄,存進記憶庫(未確認,在記憶庫管理 app 確認)?</span>
+              : <span className="muted">終止「{a.name}」前,要先請它寫一份工作總結,和任務統計一起封存進記憶庫嗎?之後建立同名節點時可以接回。</span>}
+            <span className="spacer" />
+            {rmNote && <span className="muted">{rmNote}</span>}
+            {rm === 'memoir'
+              ? <>
+                <button className="primary" onClick={() => void removeWith(rmMode, true)}>寫回憶錄再刪除</button>
+                <button className="ghost" onClick={() => void removeWith(rmMode, false)}>不用寫回憶錄</button>
+              </>
+              : <>
+                <button className="primary" disabled={rm === 'busy'} onClick={() => chooseRemove('summary')}>先請它寫工作總結再刪除</button>
+                <button className="danger" disabled={rm === 'busy'} onClick={() => chooseRemove('stats')}>直接刪除(只存統計)</button>
+              </>}
+            <button className="ghost" disabled={rm === 'busy'} onClick={() => { setRm(null); setRmNote(''); }}>取消</button>
+          </div>
+        )}
 
         {editing && (
           <div className="dlg-settings">
@@ -272,7 +334,16 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
               <input list="dlg-models" value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} placeholder="預設" />
               <datalist id="dlg-models">{(cap?.models ?? []).map(m => <option key={m} value={m} />)}</datalist>
             </label>
-            <span className="muted">換模型會重新啟動 session,對話內容保留。工作目錄不能更換,請另外新增節點。</span>
+            {cap?.approvals !== false && (
+              <label>權限模式
+                <select value={form.permissionMode} onChange={e => setForm(f => ({ ...f, permissionMode: e.target.value as PermissionMode }))}>
+                  <option value="ask">每次詢問</option>
+                  <option value="auto">自動執行</option>
+                </select>
+              </label>
+            )}
+            {form.permissionMode === 'auto' && a.permissionMode !== 'auto' && <span className="note warn">{isChief ? '總管會在不問你的情況下,把工作交給其他節點執行。建議維持「每次詢問」,分派前先由你確認。' : '修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。'}</span>}
+            <span className="muted">換模型或權限模式會重新啟動 session,對話內容保留(節點要先停下來)。工作目錄不能更換,請另外新增節點。</span>
             <span className="spacer" />
             <button onClick={() => setEditing(false)}>取消</button>
             <button className="primary" disabled={!form.name.trim()} onClick={() => void save()}>儲存</button>
@@ -283,6 +354,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             warn={busy ? '節點正在執行:分支點是目前已寫入紀錄的對話,進行中的這一回合可能不完整或沒有包含在內。' : undefined}
             onCancel={() => setForking(false)} onDone={n => { setForking(false); onOpen?.(n.id); }} />
         )}
+        {editing && a.backend === 'antigravity' && <AgyAllowEditor />}
         {editing && form.character && <PersonaEditor character={form.character} />}
         {note && <div className="line err">{note}</div>}
 
@@ -383,6 +455,13 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             })}
           </div>
         )}
+        {(offerDraft || offerMemoir || draftMsg) && (
+          <div className="dlg-draft need-op">
+            {offerDraft && <button className="ghost need-op" disabled={offline || rm === 'busy' || !!draft?.removing} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
+            {offerMemoir && <button className="ghost need-op" disabled={offline || rm === 'busy' || !!draft?.removing || !!draft?.memoirBusy} onClick={requestMemoir} title="請這個節點用第一人稱寫一章回憶錄(未確認,每天最多 3 份),之後在記憶庫管理 app 確認">寫回憶錄</button>}
+            {draftMsg && <span className="muted">{draftMsg}</span>}
+          </div>
+        )}
         <div className={`dlg-input ${tall ? 'tall' : ''}`}>
           <button className="ghost attach" disabled={offline} onClick={() => void window.nexus.pickFiles().then(addFiles)} title="附加檔案或圖片(也可以把檔案拖進來,或在輸入框貼上截圖)">附加</button>
           <MicButton disabled={offline} onText={t => setText(cur => (cur.trim() ? `${cur.trimEnd()} ${t}` : t))} onNote={setNote} />
@@ -409,3 +488,94 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
     </section>
   );
 }
+
+/**
+ * 會議室的旁聽視窗(任務清單 2-7):沿用對話視窗的外框、立繪區、對話串與輸入列的樣式。
+ * 內容是整場會議的逐字發言(標明發言者與第幾輪;第 0 輪是主控台的說明,用系統訊息的樣式),立繪換成正在發言的節點。
+ * 唯讀:會議只由主持節點控制,這裡不能插話、不能結束會議,也沒有設定、休眠、終止等節點操作。
+ */
+export function MeetingDialog({ meeting: m, agents, ended, onClose }: { meeting: MeetingView; agents: Record<string, AgentInfo>; ended: boolean; onClose: () => void }) {
+  const [full, setFull] = useState(() => localStorage.getItem('nexus.dlgFull') === '1');
+  const toggleFull = () => setFull(v => { localStorage.setItem('nexus.dlgFull', v ? '0' : '1'); return !v; });
+  useEffect(() => {
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'f') { e.preventDefault(); toggleFull(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [m.transcript.length, m.speakerId, ended]);
+
+  const nameOf = (id: string) => (id === m.hostId ? m.hostName : m.participants.find(p => p.id === id)?.name ?? agents[id]?.name ?? '');
+  const speakerId = ended ? null : m.speakerId;
+  const speakerName = speakerId ? nameOf(speakerId) : '';
+  // 立繪:正在發言的節點;換人之間(還沒有人在發言)留在最後一位發言的節點,再不然是主持人
+  const shownId = speakerId ?? m.transcript.findLast(t => t.nodeId)?.nodeId ?? m.hostId;
+  const shown = agents[shownId];
+  const isHost = shownId === m.hostId;
+  const progress = ended ? '會議已結束' : `${m.round > 0 ? `第 ${m.round}/${m.rounds} 輪` : `開場 · 共 ${m.rounds} 輪`} · 正在發言:${speakerName || '(換人中)'}`;
+  const spoke = m.transcript.some(t => t.round > 0);
+
+  return (
+    <section className={`dialog meeting-dialog ${full ? 'full' : ''} ${ended ? 'ended' : ''}`} data-meeting={m.id} aria-label={`會議室:${m.topic}`}>
+      <div className="dlg-portrait meeting-portrait" data-speaker={shownId}>
+        {/* 換發言者時重新掛載,沒有立繪就退回預設圖 */}
+        <Portrait key={shownId} backend={shown?.backend ?? 'claude'} state={shown?.state ?? 'idle'} character={shown?.character ?? ''} />
+        <div className="mp-caption">
+          <span className={`mp-role ${isHost ? 'host' : ''}`}>{isHost ? '主持人' : '與會節點'}</span>
+          <b title={nameOf(shownId)}>{nameOf(shownId)}</b>
+        </div>
+      </div>
+      <div className="dlg-main">
+        <header className="dlg-id">
+          <span className="tag-meeting" title="會議室:進行中的會議,不是節點,只能旁聽"><i className="live-dot" />{ended ? 'MEETING · 已結束' : 'MEETING · LIVE'}</span>
+          <b title={m.topic}>會議室 · {m.topic.replace(/\s+/g, ' ')}</b>
+          <span className="muted meeting-who" title={[m.hostName, ...m.participants.map(p => p.name)].join('、')}>主持 {m.hostName} · 與會 {m.participants.map(p => p.name).join('、')}</span>
+          <span className="spacer" />
+          <span className="state meeting-progress">{progress}</span>
+          <button className={`ghost dlg-full ${full ? 'on' : ''}`} onClick={toggleFull} title={full ? '還原成下半部(Alt+F)' : '向上展開到佔滿面板(Alt+F)'} aria-label={full ? '還原對話視窗' : '展開對話視窗'}>{full ? '▼ 還原' : '▲ 展開'}</button>
+          <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
+        </header>
+        <div className="dlg-stream" ref={scroller} onScroll={e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+          {m.transcript.length === 0 && !speakerId && <div className="muted hint">會議剛開始,還沒有人發言。</div>}
+          {m.transcript.map((t, i) => <MeetingLine key={i} line={t} hostId={m.hostId} hostName={m.hostName} />)}
+          {speakerId && <div className="line sub meeting-typing">{speakerName} 正在發言…<span className="caret" /></div>}
+        </div>
+        <div className="dlg-inputwrap">
+          {ended && <div className="meeting-ended" role="status">{spoke ? '會議已結束,紀錄已存進記憶庫。' : '會議已結束(沒有人發言,不留紀錄)。'}</div>}
+          <div className="dlg-input meeting-readonly">
+            <textarea rows={1} disabled readOnly value="" placeholder="會議由主持節點主持,這裡只能旁聽" aria-label="會議由主持節點主持,這裡只能旁聽" />
+            <button className="primary" disabled title="會議室是唯讀的:不能插話或結束會議">送出</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type MeetingLineData = MeetingView['transcript'][number];
+
+/**
+ * 逐字紀錄的一則(主控台的說明或一則發言)。每次推送都是新的物件,所以依內容比較:
+ * 內容沒變就不重畫,長會議時只有新增的那則要跑 Markdown。
+ */
+const MeetingLine = memo(function MeetingLine({ line: t, hostId, hostName }: { line: MeetingLineData; hostId: string; hostName: string }) {
+  if (t.round === 0) return <div className="line sub meeting-note">主控台:{t.name === '主控台' ? '' : `${t.name} `}{t.text}{t.inRound ? `(第 ${t.inRound} 輪)` : ''}</div>;
+  const host = t.nodeId === hostId;
+  return (
+    <div className={`msg agent meeting-msg ${host ? 'host' : ''}`} data-node={t.nodeId ?? ''} data-round={t.round}>
+      {/* 主持人的發言在紀錄裡叫「名稱(主持人)」;這裡另外標「主持人」,名稱欄只放名稱 */}
+      <span className="who" title={t.name}>{host ? hostName : t.name}</span>
+      <div className="mm-body">
+        <div className="mm-meta">第 {t.round} 輪{host ? ' · 主持人' : ''}</div>
+        <Markdown text={t.text} agentId={t.nodeId ?? hostId} />
+      </div>
+    </div>
+  );
+}, (a, b) => a.hostId === b.hostId && a.hostName === b.hostName && a.line.round === b.line.round && a.line.name === b.line.name
+  && a.line.nodeId === b.line.nodeId && a.line.text === b.line.text && a.line.inRound === b.line.inRound);

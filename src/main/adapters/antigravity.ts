@@ -1,8 +1,9 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { AdapterEvent, Capability, ExternalSession, UsageWindow } from '../../shared/types';
+import { agySettings } from '../../shared/agy-allow';
 import { attachmentDirs, stageAttachment } from '../attachments';
 import { listAntigravitySessions } from '../sessions';
 import { track, untrack } from '../procs';
@@ -177,8 +178,11 @@ class AntigravitySession implements AdapterSession {
     for (const d of attachmentDirs()) if (existsSync(d)) args.push('--add-dir', d);
     // 節點互相呼叫:agy 要經工作區外掛才能掛上 MCP 伺服器(放在主控台自己的資料夾,用 --add-dir 加進工作區),
     // 並用 --settings 放行它的工具,否則無視窗模式會自動拒絕
+    // 無視窗模式沒有畫面可以詢問權限,不在白名單裡的動作一律自動拒絕:主控台自己的工具,加上使用者的白名單(設定裡的「Antigravity 允許的工具」)
     const agy = this.opts.interop?.agy;
-    if (agy) args.push('--add-dir', agy.dir, '--settings', agy.settings);
+    if (agy) args.push('--add-dir', agy.dir);
+    const settings = this.settingsFile(agy);
+    if (settings) args.push('--settings', settings);
 
     this.buf = '';
     this.exited = false;
@@ -215,6 +219,15 @@ class AntigravitySession implements AdapterSession {
       this.emit({ type: 'error', message: `agy 行程結束(代碼 ${code})${reason ? `:${reason}` : ''}` });
       this.emit({ type: 'state', state: 'lost', detail: `行程結束(${code})` });
     });
+  }
+
+  /** 寫出這次啟動要帶給 agy 的權限檔(只在本次 session 生效,agy 不會存回使用者設定);沒有任何規則時回傳 null。 */
+  private settingsFile(agy: { dir: string; settings: string; server: string } | null | undefined): string | null {
+    const base = agy ? [`mcp(${agy.server}/*)`] : [];
+    const extra = this.opts.agyAllow ?? [];
+    if (!base.length && !extra.length) return null;
+    const file = agy ? agy.settings : join(tmpdir(), `nexus-agy-${this.opts.agentId.replace(/[^\w-]/g, '')}.json`);
+    try { writeFileSync(file, JSON.stringify(agySettings(base, extra))); return file; } catch { return agy ? agy.settings : null; }
   }
 
   /** 啟動時和每個回合結束後更新帳號的剩餘額度。 */

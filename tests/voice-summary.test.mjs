@@ -23,7 +23,7 @@ test('拿掉客套收尾', () => {
 });
 
 test('不念完整路徑,只留檔名', () => {
-  const out = S('已修改 C:\\Users\\USER\\Desktop\\entropy nexus public\\src\\main\\core.ts 和 src/renderer/src/App.tsx。');
+  const out = S('已修改 C:\\Users\\example\\Desktop\\sample project\\src\\main\\core.ts 和 src/renderer/src/App.tsx。');
   assert.ok(out && !/[\\/]/.test(out), out);
   assert.ok(out.includes('App.tsx'), out);
 });

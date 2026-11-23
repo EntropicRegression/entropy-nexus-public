@@ -1,6 +1,6 @@
 {
   "name": "entropy-nexus",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "多家 AI CLI 的科技風主控台",
   "main": "./out/main/index.js",
@@ -28,6 +28,7 @@
     "electron": "^45.3.3",
     "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
+    "js-yaml": "4.3.2",
     "pixi.js": "^8.23.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
