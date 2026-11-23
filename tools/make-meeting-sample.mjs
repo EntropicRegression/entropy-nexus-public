@@ -1,11 +1,12 @@
 // 產生去識別的會議紀錄樣本:docs/memory-vault-app/會議紀錄樣本.md
-// 用真正的 buildMeetingRecord + serializeFrontMatter 產生;內容全是虛構的(主題、節點、專案、時間、路徑)。
+// 用真正的 meetingRecordOf + writeMeetingRecord 寫進一個暫存記憶庫,再把寫出來的檔案原封不動複製過來(和主控台散會時寫入的檔案逐位元組相同);
+// 內容全是虛構的(主題、節點、專案、時間、路徑)。樣本檔只放真實輸出,說明寫在 docs/memory-vault-app/樣本說明.md。
 // 用法:node tools/make-meeting-sample.mjs(Node 22.18 以上可直接載入 .ts)
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMeetingRecord, meetingRecordOf } from '../src/main/meeting-record.ts';
-import { serializeFrontMatter } from '../src/main/memory-write.ts';
+import { meetingRecordOf, writeMeetingRecord } from '../src/main/meeting-record.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'docs', 'memory-vault-app', '會議紀錄樣本.md');
@@ -13,7 +14,7 @@ const out = join(root, 'docs', 'memory-vault-app', '會議紀錄樣本.md');
 // 和主控台實際散會時的資料同形(interop 的會議):參與者不含主持人;主持人的發言名稱是「名稱(主持人)」;
 // 略過的參與者記成 round 0、名稱是該參與者;主持人結束時的結語成為「結論」,不再重複列在逐字紀錄裡。
 const conclusion = '登入改用短效權杖,舊的工作階段 Cookie 保留兩週後移除。\n\n後續:織女補遷移腳本,天琴更新文件。';
-const rec = buildMeetingRecord(meetingRecordOf({
+const input = meetingRecordOf({
   id: 'm-sample',
   topic: '星圖 App 的登入流程要不要改成權杖',
   callerId: 'node-orion', callerName: '獵戶',
@@ -37,12 +38,15 @@ const rec = buildMeetingRecord(meetingRecordOf({
     { round: 2, name: '獵戶(主持人)', nodeId: 'node-orion', text: conclusion },
     { round: 0, name: '主控台', nodeId: null, text: '主持人結束了會議。' },
   ],
-}, Date.UTC(2031, 2, 14, 6, 18, 42)));
+}, Date.UTC(2031, 2, 14, 6, 18, 42));
 
-// 第一行就是 ---(可以直接當解析測試的輸入);說明用的 HTML 註解放在檔尾
-const text = serializeFrontMatter(rec.meta, true) + '\n' + rec.body
-  + '\n<!-- 去識別樣本:內容全是虛構的。由 tools/make-meeting-sample.mjs 用 buildMeetingRecord 與 serializeFrontMatter 產生,請勿手改。 -->\n'
-  + `<!-- 實際寫入的路徑:${rec.dir}/<日期>-<主題>.md -->\n`;
-mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, text);
-console.log('已產生', out);
+const vault = mkdtempSync(join(tmpdir(), 'nexus-meeting-sample-'));
+try {
+  const res = writeMeetingRecord(vault, input);
+  if (!res) throw new Error('沒有寫出會議紀錄');
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, readFileSync(join(vault, ...res.path.split('/'))));
+  console.log('已產生', out, '(實際寫入的路徑:', res.path + ')');
+} finally {
+  rmSync(vault, { recursive: true, force: true });
+}

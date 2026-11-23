@@ -160,14 +160,16 @@ function parseTime(v: string): number {
 
 /**
  * 一個檔案的索引資料。rel 是相對於記憶庫的路徑(用 /)。
- * 種類:屬性「種類」寫的優先,否則看所在的子資料夾。範圍:屬性優先;沒寫時節點側寫與偏好是全域,有專案的是專案,其餘全域。
+ * 種類:屬性「種類」寫的優先,否則看所在的子資料夾;但「回憶錄」只認 memoirs/ 底下的檔案(和寶庫的判斷一致)。範圍:屬性優先;沒寫時節點側寫與偏好是全域,有專案的是專案,其餘全域。
  * 專案:屬性「專案ID」→「專案」→ 路徑 cases|knowledge|meetings/<專案>/ 的資料夾名稱。標題:屬性 → 內文第一個 # 標題 → 檔名。
  */
 export function entryFromFile(rel: string, text: string, mtime: number, size: number): MemoryEntry {
   const { meta, body } = parseFrontMatter(text);
   const parts = rel.split('/');
   const dirKind = KIND[parts[0] as keyof typeof KIND] ?? 'knowledge';
-  const kind = KIND_WORDS[pick(meta, ['種類', 'kind', 'type']).toLowerCase()] ?? dirKind;
+  const declared = KIND_WORDS[pick(meta, ['種類', 'kind', 'type']).toLowerCase()];
+  // 回憶錄只認 memoirs/ 底下的(和寶庫相同):別的資料夾裡寫著「種類: 回憶錄」的舊檔照資料夾算,搬進 memoirs/ 才算回憶錄
+  const kind = !declared || (declared === 'memoir' && parts[0] !== 'memoirs') ? dirKind : declared;
   const folderProject = (parts[0] === 'cases' || parts[0] === 'knowledge' || parts[0] === 'meetings') && parts.length > 2 ? parts[1] : '';
   const projectId = pick(meta, ['專案ID', '專案id', 'project-id', 'projectId', '專案', 'project']) || folderProject;
   const scopeText = pick(meta, ['範圍', 'scope']);

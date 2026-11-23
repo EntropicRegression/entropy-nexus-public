@@ -31,7 +31,7 @@ import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
 import { nodeProfilePath } from './memory-write';
 import { writeMeetingRecord, type MeetingRecordInput } from './meeting-record';
-import { isMemoirPrompt, waitForMemoir } from './memoir';
+import { isDraftRequest, isMemoirRequest, waitForMemoir, type PromptOrigin } from './memoir';
 import type { Store } from './store';
 import type { MemoryVault } from './memory-vault';
 import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
@@ -61,6 +61,12 @@ export interface MemoirHook {
   request(agentId: string): Promise<string>;
   pending(agentId: string): boolean;
   cancel(agentId: string): void;
+  /** 最近一次成功提交回憶錄的時間(沒有是 0)。 */
+  submittedAt(agentId: string): number;
+  /** 節點的一個回合結束(title 是任務標題,origin 是任務來源):主控台送出的回憶錄或記憶草稿請求的回合結束了還沒提交,就清掉那份請求。 */
+  turnEnded(agentId: string, title: string, origin: PromptOrigin): void;
+  /** 節點被刪除:清掉它的回憶錄與記憶草稿請求。 */
+  forget(agentId: string): void;
 }
 
 /**
@@ -99,6 +105,8 @@ export class Core {
   private cases: { onTaskEnded(task: TaskInfo): unknown } | null = null;
   /** 回憶錄(刪除節點前可以先請它寫一章);啟動時由 index.ts 接上草稿服務。 */
   private memoir: MemoirHook | null = null;
+  /** 正在刪除流程中的節點(等回憶錄、工作總結)。 */
+  private removing = new Set<string>();
   /** 記憶庫(長期記憶);沒有設定時記憶工具不可用。 */
   private vault: MemoryVault | null = null;
   /** 要在下一則指令前告訴總管的記憶相關通知(例如專案知識超過上限)。 */
@@ -585,15 +593,25 @@ export class Core {
   async removeWithArchive(id: string, mode: 'summary' | 'stats', memoir = false): Promise<{ archive: string | null; note: string }> {
     const agent = this.agents.get(id);
     let out: { archive: string | null; note: string } = { archive: null, note: '' };
-    // 先寫回憶錄(使用者選了才寫),再寫工作總結:兩份都要節點本人有空才寫得出來,回憶錄等完節點才會回到待命
-    const memoirNote = memoir && agent && !agent.parentId ? await this.askForMemoir(agent) : '';
-    if (agent && !agent.parentId && this.vault) {
-      try { out = await this.archiveNode(agent, mode === 'stats' ? 'stats' : 'summary'); }
-      catch (e) { out = { archive: null, note: `歸檔失敗,節點仍已刪除:${String((e as Error)?.message ?? e)}` }; console.error('歸檔節點失敗', e); }
+    // 已經在刪除流程中(例如連點兩次):不重跑一次
+    if (this.removing.has(id)) return { archive: null, note: '這個節點已經在刪除中。' };
+    this.removing.add(id);
+    try {
+      // 先寫回憶錄(使用者選了才寫),再寫工作總結:兩份都要節點本人有空才寫得出來,回憶錄等完節點才會回到待命
+      const memoirNote = memoir && agent && !agent.parentId ? await this.askForMemoir(agent) : '';
+      if (agent && !agent.parentId && this.vault) {
+        try { out = await this.archiveNode(agent, mode === 'stats' ? 'stats' : 'summary'); }
+        catch (e) { out = { archive: null, note: `歸檔失敗,節點仍已刪除:${String((e as Error)?.message ?? e)}` }; console.error('歸檔節點失敗', e); }
+      }
+      await this.removeAgent(id);
+      return memoirNote ? { ...out, note: [memoirNote, out.note].filter(Boolean).join(' ') } : out;
+    } finally {
+      this.removing.delete(id);
     }
-    await this.removeAgent(id);
-    return memoirNote ? { ...out, note: [memoirNote, out.note].filter(Boolean).join(' ') } : out;
   }
+
+  /** 這個節點是不是正在刪除流程中(等回憶錄、工作總結);對話視窗依這個停用「寫回憶錄」「儲存這段記憶」。 */
+  isRemoving(id: string): boolean { return this.removing.has(id); }
 
   /**
    * 刪除節點前請它寫一章回憶錄,等它提交(或這個請求的回合結束、逾時)。回傳給使用者看的一句說明。流程在 memoir.ts 的 waitForMemoir:
@@ -605,9 +623,10 @@ export class Core {
     const id = agent.id;
     return waitForMemoir({
       pending: () => hook.pending(id),
+      submittedAt: () => hook.submittedAt(id),
       queuedId: () => this.memoirQueuedId(id),
       running: () => this.memoirRunning(id),
-      endedSince: since => [...this.tasks.values()].some(t => t.agentId === id && t.endedAt !== null && t.endedAt >= since && isMemoirPrompt(t.title)),
+      endedSince: since => [...this.tasks.values()].some(t => t.agentId === id && t.endedAt !== null && t.endedAt >= since && isMemoirRequest(t.title, t)),
       request: () => hook.request(id),
       cancel: () => hook.cancel(id),
       cancelQueued: q => this.cancelQueued(id, q),
@@ -615,13 +634,19 @@ export class Core {
       now: () => Date.now(),
       sleep: ms => new Promise(r => setTimeout(r, ms)),
       timeoutMs: Number(process.env.NEXUS_ARCHIVE_TIMEOUT_MS) || 3 * 60 * 1000,
+      settleMs: 15000,
     });
   }
 
   /** 佇列裡還沒送出的回憶錄提示的 id(依提示開頭辨識,不會和「儲存這段記憶」的草稿請求混淆);沒有是 null。 */
-  memoirQueuedId(id: string): string | null { return this.agents.get(id)?.queued.find(q => isMemoirPrompt(q.text))?.id ?? null; }
+  memoirQueuedId(id: string): string | null { return this.agents.get(id)?.queued.find(q => isMemoirRequest(q.text, q))?.id ?? null; }
   /** 這個節點有沒有正在進行的回憶錄回合。 */
-  memoirRunning(id: string): boolean { return [...this.tasks.values()].some(t => t.agentId === id && t.endedAt === null && isMemoirPrompt(t.title)); }
+  memoirRunning(id: string): boolean { return [...this.tasks.values()].some(t => t.agentId === id && t.endedAt === null && isMemoirRequest(t.title, t)); }
+  /** 這個節點的記憶草稿請求是不是還在進行:草稿提示還在佇列,或節點正在跑草稿的回合。 */
+  draftActive(id: string): boolean {
+    return !!this.agents.get(id)?.queued.some(q => isDraftRequest(q.text, q))
+      || [...this.tasks.values()].some(t => t.agentId === id && t.endedAt === null && isDraftRequest(t.title, t));
+  }
 
   /** 等這個節點交辦出去的歸檔提示結束,回傳它的最後一則回覆;逾時、失敗或沒有回覆就是 null。 */
   private async askForSummary(id: string, prompt: string, timeoutMs: number): Promise<string | null> {
@@ -689,6 +714,8 @@ export class Core {
     if (doomed && (doomed.queued.length || doomed.queuePaused)) { doomed.queued = []; doomed.queuePaused = null; this.store.updateQueue(doomed); }
     this.dropSubsOf(id);
     this.finishTask(id, 'interrupted', '節點已終止');
+    // 回憶錄與記憶草稿請求不留在設定裡
+    try { this.memoir?.forget(id); } catch (e) { console.error('清除記憶請求失敗', e); }
     this.leaveTerminal(id);
     await this.stopSession(id);
     const wt = this.agents.get(id)?.worktree;
@@ -1683,6 +1710,8 @@ ${section}
     this.interrupted.delete(agentId);
     this.pushTask(task);
     void this.captureEnd(task);
+    // 回憶錄或記憶草稿請求的回合結束了還沒提交:清掉那份請求(之後不能再被叫去補交)
+    try { this.memoir?.turnEnded(agentId, task.title, task); } catch (e) { console.error('清除記憶請求失敗', e); }
     return task;
   }
 

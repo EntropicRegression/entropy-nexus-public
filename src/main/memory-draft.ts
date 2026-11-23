@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { AgentInfo } from '../shared/types';
 import { DRAFT_PROMPT_LEAD, DRAFT_THRESHOLD, draftSegment, shouldOfferDraft, type DraftEvent } from '../shared/memory-draft.ts';
 import type { writeMemory as WriteMemory, safeName as SafeName } from './memory-write';
-import { MEMOIR_DAILY_CAP, formatMemoirPrompt, localDay, parseMemoir, writeMemoir } from './memoir.ts';
+import { MEMOIR_DAILY_CAP, formatMemoirPrompt, isDraftRequest, isMemoirRequest, localDay, parseMemoir, writeMemoir, type PromptOrigin } from './memoir.ts';
 
 /**
  * 對話草稿(長期記憶階段 4.5,點 1):使用者在對話視窗按「儲存這段記憶」,主控台請「那個節點」把上次儲存之後的對話整理成一份草稿,
@@ -15,7 +15,11 @@ import { MEMOIR_DAILY_CAP, formatMemoirPrompt, localDay, parseMemoir, writeMemoi
  *
  * 回憶錄(第六輪,見 memoir.ts):使用者按「寫回憶錄」(或刪除節點前選擇寫回憶錄),主控台請那個節點寫一章;節點一樣用 memory_draft 提交,
  * kind 填 memoir(或「回憶錄」)。請求和一般記憶草稿分開記;身分欄位由主控台依提交者填;格式不合格拒收但請求保留(可以補上重寫);
- * 每個節點每天最多 MEMOIR_DAILY_CAP 份。
+ * 每個節點每天最多 MEMOIR_DAILY_CAP 份(以提交當下的本機日期計)。
+ *
+ * 請求的有效期(兩種請求相同):只有在那個請求的回合「還在佇列或正在進行」時才收提交(memoirActive / draftActive;
+ * 沒有提供時退回用時間判斷 DRAFT_RETRY_MS)。回合結束還沒提交(或提交被拒後回合結束)時清掉請求(turnEnded);
+ * 主控台重開時清掉提示已不在佇列的請求(resetOnStartup)。所以節點不能在幾天後被別的節點(ask_node、會議)叫去補交。
  *
  * 不依賴 Electron;一般草稿的寫入與檔名清理由 deps 傳入(測試與 cases.ts 相同的做法),回憶錄用 memoir.ts 的 writeMemoir。
  */
@@ -109,6 +113,8 @@ export interface DraftDeps {
    * 請求掛著但已經不在進行時(例如上一份不合格後節點就停了),允許重新請求並覆蓋舊請求。沒有提供時退回用時間判斷(DRAFT_RETRY_MS)。
    */
   memoirActive?(agentId: string): boolean;
+  /** 這個節點的記憶草稿請求是不是還在進行(草稿提示還在佇列裡,或節點正在跑草稿的回合)。沒有提供時退回用時間判斷(DRAFT_RETRY_MS)。 */
+  draftActive?(agentId: string): boolean;
   now?: () => Date;
 }
 
@@ -117,13 +123,59 @@ export class DraftService {
   constructor(deps: DraftDeps) { this.d = deps; }
 
   private now(): Date { return this.d.now?.() ?? new Date(); }
+  /** 每個節點最近一次成功提交回憶錄的時間(這次執行期間,不存設定);刪除流程用來分辨「寫好了」和「請求被清掉」。 */
+  private memoirSubmitted = new Map<string, number>();
+
+  /** 請求還在不在進行:有提供 active 就看佇列與回合,否則看請求送出多久(DRAFT_RETRY_MS 內算還在)。 */
+  private live(active: ((id: string) => boolean) | undefined, agentId: string, at: number, now = this.now()): boolean {
+    return active ? active(agentId) : now.getTime() - at < DRAFT_RETRY_MS;
+  }
+
+  /**
+   * 主控台開啟時呼叫:上次關閉時還掛著的請求,回合一定已經不在了,清掉;只有提示還在佇列裡(重開後才會送出)的保留。
+   * 沒有提供 memoirActive / draftActive 時全部清掉。
+   */
+  resetOnStartup(): void {
+    const keep = <T,>(all: Record<string, T>, active?: (id: string) => boolean) => Object.fromEntries(Object.entries(all).filter(([id]) => !!active?.(id)));
+    const m = this.memoirPendingAll();
+    if (Object.keys(m).length) this.d.setSetting(MEMOIR_PENDING_KEY, JSON.stringify(keep(m, this.d.memoirActive)));
+    const p = this.pendingAll();
+    if (Object.keys(p).length) this.d.setSetting(PENDING_KEY, JSON.stringify(keep(p, this.d.draftActive)));
+  }
+
+  /**
+   * 節點的一個回合結束時呼叫(title 是任務標題,也就是送出的提示;origin 是任務的來源):主控台送出的回憶錄或草稿請求的回合
+   * 結束了還沒提交,就清掉那份請求,之後要再寫得請使用者重新按按鈕。同一種請求的提示還在佇列裡(下一個回合會處理)時不清。
+   * 別的節點(ask_node、會議、流程)送來、只是內容以請求開頭寫成的回合不算。
+   */
+  turnEnded(agentId: string, title: string, origin: PromptOrigin): void {
+    if (isMemoirRequest(title, origin)) {
+      if (this.hasPendingMemoir(agentId) && !this.d.memoirActive?.(agentId)) this.setMemoirPending(agentId, null);
+    } else if (isDraftRequest(title, origin)) {
+      if (this.hasPending(agentId) && !this.d.draftActive?.(agentId)) this.setPending(agentId, null);
+    }
+  }
+
+  /** 節點被刪除時:兩種請求都清掉,不留在設定裡。 */
+  forget(agentId: string): void {
+    if (this.hasPending(agentId)) this.setPending(agentId, null);
+    this.cancelMemoir(agentId);
+    this.memoirSubmitted.delete(agentId);
+  }
+
+  /** 這個節點最近一次成功提交回憶錄的時間(毫秒;沒有是 0)。 */
+  memoirSubmittedAt(agentId: string): number { return this.memoirSubmitted.get(agentId) ?? 0; }
   private threshold(): number { return this.d.threshold ?? draftThreshold(); }
 
   private lastSeq(agentId: string): number { return Number(this.d.getSetting(SEQ_KEY + agentId)) || 0; }
 
-  /** 對話視窗用:上次儲存到哪一筆事件、累積多少字才顯示按鈕。 */
-  info(agentId: string): { lastSeq: number; threshold: number } {
-    return { lastSeq: this.lastSeq(agentId), threshold: this.threshold() };
+  /**
+   * 對話視窗用:上次儲存到哪一筆事件、累積多少字才顯示按鈕;memoirBusy 是回憶錄請求還在進行(按鈕停用)。
+   * 依主控台的狀態判斷,對話視窗關掉再開也一樣。
+   */
+  info(agentId: string): { lastSeq: number; threshold: number; memoirBusy: boolean } {
+    const m = this.memoirPendingAll()[agentId];
+    return { lastSeq: this.lastSeq(agentId), threshold: this.threshold(), memoirBusy: !!m && this.live(this.d.memoirActive, agentId, m.at) };
   }
 
   private pendingAll(): Record<string, Pending> {
@@ -183,8 +235,10 @@ export class DraftService {
   /** 取消回憶錄請求(刪除節點前等不到時用)。 */
   cancelMemoir(agentId: string): void { if (this.hasPendingMemoir(agentId)) this.setMemoirPending(agentId, null); }
   private memoirCap(): number { return this.d.memoirDailyCap ?? MEMOIR_DAILY_CAP; }
+  /** 這個節點在 day(本機日期 YYYY-MM-DD)寫了幾份回憶錄。 */
+  private memoirCount(agentId: string, day: string): number { return Number(this.d.getSetting(`${MEMOIR_COUNT_KEY}${agentId}:${day}`)) || 0; }
   /** 這個節點今天已經寫了幾份回憶錄。 */
-  memoirCountToday(agentId: string): number { return Number(this.d.getSetting(`${MEMOIR_COUNT_KEY}${agentId}:${localDay(this.now())}`)) || 0; }
+  memoirCountToday(agentId: string): number { return this.memoirCount(agentId, localDay(this.now())); }
 
   /**
    * 使用者按「寫回憶錄」(或刪除節點前選擇寫回憶錄):節點收得到、今天還沒寫滿,就請它寫一章。
@@ -194,9 +248,14 @@ export class DraftService {
   async requestMemoir(agentId: string, opts: { farewell?: boolean } = {}): Promise<string> {
     const agent = this.reachable(agentId, '寫回憶錄');
     const pending = this.memoirPendingAll()[agentId];
-    const active = pending ? (this.d.memoirActive ? this.d.memoirActive(agentId) : this.now().getTime() - pending.at < DRAFT_RETRY_MS) : false;
+    const active = pending ? this.live(this.d.memoirActive, agentId, pending.at) : false;
     if (active) throw new Error('已經請這個節點寫回憶錄了,等它提交。');
-    if (this.memoirCountToday(agentId) >= this.memoirCap()) throw new Error(`「${agent.name}」今天已經寫了 ${this.memoirCap()} 份回憶錄,明天再寫。`);
+    if (this.memoirCountToday(agentId) >= this.memoirCap()) {
+      // 刪除前的告別請求:節點就要被刪除了,「明天再寫」沒有意義
+      throw new Error(opts.farewell
+        ? `「${agent.name}」今天已經寫了 ${this.memoirCap()} 份回憶錄,已達每日上限,這次不寫回憶錄。`
+        : `「${agent.name}」今天已經寫了 ${this.memoirCap()} 份回憶錄,明天再寫。`);
+    }
     const days = this.d.history(agentId).map(e => e.ts).filter((t): t is number => typeof t === 'number' && t > 0);
     const day = (ms: number) => localDay(new Date(ms));
     this.d.request(agentId, formatMemoirPrompt({
@@ -207,20 +266,28 @@ export class DraftService {
     return `已請「${agent.name}」寫一章回憶錄(節點忙碌時會排在佇列);寫好後在記憶庫管理 app 確認,未確認的回憶錄不會被任何 agent 查到。`;
   }
 
-  /** 節點提交回憶錄:只有被請求的節點能交、一次請求一份;身分欄位由主控台填,格式不合格就拒收(請求仍保留,可以補上重寫)。 */
+  /**
+   * 節點提交回憶錄:只有被請求的節點、在那個請求的回合還在佇列或進行中時能交,一次請求一份;身分欄位由主控台填,
+   * 格式不合格就拒收(同一個回合裡可以補上重寫;回合結束後請求就清掉)。
+   * 每日上限以提交當下的本機日期計:整個提交只取一次時間,上限檢查、檔名日期、計數都用同一天(請求在 23:59、提交在 00:01 算新的一天)。
+   */
   private async submitMemoir(callerId: string, args: Record<string, unknown>): Promise<string> {
-    if (!this.memoirPendingAll()[callerId]) throw new Error('主控台沒有請你寫回憶錄,所以不能提交(只有使用者按下「寫回憶錄」、或刪除節點前選擇寫回憶錄後,被請求的節點才能提交,而且一次請求只能提交一份)。');
+    const now = this.now();
+    const pending = this.memoirPendingAll()[callerId];
+    if (pending && !this.live(this.d.memoirActive, callerId, pending.at, now)) this.setMemoirPending(callerId, null);
+    if (!pending || !this.hasPendingMemoir(callerId)) throw new Error('沒有進行中的回憶錄請求,所以不能提交:主控台沒有請你寫回憶錄,或那次請求的回合已經結束。要寫回憶錄,請使用者在對話視窗按「寫回憶錄」(或刪除節點前選擇寫回憶錄),在那個請求的回合裡提交;一次請求只能提交一份。');
     const agent = this.d.agent(callerId);
     if (!agent || agent.parentId) throw new Error('找不到你這個節點(子代理不能寫回憶錄)。');
-    if (this.memoirCountToday(callerId) >= this.memoirCap()) {
+    const day = localDay(now);
+    if (this.memoirCount(callerId, day) >= this.memoirCap()) {
       this.setMemoirPending(callerId, null);
       throw new Error(`你今天已經寫了 ${this.memoirCap()} 份回憶錄,已達每日上限,這份不會寫入。`);
     }
     const sub = parseMemoir(args);
-    const now = this.now();
     const res = writeMemoir(this.d.vaultDir, { ...sub, nodeId: callerId, nodeName: agent.name, backendLabel: this.d.backendLabel(agent.backend), now });
     this.setMemoirPending(callerId, null);
-    this.d.setSetting(`${MEMOIR_COUNT_KEY}${callerId}:${localDay(now)}`, String(this.memoirCountToday(callerId) + 1));
+    this.d.setSetting(`${MEMOIR_COUNT_KEY}${callerId}:${day}`, String(this.memoirCount(callerId, day) + 1));
+    this.memoirSubmitted.set(callerId, now.getTime());
     this.d.rescan();
     const masked = [res.masked ? `${res.masked} 處疑似機密` : '', res.pathsMasked ? `${res.pathsMasked} 處本機路徑` : ''].filter(Boolean).join('、');
     return `已寫入回憶錄「${sub.title}」(狀態:未確認,使用者在記憶庫確認後才會生效)。路徑:${res.path}${masked ? `;${masked}已遮罩` : ''}。`;
@@ -229,11 +296,13 @@ export class DraftService {
   /** 節點提交草稿(MCP 工具 memory_draft)。只有被請求的節點能交,一次請求一份。回傳給節點看的說明。 */
   async submit(callerId: string, args: Record<string, unknown>): Promise<string> {
     if (isMemoirKind(args.kind ?? args.type)) return this.submitMemoir(callerId, args);
-    const pending = this.pendingAll()[callerId];
-    if (!pending) throw new Error(`主控台沒有請你整理記憶草稿,所以不能提交(只有使用者按下「儲存這段記憶」後,被請求的節點才能提交,而且一次請求只能提交一份)。${this.hasPendingMemoir(callerId) ? '主控台請你寫的是回憶錄,kind 請填 memoir。' : ''}`);
+    const now = this.now();
+    let pending: Pending | undefined = this.pendingAll()[callerId];
+    // 請求的回合已經不在佇列也不在進行(沒有提供 draftActive 時:超過 DRAFT_RETRY_MS):請求作廢
+    if (pending && !this.live(this.d.draftActive, callerId, pending.at, now)) { this.setPending(callerId, null); pending = undefined; }
+    if (!pending) throw new Error(`沒有進行中的記憶草稿請求:主控台沒有請你整理記憶草稿,或那次請求的回合已經結束,所以不能提交。要存記憶,請使用者在對話視窗按「儲存這段記憶」,在那個請求的回合裡提交;一次請求只能提交一份。${this.hasPendingMemoir(callerId) ? '主控台請你寫的是回憶錄,kind 請填 memoir。' : ''}`);
     const sub = parseDraft(args);
     const agent = this.d.agent(callerId);
-    const now = this.now();
     const node = agent ? `${agent.name}(${this.d.backendLabel(agent.backend)}${agent.model ? ` · ${agent.model}` : ''})` : callerId;
     const project = pending.project || '未分類專案';
     const rel = sub.kind === 'preference' ? this.freePath('preferences', sub.title) : this.freePath(`knowledge/${this.d.safeName(project)}`, sub.title);

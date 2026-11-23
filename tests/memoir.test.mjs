@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { register } from 'node:module';
 register('data:text/javascript,' + encodeURIComponent(String.raw`export async function resolve(s,c,n){if(/^\.\.?\//.test(s)&&!/\.\w+$/.test(s)){try{return await n(s+'.ts',c)}catch{}}return n(s,c)}`), import.meta.url);
 const { DraftService, isMemoirKind } = await import('../src/main/memory-draft.ts');
-const { MEMOIR_DAILY_CAP, buildMemoir, checkSections, cleanTitle, formatMemoirPrompt, isMemoirPrompt, missingSections, parseMemoir, parsePeriod, waitForMemoir, writeMemoir } = await import('../src/main/memoir.ts');
+const { MEMOIR_DAILY_CAP, buildMemoir, checkSections, cleanTitle, formatMemoirPrompt, isDraftRequest, isMemoirPrompt, isMemoirRequest, missingSections, normalizeSectionHeadings, parseMemoir, parsePeriod, waitForMemoir, writeMemoir } = await import('../src/main/memoir.ts');
 const { entryFromFile, parseFrontMatter, README, readmeUpdate, VAULT_DIRS } = await import('../src/main/memory-vault.ts');
 const { memoryRead, memorySearch, memoryWrite, searchMemory, statusVisible } = await import('../src/main/memory-tools.ts');
 const { safeName, writeMemory } = await import('../src/main/memory-write.ts');
@@ -163,50 +163,101 @@ test('isMemoirPrompt:認得回憶錄請求,不會把「儲存這段記憶」的�
   assert.equal(isMemoirPrompt('請幫我寫回憶錄'), false);
 });
 
+/** 主控台自己送的請求(DraftService 用 enqueue(…, 'draft') 排入,沒有交辦者)。 */
+const CONSOLE = { source: 'draft' };
+/** 別的節點用 ask_node、會議、協作流程送來的(都帶交辦者 from)。 */
+const OTHERS = [
+  ['ask_node', { source: 'interop', from: { id: 'node-vega-0002', name: '織女' } }],
+  ['會議', { source: 'interop', from: { id: 'node-vega-0002', name: '織女', meeting: true } }],
+  ['協作流程', { source: 'flow', from: { id: 'flow', name: '流程', flow: { runId: 'r1', stepId: 's1' } } }],
+  ['帶交辦者但來源寫成 draft', { source: 'draft', from: { id: 'node-vega-0002', name: '織女' } }],
+  ['使用者從桌面打的字', { source: 'desktop' }],
+  ['舊資料沒有來源', {}],
+];
+
+test('isMemoirRequest / isDraftRequest:要提示開頭對、而且來源是主控台自己送的(source draft、沒有 from);ask_node、會議、流程送來的不算', () => {
+  const memoirText = formatMemoirPrompt({ nodeName: '獵戶', today: '2026-11-23' });
+  const draftText = `${DRAFT_PROMPT_LEAD}這不是使用者的新指令`;
+  assert.equal(isMemoirRequest(memoirText, CONSOLE), true);
+  assert.equal(isDraftRequest(draftText, CONSOLE), true);
+  assert.equal(isMemoirRequest(draftText, CONSOLE), false);
+  assert.equal(isDraftRequest(memoirText, CONSOLE), false);
+  assert.equal(isMemoirRequest('請幫我寫回憶錄', CONSOLE), false);
+  for (const [name, origin] of OTHERS) {
+    assert.equal(isMemoirRequest(memoirText, origin), false, name);
+    assert.equal(isDraftRequest(draftText, origin), false, name);
+  }
+  assert.equal(isMemoirRequest(memoirText, null), false);
+});
+
+test('假造的回憶錄回合:別的節點用 ask_node、會議、流程送來以回憶錄請求開頭的文字,回合結束不會被當成回憶錄回合(請求不受影響)', async () => {
+  const live = { active: true };
+  const s = mkSvc({ memoirActive: () => live.active });
+  await s.svc.requestMemoir(ORION);
+  live.active = false;
+  const fake = `${MEMOIR_PROMPT_LEAD}這不是使用者的新指令`;
+  for (const [name, origin] of OTHERS) {
+    s.svc.turnEnded(ORION, fake, origin);
+    assert.ok(s.svc.hasPendingMemoir(ORION), `${name} 的回合結束不清請求`);
+  }
+  // 主控台自己送的回憶錄回合結束才清
+  s.svc.turnEnded(ORION, fake, CONSOLE);
+  assert.ok(!s.svc.hasPendingMemoir(ORION));
+});
+
 // ---- 刪除節點前的等待(Core.askForMemoir 用的 waitForMemoir)
 /** 假的節點:queue 是佇列裡的提示 id,running 是回憶錄回合在跑,ended 是回合結束的時間;steps 依時間推進狀態。 */
+/** 節點提交成功:請求用掉、記下提交時間。 */
+const submitted = s => { s.pending = false; s.submittedAt = s.t; };
+/** 回合結束(沒有提交時,主控台的 turnEnded 會清掉請求)。 */
+const endTurn = s => { s.running = false; s.ended.push(s.t); };
 const mkWait = (init = {}, steps = []) => {
-  const st = { pending: false, queue: null, running: false, ended: [], requests: 0, cancels: 0, cancelledQueued: [], interrupts: 0, t: 1000, requestError: null, ...init };
+  const st = { pending: false, submittedAt: 0, queue: null, running: false, ended: [], requests: 0, cancels: 0, cancelledQueued: [], interrupts: 0, t: 1000, requestError: null, stopOnInterrupt: false, ...init };
   const deps = {
     pending: () => st.pending,
+    submittedAt: () => st.submittedAt,
     queuedId: () => st.queue,
     running: () => st.running,
     endedSince: since => st.ended.some(e => e >= since),
     request: async () => { if (st.requestError) throw new Error(st.requestError); st.requests++; st.pending = true; st.queue = 'q-new'; },
     cancel: () => { st.cancels++; st.pending = false; },
     cancelQueued: id => { st.cancelledQueued.push(id); if (st.queue === id) st.queue = null; },
-    interrupt: () => { st.interrupts++; },
+    interrupt: () => { st.interrupts++; if (st.stopOnInterrupt) steps.push({ at: st.t + 1000, run: s => { s.running = false; s.ended.push(s.t); } }); },
     now: () => st.t,
     sleep: async ms => { st.t += ms; for (const s of steps) if (!s.done && st.t >= s.at) { s.done = true; s.run(st); } },
     timeoutMs: 10000,
+    settleMs: 3000,
   };
   return { st, deps };
 };
 
 test('waitForMemoir:已有回憶錄請求在進行(節點正在寫)就不重發,等那一份寫完', async () => {
-  const { st, deps } = mkWait({ pending: true, running: true }, [{ at: 2000, run: s => { s.pending = false; } }, { at: 2500, run: s => { s.running = false; s.ended.push(s.t); } }]);
+  const { st, deps } = mkWait({ pending: true, running: true }, [{ at: 2000, run: submitted }, { at: 2500, run: endTurn }]);
   assert.match(await waitForMemoir(deps), /已寫好回憶錄/);
   assert.equal(st.requests, 0, '沒有重發');
   assert.equal(st.cancels, 0);
 });
 
 test('waitForMemoir:已有回憶錄提示還在佇列(使用者先按過按鈕)就等它,不重發', async () => {
-  const { st, deps } = mkWait({ pending: true, queue: 'q-old' }, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 3000, run: s => { s.pending = false; s.running = false; s.ended.push(s.t); } }]);
+  const { st, deps } = mkWait({ pending: true, queue: 'q-old' }, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 3000, run: s => { submitted(s); endTurn(s); } }]);
   assert.match(await waitForMemoir(deps), /已寫好回憶錄/);
   assert.equal(st.requests, 0);
 });
 
 test('waitForMemoir:請求掛著但已沒有佇列項目或進行中的回合(上一份不合格後停了)就重發', async () => {
-  const { st, deps } = mkWait({ pending: true }, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 2000, run: s => { s.pending = false; s.running = false; s.ended.push(s.t); } }]);
+  const { st, deps } = mkWait({ pending: true }, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 2000, run: s => { submitted(s); endTurn(s); } }]);
   assert.match(await waitForMemoir(deps), /已寫好回憶錄/);
   assert.equal(st.requests, 1);
 });
 
 test('waitForMemoir:回合結束卻沒有提交 → 取消請求;請求被拒(例如每日上限)→ 說明原因,不等', async () => {
-  const a = mkWait({}, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 2000, run: s => { s.running = false; s.ended.push(s.t); } }]);
+  const a = mkWait({}, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 2000, run: endTurn }]);
   assert.match(await waitForMemoir(a.deps), /節點沒有提交回憶錄/);
   assert.equal(a.st.cancels, 1);
   assert.equal(a.st.pending, false);
+  // 主控台在回合結束時已經清掉請求(turnEnded):請求不在了也不能誤報「已寫好」
+  const c = mkWait({}, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 2000, run: s => { endTurn(s); s.pending = false; } }]);
+  assert.match(await waitForMemoir(c.deps), /節點沒有提交回憶錄/);
   const b = mkWait({ requestError: '「獵戶」今天已經寫了 3 份回憶錄,明天再寫。' });
   assert.match(await waitForMemoir(b.deps), /沒有寫回憶錄:.*3 份/);
   assert.equal(b.st.t, 1000, '沒有等待');
@@ -222,6 +273,24 @@ test('waitForMemoir:逾時 → 取消請求、拿掉佇列裡的回憶錄提示�
   assert.match(await waitForMemoir(r.deps), /沒有在時限內/);
   assert.equal(r.st.interrupts, 1);
   assert.deepEqual(r.st.cancelledQueued, []);
+  // 中斷後回合一直沒結束:最多再等 settleMs 就繼續(不會卡住刪除)
+  assert.ok(r.st.t >= 1000 + 10000 + 3000 && r.st.t < 1000 + 10000 + 3000 + 500, `等了 ${r.st.t}`);
+});
+
+test('waitForMemoir:已經提交成功但回合超過時限 → 回報已寫好(不誤報未寫完);中斷後等回合真的結束才繼續', async () => {
+  const w = mkWait({ stopOnInterrupt: true }, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 3000, run: submitted }]);
+  const note = await waitForMemoir(w.deps);
+  assert.match(note, /已寫好回憶錄/);
+  assert.match(note, /超過時限,已中斷/);
+  assert.doesNotMatch(note, /沒有在時限內/);
+  assert.equal(w.st.interrupts, 1);
+  assert.equal(w.st.running, false, '回合已結束才回傳');
+  assert.ok(w.st.t >= 1000 + 10000 + 1000, `中斷後有等回合結束(${w.st.t})`);
+  // 寫好之後回合還在跑:等回合結束(節點回到待命)才回報
+  const x = mkWait({}, [{ at: 1500, run: s => { s.queue = null; s.running = true; } }, { at: 2000, run: submitted }, { at: 4000, run: endTurn }]);
+  assert.match(await waitForMemoir(x.deps), /已寫好回憶錄/);
+  assert.ok(x.st.t >= 4000, '等到回合結束');
+  assert.equal(x.st.cancels, 0);
 });
 
 // ---- 檔頭與路徑
@@ -317,9 +386,10 @@ test('重新請求:舊請求還在進行就拒絕;掛著但已沒有在進行(�
   assert.equal(s.requests.length, 2);
   assert.ok(s.requests[1].text.includes('即將刪除'));
   assert.equal(JSON.parse(s.settings.get('memoir:pending'))[ORION].at, s.clock.now.getTime(), '舊請求被覆蓋');
-  // 不合格被拒收後請求還掛著,回合結束(不在進行)時按鈕也能重新請求
-  await errOf(s.svc.submit(ORION, { kind: 'memoir', title: 't', period: '2026-11-16', content: '正文' }));
-  assert.ok(s.svc.hasPendingMemoir(ORION));
+  // 請求的回合已經不在進行時提交:拒收並清掉請求(不能事後補交);按鈕可以重新請求
+  assert.match(await errOf(s.svc.submit(ORION, { kind: 'memoir', title: 't', period: '2026-11-16', content: BODY })), /沒有進行中的回憶錄請求.*按「寫回憶錄」/);
+  assert.ok(!s.svc.hasPendingMemoir(ORION));
+  assert.deepEqual(memoirFiles(s.vaultDir), []);
   assert.match(await s.svc.requestMemoir(ORION), /已請「獵戶」/);
   // 沒有提供 memoirActive 時退回用時間判斷(30 分鐘內拒絕)
   const t = mkSvc();
@@ -378,6 +448,10 @@ test('每日上限:同一個節點同一天最多 3 份(請求與提交都擋);�
   assert.equal(s.svc.memoirCountToday(ORION), 3);
   assert.deepEqual(memoirFiles(s.vaultDir), ['memoirs/獵戶-node-ori/2026-11-23-同一章-2.md', 'memoirs/獵戶-node-ori/2026-11-23-同一章-3.md', 'memoirs/獵戶-node-ori/2026-11-23-同一章.md']);
   assert.match(await errOf(s.svc.requestMemoir(ORION)), /今天已經寫了 3 份/);
+  // 刪除前的告別請求:說明已達上限、這次不寫,不說「明天再寫」
+  const farewellErr = await errOf(s.svc.requestMemoir(ORION, { farewell: true }));
+  assert.match(farewellErr, /已達每日上限,這次不寫回憶錄/);
+  assert.doesNotMatch(farewellErr, /明天/);
   // 上限之前發出的請求,提交時也要再擋一次(例如請求後別的路徑先寫滿)
   s.settings.set(`memoir:pending`, JSON.stringify({ [ORION]: { at: s.clock.now.getTime() } }));
   assert.match(await errOf(s.svc.submit(ORION, { kind: 'memoir', title: '第四章', period: '2026-11-16', content: BODY })), /每日上限/);
@@ -395,6 +469,137 @@ test('取消請求:cancelMemoir 之後不能再交(刪除節點時逾時就取�
   s.svc.cancelMemoir(ORION);
   assert.ok(!s.svc.hasPendingMemoir(ORION));
   assert.match(await errOf(s.svc.submit(ORION, { kind: 'memoir', title: 't', period: '2026-11-16', content: BODY })), /沒有請你寫回憶錄/);
+});
+
+test('請求的有效期:回合還在進行時可以交(不合格可在同一回合重寫);回合結束沒提交就清掉,之後被別的節點叫去也不能補交', async () => {
+  const live = { active: true };
+  const s = mkSvc({ memoirActive: () => live.active });
+  await s.svc.requestMemoir(ORION);
+  assert.match(await errOf(s.svc.submit(ORION, { kind: 'memoir', title: 't', period: '2026-11-16', content: '正文' })), /缺少固定章節/);
+  assert.ok(s.svc.hasPendingMemoir(ORION), '同一個回合裡不合格,請求保留');
+  // 回憶錄回合結束(Core 的 finishTask 呼叫 turnEnded,title 是任務標題),節點沒有提交
+  live.active = false;
+  s.svc.turnEnded(ORION, formatMemoirPrompt({ nodeName: '獵戶', today: '2026-11-23' }).replace(/\s+/g, ' ').slice(0, 200), CONSOLE);
+  assert.ok(!s.svc.hasPendingMemoir(ORION), '回合結束就清掉請求');
+  // 幾天後別的節點用 ask_node 叫它寫(那個回合不是回憶錄回合)
+  s.clock.now = new Date(2026, 10, 26, 10);
+  const err = await errOf(s.svc.submit(ORION, { kind: 'memoir', title: '補交', period: '2026-11-16', content: BODY }));
+  assert.match(err, /沒有進行中的回憶錄請求/);
+  assert.match(err, /請使用者在對話視窗按「寫回憶錄」/);
+  assert.deepEqual(memoirFiles(s.vaultDir), []);
+  assert.equal(s.svc.memoirSubmittedAt(ORION), 0);
+  // 別種回合結束不影響請求;回憶錄提示還在佇列時也不清
+  live.active = true;
+  await s.svc.requestMemoir(ORION);
+  s.svc.turnEnded(ORION, '使用者的一般指令', { source: 'desktop' });
+  s.svc.turnEnded(ORION, `${DRAFT_PROMPT_LEAD}這不是使用者的新指令`, CONSOLE);
+  assert.ok(s.svc.hasPendingMemoir(ORION));
+  s.svc.turnEnded(ORION, `${MEMOIR_PROMPT_LEAD}這不是使用者的新指令`, CONSOLE);
+  assert.ok(s.svc.hasPendingMemoir(ORION), '回憶錄提示還在佇列(仍在進行)就不清');
+  // 合格提交後記下提交時間(刪除流程用來分辨寫好了)
+  assert.match(await s.svc.submit(ORION, { kind: 'memoir', title: '準時', period: '2026-11-26', content: BODY }), /已寫入回憶錄/);
+  assert.equal(s.svc.memoirSubmittedAt(ORION), s.clock.now.getTime());
+});
+
+test('請求的有效期:請求還掛著但回合已經不在(沒有接上 memoirActive 時退回用 30 分鐘時限)也拒收並清掉', async () => {
+  const s = mkSvc();
+  await s.svc.requestMemoir(ORION);
+  s.clock.now = new Date(s.clock.now.getTime() + 31 * 60 * 1000);
+  assert.match(await errOf(s.svc.submit(ORION, { kind: 'memoir', title: '晚交', period: '2026-11-16', content: BODY })), /沒有進行中的回憶錄請求/);
+  assert.ok(!s.svc.hasPendingMemoir(ORION));
+  assert.deepEqual(memoirFiles(s.vaultDir), []);
+});
+
+test('主控台重開:清掉上次留下的回憶錄與記憶草稿請求;提示還在佇列(重開後才送出)的保留;刪除節點時也清掉', async () => {
+  const queued = new Set();
+  const s = mkSvc({ memoirActive: id => queued.has(id), draftActive: () => false });
+  s.settings.set('memoir:pending', JSON.stringify({ [ORION]: { at: 1 }, 'node-vega-0002': { at: 2 } }));
+  s.settings.set('draft:pending', JSON.stringify({ [ORION]: { at: 1, project: 'demo', projectId: 'x' } }));
+  queued.add('node-vega-0002');
+  s.svc.resetOnStartup();
+  assert.ok(!s.svc.hasPendingMemoir(ORION));
+  assert.ok(s.svc.hasPendingMemoir('node-vega-0002'), '提示還在佇列的保留');
+  assert.ok(!s.svc.hasPending(ORION));
+  assert.match(await errOf(s.svc.submit(ORION, { kind: 'memoir', title: 't', period: '2026-11-16', content: BODY })), /沒有進行中的回憶錄請求/);
+  // 沒有接上 memoirActive(單元測試)時全部清掉
+  const t = mkSvc();
+  t.settings.set('memoir:pending', JSON.stringify({ [ORION]: { at: t.clock.now.getTime() } }));
+  t.svc.resetOnStartup();
+  assert.ok(!t.svc.hasPendingMemoir(ORION));
+  // 節點被刪除時兩種請求都清掉
+  const u = mkSvc();
+  await u.svc.requestMemoir(ORION);
+  u.svc.forget(ORION);
+  assert.ok(!u.svc.hasPendingMemoir(ORION));
+});
+
+test('對話視窗的按鈕狀態:info 的 memoirBusy 依主控台的請求判斷(關掉再開也一樣)', async () => {
+  const live = { active: true };
+  const s = mkSvc({ memoirActive: () => live.active });
+  assert.equal(s.svc.info(ORION).memoirBusy, false);
+  await s.svc.requestMemoir(ORION);
+  assert.equal(s.svc.info(ORION).memoirBusy, true);
+  live.active = false;
+  assert.equal(s.svc.info(ORION).memoirBusy, false, '回合不在了就不算進行中');
+});
+
+test('每日上限跨午夜:以提交當下的日期為準,上限檢查、檔名日期、計數都用同一天', async () => {
+  // 請求在 23:59、提交在 00:01:算新的一天
+  const s = mkSvc();
+  s.clock.now = new Date(2026, 10, 23, 23, 59, 0);
+  s.settings.set(`memoir:count:${ORION}:2026-11-23`, '3');
+  assert.match(await errOf(s.svc.requestMemoir(ORION)), /今天已經寫了 3 份/, '請求時用請求當天檢查');
+  s.settings.set(`memoir:count:${ORION}:2026-11-23`, '2');
+  await s.svc.requestMemoir(ORION);
+  s.clock.now = new Date(2026, 10, 24, 0, 1, 0);
+  assert.match(await s.svc.submit(ORION, { kind: 'memoir', title: '跨夜', period: '2026-11-23', content: BODY }), /2026-11-24-跨夜/);
+  assert.equal(s.settings.get(`memoir:count:${ORION}:2026-11-23`), '2', '前一天的計數不變');
+  assert.equal(s.settings.get(`memoir:count:${ORION}:2026-11-24`), '1');
+  // 提交途中時鐘剛好跨過午夜:整個提交只取一次時間,計數記在檔名的那一天、累加在那一天原本的數字上
+  let armed = false, calls = 0;
+  const t = mkSvc({ now: () => (!armed ? new Date(2026, 10, 23, 23, 50) : calls++ === 0 ? new Date(2026, 10, 23, 23, 59, 59, 999) : new Date(2026, 10, 24, 0, 0, 0)) });
+  t.settings.set(`memoir:count:${ORION}:2026-11-23`, '2');
+  await t.svc.requestMemoir(ORION);
+  armed = true;
+  assert.match(await t.svc.submit(ORION, { kind: 'memoir', title: '午夜', period: '2026-11-23', content: BODY }), /2026-11-23-午夜/);
+  assert.equal(t.settings.get(`memoir:count:${ORION}:2026-11-23`), '3');
+  assert.equal(t.settings.get(`memoir:count:${ORION}:2026-11-24`), undefined);
+});
+
+test('章節標題正規化:寫入檔案時固定章節的標題行改成標準寫法,其他內容與圍欄、註解裡的不動', () => {
+  const body = '正文 ## 來源 不是標題\n\n## **來源**:\r\n無\n\n```\n## 來源:\n```\n<!--\n## 不確定之處:\n-->\n   ## 不確定之處 ##\n- 記不清\n## 其他:\n## 來源\n補充';
+  assert.equal(normalizeSectionHeadings(body), '正文 ## 來源 不是標題\n\n## 來源\r\n無\n\n```\n## 來源:\n```\n<!--\n## 不確定之處:\n-->\n## 不確定之處\n- 記不清\n## 其他:\n## 來源\n補充');
+  for (const [src, want] of [['## 來源:', '## 來源'], ['## 來源：', '## 來源'], ['## **來源**', '## 來源'], ['## __不確定之處__：', '## 不確定之處'], ['## 來源 ###', '## 來源'], [' ## **不確定之處:**', '## 不確定之處']]) {
+    assert.equal(normalizeSectionHeadings(`${src}\n無`), `${want}\n無`, src);
+  }
+  // writeMemoir 寫出來的檔案是標準寫法
+  const dir = tmp('nexus-memoir-n-');
+  const res = writeMemoir(dir, { title: '標題', content: '正文\n\n## **來源**:\n對話\n\n## 不確定之處：\n無', period: '2026-11-16', nodeId: 'node-orion-0001', nodeName: '獵戶', backendLabel: 'Claude Code', now: new Date(2026, 10, 23, 10) });
+  const text = readFileSync(join(dir, ...res.path.split('/')), 'utf8');
+  assert.ok(text.includes('\n## 來源\n對話\n') && text.includes('\n## 不確定之處\n無'), text);
+  assert.ok(!text.includes('**來源**') && !text.includes('不確定之處：'));
+});
+
+test('checkSections:<pre> 等 HTML 區塊裡的 ## 不算標題;行內的 <!--(同一行關閉、行中間、行內程式碼裡)不會吞掉後面的內容', () => {
+  const ok = body => assert.deepEqual(checkSections(body), { missing: [], empty: [] }, body);
+  const miss = (body, missing) => assert.deepEqual(checkSections(body).missing, missing, body);
+  miss('正文\n<pre>\n## 來源\n無\n</pre>\n## 不確定之處\n無', ['來源']);
+  miss('<PRE class="x">\n## 來源\n</PRE>\n## 不確定之處\n無', ['來源']);
+  miss('<script>\n## 來源\n</script>\n## 不確定之處\n無', ['來源']);
+  ok('<pre>一行就結束</pre>\n## 來源\n無\n## 不確定之處\n無');
+  // <pre> 區塊裡的內容算章節內容
+  assert.deepEqual(checkSections('## 來源\n<pre>\n對話紀錄\n</pre>\n## 不確定之處\n無').empty, []);
+  // 行內程式碼裡寫了 <!--
+  ok('我用了 `<!--` 標記註解。\n\n## 來源\n對話\n\n## 不確定之處\n無');
+  ok('## 來源\n用了 ``<!-- x`` 這種寫法\n## 不確定之處\n無');
+  // 行中間出現、沒有在同一行關閉的 <!--:當一般文字
+  ok('註解要寫成 <!-- 開頭\n## 來源\n對話\n## 不確定之處\n無');
+  // 同一行就關閉的註解拿掉,後面的文字照算
+  ok('<!-- 草稿 --> 正文\n## 來源 <!-- 補 -->\n對話\n## 不確定之處\n無 <!-- x -->');
+  assert.deepEqual(checkSections('## 來源\n<!-- a --> 有字\n## 不確定之處\n無').empty, []);
+  // 註解區塊結束那一行的 ## 不算標題
+  miss('<!--\n註解\n--> ## 來源\n## 不確定之處\n無', ['來源']);
+  assert.equal(parseMemoir({ title: 't', period: '2026-11-16', content: '正文用了 `<!--`\n\n## 來源\n\n對話\n\n## 不確定之處\n\n無' }).title, 't');
 });
 
 // ---- 可見性與 memory_write
@@ -454,6 +659,12 @@ test('記憶庫:memoirs 是記憶庫的子資料夾;說明檔列出 memoirs,舊�
   const e = entryFromFile('memoirs/獵戶-node-ori/2026-11-23-a.md', '沒有屬性區塊的回憶錄', 1, 1);
   assert.equal(e.kind, 'memoir', '資料夾 memoirs 推得出種類');
   assert.equal(e.scope, '全域');
+  // 種類判斷和寶庫一致:memoirs/ 以外寫著「種類: 回憶錄」的舊檔照資料夾算
+  const legacy = entryFromFile('knowledge/demo/舊回憶.md', '---\n種類: 回憶錄\n狀態: 已確認\n---\n內容', 1, 1);
+  assert.equal(legacy.kind, 'knowledge');
+  assert.equal(entryFromFile('preferences/舊回憶.md', '---\n種類: memoir\n---\n內容', 1, 1).kind, 'preference');
+  assert.equal(entryFromFile('memoirs/獵戶-node-ori/a.md', '---\n種類: 回憶錄\n---\n內容', 1, 1).kind, 'memoir');
+  assert.equal(entryFromFile('knowledge/demo/a.md', '---\n種類: 判例\n---\n內容', 1, 1).kind, 'case', '其他種類照舊以屬性優先');
 });
 
 for (const [name, fn] of tests) {

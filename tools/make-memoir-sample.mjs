@@ -1,11 +1,12 @@
 // 產生去識別的回憶錄樣本:docs/memory-vault-app/回憶錄樣本.md
-// 用真正的 parseMemoir + buildMemoir + serializeFrontMatter 產生(和主控台寫檔的組成程式相同);內容全是虛構的(節點、ID、日期、路徑)。
+// 用真正的 parseMemoir + writeMemoir 寫進一個暫存記憶庫,再把寫出來的檔案原封不動複製過來(和主控台實際寫入的檔案逐位元組相同);
+// 內容全是虛構的(節點、ID、日期、路徑)。樣本檔只放真實輸出,說明寫在 docs/memory-vault-app/樣本說明.md。
 // 用法:node tools/make-memoir-sample.mjs(Node 22.18 以上可直接載入 .ts)
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMemoir, parseMemoir } from '../src/main/memoir.ts';
-import { maskSecrets, serializeFrontMatter } from '../src/main/memory-write.ts';
+import { parseMemoir, writeMemoir } from '../src/main/memoir.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'docs', 'memory-vault-app', '回憶錄樣本.md');
@@ -28,7 +29,7 @@ const sub = parseMemoir({
     '',
     '我當時把測試用的設定放在 C:\\Users\\example\\star-app\\.env,裡面的 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 已經請使用者作廢。',
     '',
-    '## 來源',
+    '## **來源**:',
     '',
     '- 這個 session 裡和使用者的對話(2031-03-14 到 2031-03-16)',
     '- 會議紀錄:meetings/star-app/2031-03-14-星圖 App 的登入流程要不要改成權杖.md',
@@ -39,12 +40,13 @@ const sub = parseMemoir({
     '- 北河二號提醒舊 Cookie 的時間,我記得是第二天下午,但不確定。',
   ].join('\n'),
 });
-const rec = buildMemoir({ ...sub, nodeId: 'node-orion', nodeName: '獵戶', backendLabel: 'Claude Code', now: new Date(2031, 2, 16, 21, 4, 9) });
-
-// 第一行就是 ---(可以直接當解析測試的輸入);說明用的 HTML 註解放在檔尾。檔頭與正文都和 writeMemoir 寫進去的相同(金鑰遮罩也一樣)
-const text = serializeFrontMatter(rec.meta, true) + '\n' + maskSecrets(rec.body).text.trim() + '\n'
-  + '\n<!-- 去識別樣本:內容全是虛構的。由 tools/make-memoir-sample.mjs 用 parseMemoir、buildMemoir 與 serializeFrontMatter 產生,請勿手改。 -->\n'
-  + `<!-- 實際寫入的路徑:${rec.dir}/${rec.baseName}.md(同名時加 -2、-3) -->\n`;
-mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, text);
-console.log('已產生', out);
+// 標題故意寫成「## **來源**:」:主控台寬鬆接受,寫進檔案時改成標準的「## 來源」
+const vault = mkdtempSync(join(tmpdir(), 'nexus-memoir-sample-'));
+try {
+  const res = writeMemoir(vault, { ...sub, nodeId: 'node-orion', nodeName: '獵戶', backendLabel: 'Claude Code', now: new Date(2031, 2, 16, 21, 4, 9) });
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, readFileSync(join(vault, ...res.path.split('/'))));
+  console.log('已產生', out, '(實際寫入的路徑:', res.path + ')');
+} finally {
+  rmSync(vault, { recursive: true, force: true });
+}

@@ -163,7 +163,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     clearTasks: () => c.clearFinishedTasks(),
     taskVerdict: (taskId: string, verdict: TaskVerdict) => c.setTaskVerdict(String(taskId), verdict ?? null),
     markCase: async (taskId: string) => { if (!cases) throw new Error('判例功能沒有啟用'); return cases.mark(String(taskId)); },
-    draftInfo: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.info(String(id)); },
+    draftInfo: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return { ...drafts.info(String(id)), removing: c.isRemoving(String(id)) }; },
     requestDraft: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.request(String(id)); },
     requestMemoir: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.requestMemoir(String(id)); },
     memoryVault: () => ({ dir: vault?.dir ?? '', entries: vault?.list() ?? [] }),
@@ -448,11 +448,22 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       backendLabel: b => BACKEND_LABEL[b],
       // 回憶錄請求是否還在進行:提示還在佇列,或節點正在跑回憶錄的回合
       memoirActive: id => c.memoirQueuedId(id) !== null || c.memoirRunning(id),
+      // 記憶草稿請求是否還在進行:草稿提示還在佇列,或節點正在跑草稿的回合
+      draftActive: id => c.draftActive(id),
     });
     const draftSvc = drafts;
+    // 上次關閉時還掛著的請求:回合一定已經不在了,清掉(提示還在佇列、重開後才送出的保留)
+    draftSvc.resetOnStartup();
     interop.memoryDraft = (callerId, args) => draftSvc.submit(callerId, args);
     // 回憶錄:刪除節點前選擇寫回憶錄時,核心透過這個介面請節點寫一章並等它提交
-    c.attachMemoir({ request: id => draftSvc.requestMemoir(id, { farewell: true }), pending: id => draftSvc.hasPendingMemoir(id), cancel: id => draftSvc.cancelMemoir(id) });
+    c.attachMemoir({
+      request: id => draftSvc.requestMemoir(id, { farewell: true }),
+      pending: id => draftSvc.hasPendingMemoir(id),
+      cancel: id => draftSvc.cancelMemoir(id),
+      submittedAt: id => draftSvc.memoirSubmittedAt(id),
+      turnEnded: (id, title, origin) => draftSvc.turnEnded(id, title, origin),
+      forget: id => draftSvc.forget(id),
+    });
     // 協作流程:執行器在主行程,節點用 step_report 回報;流程更新只推給桌面畫面(不經 remotePush)
     flows = new FlowService({
       dataDir: dir,

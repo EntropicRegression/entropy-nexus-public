@@ -728,7 +728,8 @@ export interface NexusApi {
   /** 「記下這個解法」:請承辦節點把這個已結束的任務寫成判例(狀態先是未確認)。回傳給使用者看的說明。 */
   markCase(taskId: string): Promise<string>;
   /** 對話草稿按鈕要用的資訊:上次儲存到哪一筆事件(seq)、累積多少字才顯示按鈕。 */
-  draftInfo(id: string): Promise<{ lastSeq: number; threshold: number }>;
+  /** memoirBusy:回憶錄請求還在進行;removing:節點正在刪除流程中(兩者都由主控台判斷,對話視窗關掉再開也一樣)。 */
+  draftInfo(id: string): Promise<{ lastSeq: number; threshold: number; memoirBusy: boolean; removing: boolean }>;
   /** 「儲存這段記憶」:請這個節點把上次儲存之後的對話整理成草稿(狀態未確認),回傳給使用者看的說明。 */
   requestDraft(id: string): Promise<string>;
   /** 「寫回憶錄」:請這個節點用第一人稱寫一章回憶錄(狀態未確認;每個節點每天最多 3 份),回傳給使用者看的說明。 */

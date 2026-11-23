@@ -137,6 +137,14 @@ test('本機路徑遮罩:各種絕對路徑整段隱藏', () => {
     ['改了 C:\\Users\\bob\\a.md.', `改了 ${H}.`],
     ['路徑 "C:\\Users\\bob\\a.md",再說', `路徑 "${H}",再說`],
     ['路徑 C:\\Users\\bob\\a.md,再說', `路徑 ${H},再說`],
+    // 其他常見的 Unix 絕對路徑(2026-11-23 補)
+    ['暫存在 /tmp/bob-build/out.log 裡', `暫存在 ${H} 裡`],
+    ['裝在 /opt/bob/app/bin 下', `裝在 ${H} 下`],
+    ['紀錄 /var/log/bob/x.log 看', `紀錄 ${H} 看`],
+    ['root 的 /root/.ssh/config 別動', `root 的 ${H} 別動`],
+    ['磁碟 /Volumes/BobDisk/a.md 上', `磁碟 ${H} 上`],
+    ['mac 暫存 /private/var/folders/xy/bob/T/a 裡', `mac 暫存 ${H} 裡`],
+    ['服務 /srv/bob/www 下', `服務 ${H} 下`],
   ];
   for (const [src, want] of cases) assert.equal(maskLocalPaths(src).text, want, src);
   assert.equal(maskLocalPaths('C:\\a\\b 和 D:\\c\\d').masked, 2);
@@ -155,7 +163,7 @@ test('本機路徑遮罩:資料夾名稱含空白,使用者名稱一定被遮掉
 });
 
 test('相對路徑、網址、一般文字不動', () => {
-  for (const s of ['改 src/main/x.ts 與 docs\\a.md', '見 ./home/x 與 ../Users/y', 'https://example.com/home/a 與 http://x/Users/a', 'src/home/a.ts', '時間 12:30 比數 3:1', 'a:b']) {
+  for (const s of ['/etc/hosts 與 /usr/bin/env 是系統路徑', '相對 src/tmp/a.ts 與 ./opt/x、build/var/y', 'https://x.example/tmp/a 與 http://x/opt/b', '只有 /tmp 或 /opt/ 沒有內容', '改 src/main/x.ts 與 docs\\a.md', '見 ./home/x 與 ../Users/y', 'https://example.com/home/a 與 http://x/Users/a', 'src/home/a.ts', '時間 12:30 比數 3:1', 'a:b']) {
     assert.deepEqual(maskLocalPaths(s), { text: s, masked: 0 }, s);
   }
 });

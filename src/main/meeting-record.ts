@@ -84,6 +84,9 @@ const PREFIX = new RegExp([
   // 斜線 UNC://伺服器/分享(前面不能是冒號,免得吃到 https://)
   '(?<![\\w.~/\\\\:-])//[\\w.$-]+/+(?=[^\\s/])',
   '(?<![\\w.~/\\\\-])/(?:Users|home)/+',
+  // 其他常見的 Unix 絕對路徑:暫存與安裝位置、root 的家目錄、macOS 的外接磁碟與 /private(/private/var/folders/… 是使用者暫存)。
+  // 後面一定要接內容。/etc、/usr 是公開的系統路徑(常在說明裡提到 /etc/hosts、/usr/bin),不含使用者資料,不遮,免得誤遮
+  '(?<![\\w.~/\\\\-])/(?:tmp|opt|var|root|srv|Volumes|private)/+(?=[^\\s/])',
   '(?<![\\w.~/\\\\-])/(?:mnt/)?[A-Za-z]/+(?=[^\\s/])',
 ].join('|'), 'gi');
 const STOP = /[\s\\/:*?"<>|`。！？「」『』）、]/;

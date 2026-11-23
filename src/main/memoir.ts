@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { MEMOIR_PROMPT_LEAD } from '../shared/memory-draft.ts';
+import { MEMOIR_PROMPT_LEAD, isDraftPrompt } from '../shared/memory-draft.ts';
 import { fileName, folderName, maskLocalPaths } from './meeting-record.ts';
 import { maskSecrets, safeName, writeMemory, type MetaValue, type WriteResult } from './memory-write.ts';
 
@@ -13,6 +13,7 @@ import { maskSecrets, safeName, writeMemory, type MetaValue, type WriteResult } 
  * - 檔頭只有單行欄位:種類、節點ID、節點、後台、標題、涵蓋期間、範圍、更新時間、狀態;字串值一律用雙引號(writeMemory 的 quoteStrings)。
  *   節點ID、節點、後台由主控台依提交者身分填寫,節點在參數裡填的一律忽略(不能替別的節點寫)。
  * - 正文必須有「## 來源」與「## 不確定之處」兩個章節,內容不能是空的(可以寫「無」);缺了或空的就拒收,請節點補上重寫。
+ *   標題寬鬆接受冒號、粗體、結尾 # 等寫法,寫進檔案時統一改成標準的「## 來源」「## 不確定之處」(normalizeSectionHeadings)。
  * - 涵蓋期間:ISO 日期區間「YYYY-MM-DD/YYYY-MM-DD」或只寫起日;日期要合法、起日不晚於迄日。
  * - 標題與正文裡的本機絕對路徑換成「[本機路徑已隱藏]」(maskLocalPaths);金鑰由 writeMemory 遮罩,檔名用的標題這裡先遮一次。
  * - 狀態一律「未確認」;只有使用者在記憶庫管理 app 改成「已確認」後,節點才查得到(memory-tools 的 statusVisible)。
@@ -89,48 +90,116 @@ function h2Name(line: string): string | null {
 /** 一級或二級標題(到這裡為止算前一個章節的內容);三級以下的標題算章節內容。 */
 const isH1orH2 = (line: string) => /^ {0,3}#{1,2}(?:[ \t]|$)/.test(line);
 
+/** 同一行裡已經關閉的 HTML 註解(<!-- … -->)拿掉;行內程式碼(`…`)裡的註解記號不算。沒有關閉的 <!-- 原樣保留。 */
+function stripInlineComments(line: string): string {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '`') {
+      // 行內程式碼:由一樣長的反引號串關閉;找不到關閉的就當一般文字
+      let n = 1;
+      while (line[i + n] === '`') n++;
+      let close = -1;
+      for (let j = i + n; j < line.length;) {
+        if (line[j] !== '`') { j++; continue; }
+        let k = j;
+        while (line[k] === '`') k++;
+        if (k - j === n) { close = j; break; }
+        j = k;
+      }
+      if (close < 0) { out += '`'.repeat(n); i += n; continue; }
+      out += line.slice(i, close + n);
+      i = close + n;
+      continue;
+    }
+    if (line.startsWith('<!--', i)) {
+      const e = line.indexOf('-->', i + 4);
+      if (e >= 0) { i = e + 3; continue; }
+    }
+    out += line[i];
+    i++;
+  }
+  return out;
+}
+
+/** HTML 區塊第 1 類(CommonMark):<pre>、<script>、<style>、<textarea> 開頭,到同類的結束標籤那一行為止,裡面的 ## 不算標題。 */
+const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?:[ \t>]|$)/i;
+
+/** 一行的分類結果:kept 是拿掉註解後的可見內容;h2 是二級標題的名稱(不是就是 null);h1 是不屬於固定寫法的一級或二級標題(結束目前的章節)。 */
+interface ScannedLine { raw: string; kept: string; h2: string | null; h1: boolean }
+
 /**
- * 檢查固定章節:missing 是缺少的章節,empty 是有標題但內容是空的章節(內容可以寫「無」,不能空白)。
- * 程式碼圍欄依 CommonMark 配對(``` 只能由至少一樣長的 ``` 關閉,~~~ 同理,前面最多 3 個空白),圍欄內的 ## 不算標題;
- * HTML 註解(<!-- … -->,可以跨行)裡的內容不算標題,也不算章節內容。同一個章節出現多次時,內容合起來算。
+ * 逐行掃描正文,判斷哪些行是真的二級標題(依 CommonMark):
+ * - 程式碼圍欄依 CommonMark 配對(``` 只能由至少一樣長的 ``` 關閉,~~~ 同理,前面最多 3 個空白),圍欄內的 ## 不算標題(算內容)。
+ * - <pre>、<script>、<style>、<textarea> 區塊(到結束標籤那一行)比照圍欄:裡面的 ## 不算標題(算內容)。
+ * - HTML 註解:以 <!-- 開頭(前面最多 3 個空白)的行開始註解區塊,到含 --> 的那一行為止;區塊裡的內容不算標題也不算內容,
+ *   --> 之後的文字算內容但不算標題。同一行就關閉的 <!-- … --> 直接拿掉;行中間出現、沒有在同一行關閉的 <!--(例如行內程式碼裡寫的)當一般文字。
  */
-export function checkSections(body: string): { missing: string[]; empty: string[] } {
-  const content = new Map<string, string>();
-  let current: string | null = null;
+function scanLines(body: string): ScannedLine[] {
+  const out: ScannedLine[] = [];
   let fence: { ch: string; len: number } | null = null;
+  let rawHtml: string | null = null;
   let inComment = false;
-  const add = (text: string) => { if (current !== null) content.set(current, `${content.get(current) ?? ''}${text}\n`); };
   for (const raw of body.split(/\r?\n/)) {
+    const plain = (kept: string): ScannedLine => ({ raw, kept, h2: null, h1: false });
     if (fence) {
       const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(raw);
       if (close && close[1][0] === fence.ch && close[1].length >= fence.len) fence = null;
-      add(raw);
+      out.push(plain(raw));
       continue;
     }
-    // 去掉 HTML 註解的部分,剩下的才是可見內容
-    let rest = raw, kept = '';
-    while (rest) {
-      if (inComment) {
-        const e = rest.indexOf('-->');
-        if (e < 0) rest = '';
-        else { rest = rest.slice(e + 3); inComment = false; }
-      } else {
-        const st = rest.indexOf('<!--');
-        if (st < 0) { kept += rest; rest = ''; }
-        else { kept += rest.slice(0, st); rest = rest.slice(st + 4); inComment = true; }
-      }
+    if (rawHtml) {
+      if (raw.toLowerCase().includes(`</${rawHtml}>`)) rawHtml = null;
+      out.push(plain(raw));
+      continue;
     }
+    if (inComment) {
+      const e = raw.indexOf('-->');
+      if (e < 0) { out.push(plain('')); continue; }
+      inComment = false;
+      out.push(plain(stripInlineComments(raw.slice(e + 3))));
+      continue;
+    }
+    // 註解區塊的開頭:同一行就關閉的,關閉後的文字照樣當內容(但這一行不算標題)
+    const cm = /^ {0,3}<!--/.exec(raw);
+    if (cm) {
+      const e = raw.indexOf('-->', cm[0].length);
+      if (e < 0) { inComment = true; out.push(plain('')); continue; }
+      out.push(plain(stripInlineComments(raw.slice(e + 3))));
+      continue;
+    }
+    const kept = stripInlineComments(raw);
     // 反引號圍欄的資訊字串不能含反引號(CommonMark),否則不算圍欄
     const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(kept);
     if (open && !(open[1][0] === '`' && open[2].includes('`'))) {
       fence = { ch: open[1][0], len: open[1].length };
-      add(kept);
+      out.push(plain(kept));
+      continue;
+    }
+    const html = RAW_HTML_OPEN.exec(raw);
+    if (html) {
+      const tag = html[1].toLowerCase();
+      if (!raw.toLowerCase().includes(`</${tag}>`, html[0].length)) rawHtml = tag;
+      out.push(plain(raw));
       continue;
     }
     const name = h2Name(kept);
-    if (name !== null) { current = name; if (!content.has(name)) content.set(name, ''); continue; }
-    if (isH1orH2(kept)) { current = null; continue; }
-    add(kept);
+    out.push({ raw, kept, h2: name, h1: name === null && isH1orH2(kept) });
+  }
+  return out;
+}
+
+/**
+ * 檢查固定章節:missing 是缺少的章節,empty 是有標題但內容是空的章節(內容可以寫「無」,不能空白)。
+ * 哪些行算標題見 scanLines(圍欄、<pre> 等區塊、HTML 註解裡的 ## 不算)。同一個章節出現多次時,內容合起來算。
+ */
+export function checkSections(body: string): { missing: string[]; empty: string[] } {
+  const content = new Map<string, string>();
+  let current: string | null = null;
+  for (const l of scanLines(body)) {
+    if (l.h2 !== null) { current = l.h2; if (!content.has(l.h2)) content.set(l.h2, ''); continue; }
+    if (l.h1) { current = null; continue; }
+    if (current !== null) content.set(current, `${content.get(current) ?? ''}${l.kept}\n`);
   }
   const missing = MEMOIR_SECTIONS.filter(s => !content.has(s));
   const empty = MEMOIR_SECTIONS.filter(s => content.has(s) && !content.get(s)!.trim());
@@ -139,6 +208,24 @@ export function checkSections(body: string): { missing: string[]; empty: string[
 
 /** 正文缺了哪些固定章節(`## 來源`、`## 不確定之處`)。 */
 export function missingSections(body: string): string[] { return checkSections(body).missing; }
+
+/**
+ * 寫入前把固定章節的標題行改成標準寫法(`## 來源`、`## 不確定之處`):checkSections 寬鬆接受的
+ * `## 來源:`、`## **來源**`、結尾 `#`、前置空白等寫法,寫進檔案時一律統一,寶庫與讀檔的節點不必再猜。
+ * 只改這兩個章節的標題行本身(換行符號保留),其他內容、圍欄與註解裡的 ## 都不動。
+ */
+export function normalizeSectionHeadings(body: string): string {
+  const scanned = scanLines(body);
+  const lines = body.split('\n');
+  if (lines.length !== scanned.length) return body;
+  const fixed = new Set<string>(MEMOIR_SECTIONS);
+  return lines.map((line, i) => {
+    const name = scanned[i].h2;
+    if (name === null || !fixed.has(name)) return line;
+    const cr = line.endsWith('\r') ? '\r' : '';
+    return `## ${name}${cr}`;
+  }).join('\n');
+}
 
 export interface MemoirSubmission { title: string; content: string; period: string }
 
@@ -178,7 +265,7 @@ export interface MemoirRecord {
 /** 純函式:組成回憶錄的檔頭、正文與路徑。 */
 export function buildMemoir(input: MemoirInput): MemoirRecord {
   const t = maskLocalPaths(input.title);
-  const b = maskLocalPaths(input.content);
+  const b = maskLocalPaths(normalizeSectionHeadings(input.content));
   const title = cleanTitle(t.text) || '未命名';
   const nodeName = input.nodeName.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim() || input.nodeId;
   const meta: Record<string, MetaValue> = {
@@ -214,6 +301,18 @@ export function writeMemoir(vaultDir: string, input: MemoirInput): WriteResult &
 /** 這段文字(佇列項目的內容、任務標題)是不是主控台的回憶錄請求。 */
 export const isMemoirPrompt = (text: string): boolean => String(text ?? '').trimStart().startsWith(MEMOIR_PROMPT_LEAD);
 
+/** 佇列項目或任務的來源(source 與交辦者 from)。 */
+export interface PromptOrigin { source?: string; from?: unknown }
+/**
+ * 是不是主控台自己送的請求:來源是 draft,而且沒有交辦者(from)。ask_node(interop)、會議、協作流程的交辦都帶 from,
+ * 就算內容以回憶錄或草稿請求的開頭寫成,也不算請求的回合(不能被別的節點假造成「回憶錄回合進行中」)。
+ */
+export const fromConsole = (o: PromptOrigin | null | undefined): boolean => !!o && o.source === 'draft' && !o.from;
+/** 主控台送出的回憶錄請求(提示開頭是回憶錄請求,來源是主控台自己)。 */
+export const isMemoirRequest = (text: string, o: PromptOrigin | null | undefined): boolean => fromConsole(o) && isMemoirPrompt(text);
+/** 主控台送出的記憶草稿請求(提示開頭是草稿請求,來源是主控台自己)。 */
+export const isDraftRequest = (text: string, o: PromptOrigin | null | undefined): boolean => fromConsole(o) && isDraftPrompt(text);
+
 /** 給節點的回憶錄請求。farewell:刪除節點前的最後一章。 */
 export function formatMemoirPrompt(input: { nodeName: string; today: string; historyFrom?: string; historyTo?: string; farewell?: boolean }): string {
   const span = input.historyFrom ? `主控台記錄到你的對話期間大約是 ${input.historyFrom}${input.historyTo && input.historyTo !== input.historyFrom ? ` 到 ${input.historyTo}` : ''}。` : '';
@@ -237,6 +336,8 @@ export function formatMemoirPrompt(input: { nodeName: string; today: string; his
 export interface MemoirWaitDeps {
   /** 這個節點有沒有一份等著提交的回憶錄請求。 */
   pending(): boolean;
+  /** 這個節點最近一次成功提交回憶錄的時間(主控台這次執行期間;沒有是 0)。用來分辨「寫好了」和「請求被清掉」。 */
+  submittedAt(): number;
   /** 佇列裡還沒送出的回憶錄提示的 id;沒有是 null。 */
   queuedId(): string | null;
   /** 有沒有正在進行的回憶錄回合(任務標題是回憶錄請求、還沒結束)。 */
@@ -252,32 +353,46 @@ export interface MemoirWaitDeps {
   now(): number;
   sleep(ms: number): Promise<void>;
   timeoutMs: number;
+  /** 逾時中斷回合後,最多再等這麼久讓回合真的結束(節點回到待命,之後的工作總結才寫得成);預設 15 秒。 */
+  settleMs?: number;
 }
 
 /**
  * 刪除節點前請它寫回憶錄,等到寫完(或這個回合結束、逾時),回傳給使用者看的一句說明。
  * - 已經有回憶錄請求在進行(使用者先按過「寫回憶錄」,提示還在佇列或節點正在寫):不重發,等那一份。
- * - 請求掛著但沒有對應的佇列項目或進行中的回合(例如上一份不合格後節點就停了):重發,覆蓋舊請求。
- * - 回合結束了卻沒有提交就取消請求;逾時就取消請求、拿掉佇列裡的提示、中斷正在寫的回合。都不擋刪除。
+ * - 沒有在進行的回憶錄請求(包括請求掛著、但上一份不合格後節點就停了):重發,覆蓋舊請求。
+ * - 寫好了(有新的成功提交)就等這個回合結束再回報,節點回到待命後才接著寫工作總結。
+ * - 回合結束了卻沒有提交就取消請求;逾時就取消請求、拿掉佇列裡的提示、中斷正在寫的回合,並有上限地等回合真的結束。
+ *   逾時時如果其實已經提交成功,照實回報「已寫好」。都不擋刪除。
  */
 export async function waitForMemoir(d: MemoirWaitDeps): Promise<string> {
   const t0 = d.now();
+  const before = d.submittedAt();
   const active = () => d.queuedId() !== null || d.running();
-  const reuse = d.pending() && active();
+  const reuse = active();
+  // 回憶錄回合已經在跑、請求卻不在了:這一回合裡已經交過(一次請求一份)
+  const already = reuse && !d.pending() && before > 0;
   if (!reuse) {
     try { await d.request(); } catch (e) { return `沒有寫回憶錄:${String((e as Error)?.message ?? e)}`; }
   }
+  const done = () => already || d.submittedAt() !== before;
+  const WROTE = '已寫好回憶錄(未確認,在記憶庫管理 app 確認)。';
   while (d.now() - t0 < d.timeoutMs) {
-    if (!active() && (!d.pending() || d.endedSince(t0))) {
-      if (!d.pending()) return '已寫好回憶錄(未確認,在記憶庫管理 app 確認)。';
-      d.cancel();
-      return '節點沒有提交回憶錄。';
+    if (!active()) {
+      if (done()) return WROTE;
+      if (!d.pending() || d.endedSince(t0)) { d.cancel(); return '節點沒有提交回憶錄。'; }
     }
     await d.sleep(250);
   }
+  const wrote = done();
   d.cancel();
   const q = d.queuedId();
   if (q) d.cancelQueued(q);
-  if (d.running()) d.interrupt();
-  return '節點沒有在時限內寫完回憶錄。';
+  if (d.running()) {
+    d.interrupt();
+    const t1 = d.now();
+    const settle = d.settleMs ?? 15000;
+    while (d.running() && d.now() - t1 < settle) await d.sleep(250);
+  }
+  return wrote ? `${WROTE.slice(0, -1)};回合超過時限,已中斷。` : '節點沒有在時限內寫完回憶錄。';
 }

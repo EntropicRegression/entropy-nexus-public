@@ -94,7 +94,7 @@ test('請求:累積不夠不能請求;夠了才排進節點佇列(來源 draft),
   assert.equal(s.requests.length, 1);
   assert.equal(s.requests[0].agentId, 'n1');
   assert.ok(s.requests[0].text.startsWith('(主控台:記憶草稿請求。') && s.requests[0].text.includes('memory_draft') && s.requests[0].text.includes('請把逾時改成 UTC'));
-  assert.deepEqual(s.svc.info('n1'), { lastSeq: 3, threshold: 100 });
+  assert.deepEqual(s.svc.info('n1'), { lastSeq: 3, threshold: 100, memoirBusy: false });
   // 剛儲存過,累積不夠
   await assert.rejects(s.svc.request('n1'), /累積到 100 字|已經請/);
 });
@@ -180,6 +180,44 @@ test('逾時後可以重新請求(請求超過 30 分鐘沒提交)', async () =>
   s.clock.now = new Date(s.clock.now.getTime() + DRAFT_RETRY_MS + 1000);
   await s.svc.request('n1');
   assert.equal(s.requests.length, 2);
+});
+
+test('請求的有效期:草稿回合結束沒提交就清掉請求,之後不能補交;回合不在時(或超過 30 分鐘)提交被拒並清掉', async () => {
+  const live = { active: true };
+  const s = mkSvc({ draftActive: () => live.active });
+  talk(s);
+  await s.svc.request('n1');
+  assert.ok(s.svc.hasPending('n1'));
+  // 別種回合結束不影響
+  s.svc.turnEnded('n1', '使用者的一般指令', { source: 'desktop' });
+  assert.ok(s.svc.hasPending('n1'));
+  // 草稿回合結束(Core 的 finishTask 呼叫 turnEnded),節點沒有提交
+  live.active = false;
+  const title = s.requests[0].text.replace(/\s+/g, ' ').slice(0, 200);
+  // 別的節點用 ask_node、會議、流程送來同樣開頭的文字:不算草稿回合
+  for (const origin of [{ source: 'interop', from: { id: 'n2', name: '乙號' } }, { source: 'interop', from: { id: 'n2', name: '乙號', meeting: true } }, { source: 'flow', from: { id: 'f', name: '流程' } }]) {
+    s.svc.turnEnded('n1', title, origin);
+    assert.ok(s.svc.hasPending('n1'), JSON.stringify(origin));
+  }
+  s.svc.turnEnded('n1', title, { source: 'draft' });
+  assert.equal(s.svc.hasPending('n1'), false);
+  const err = await s.svc.submit('n1', { kind: 'preference', title: '補交', content: 'c' }).then(() => '', e => String(e.message));
+  assert.match(err, /沒有進行中的記憶草稿請求/);
+  assert.match(err, /請使用者在對話視窗按「儲存這段記憶」/);
+  // 請求還掛著但回合已經不在:拒收並清掉
+  talk(s, 150, 10);
+  live.active = true;
+  await s.svc.request('n1');
+  live.active = false;
+  await assert.rejects(s.svc.submit('n1', { kind: 'preference', title: 't', content: 'c' }), /沒有進行中的記憶草稿請求/);
+  assert.equal(s.svc.hasPending('n1'), false);
+  // 沒有接上 draftActive 時退回用 30 分鐘時限
+  const t = mkSvc();
+  talk(t);
+  await t.svc.request('n1');
+  t.clock.now = new Date(t.clock.now.getTime() + DRAFT_RETRY_MS + 1000);
+  await assert.rejects(t.svc.submit('n1', { kind: 'preference', title: 't', content: 'c' }), /沒有進行中的記憶草稿請求/);
+  assert.equal(t.svc.hasPending('n1'), false);
 });
 
 test('parseDraft:參數檢查與別名', () => {

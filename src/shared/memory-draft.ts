@@ -11,6 +11,8 @@ export const DRAFT_SEGMENT_MAX = 6000;
 export const DRAFT_PROMPT_LEAD = '(主控台:記憶草稿請求。';
 /** 回憶錄請求提示詞的開頭;假資料轉接器靠它認出這是回憶錄請求(以「(主控台」開頭,所以也不算對話內容)。 */
 export const MEMOIR_PROMPT_LEAD = '(主控台:回憶錄請求。';
+/** 這段文字(佇列項目的內容、任務標題)是不是主控台的記憶草稿請求。 */
+export const isDraftPrompt = (text: string): boolean => String(text ?? '').trimStart().startsWith(DRAFT_PROMPT_LEAD);
 
 export interface DraftEvent { type: string; seq: number; role?: string; text?: string; ts?: number }
 export interface DraftLine { seq: number; role: 'user' | 'agent'; text: string }

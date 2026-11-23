@@ -113,9 +113,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
 
   const items = useMemo(() => toItems(events), [events]);
   // 儲存這段記憶:上次儲存之後累積的對話夠多才出現按鈕;按下後記下涵蓋到哪一筆事件,按鈕消失到下一個門檻(進度存在主控台,換視窗不會重來)
-  const [draft, setDraft] = useState<{ lastSeq: number; threshold: number } | null>(null);
+  const [draft, setDraft] = useState<{ lastSeq: number; threshold: number; memoirBusy: boolean; removing: boolean } | null>(null);
   const [draftMsg, setDraftMsg] = useState('');
-  useEffect(() => { setDraft(null); setDraftMsg(''); if (!isSub) void window.nexus.draftInfo(a.id).then(setDraft, () => setDraft(null)); }, [a.id]);
+  const refreshDraft = () => { if (!isSub) void window.nexus.draftInfo(a.id).then(setDraft, () => setDraft(null)); };
+  useEffect(() => { setDraft(null); setDraftMsg(''); refreshDraft(); }, [a.id]);
+  // 回憶錄請求進行中、刪除流程中由主控台判斷:節點狀態或佇列變了就重新問(回合結束後按鈕恢復;對話視窗關掉再開也維持停用)
+  useEffect(() => { refreshDraft(); }, [a.state, a.queued.length]);
   const draftChars = useMemo(() => (draft ? accumulatedChars(events, draft.lastSeq) : 0), [events, draft]);
   const offerDraft = !isSub && !a.terminal && draft !== null && shouldOfferDraft(draftChars, draft.threshold);
   const requestDraft = () => {
@@ -126,7 +129,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   const offerMemoir = !isSub && !a.terminal;
   const requestMemoir = () => {
     setDraftMsg('');
-    window.nexus.requestMemoir(a.id).then(setDraftMsg, e => setDraftMsg(clean(e)));
+    window.nexus.requestMemoir(a.id).then(msg => { setDraftMsg(msg); refreshDraft(); }, e => setDraftMsg(clean(e)));
   };
   useEffect(() => {
     const el = scroller.current;
@@ -252,11 +255,13 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   };
   const removeWith = async (mode: 'summary' | 'stats', memoir: boolean) => {
     setRm('busy');
+    setDraft(d => (d ? { ...d, removing: true } : d));
     setRmNote(memoir
-      ? (mode === 'summary' ? '正在請它寫回憶錄與工作總結,最多各等 3 分鐘…' : '正在請它寫回憶錄,之後歸檔統計,最多等 3 分鐘…')
-      : (mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘…' : '正在歸檔統計…'));
+      // 和主控台的上限一致:回憶錄最多 3 分鐘(逾時中斷後再等回合結束最多 15 秒);工作總結節點自己最多 3 分鐘,寫不出來改請總管代寫再最多 3 分鐘
+      ? (mode === 'summary' ? '正在請它寫回憶錄與工作總結:回憶錄最多等約 3 分鐘,工作總結最多等 3 分鐘(寫不出來改請總管代寫,再等最多 3 分鐘),合計最多約 9 分鐘…' : '正在請它寫回憶錄(最多等約 3 分鐘),之後歸檔統計…')
+      : (mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘(寫不出來改請總管代寫,再等最多 3 分鐘)…' : '正在歸檔統計…'));
     try { await window.nexus.removeAgentArchived(a.id, mode, memoir); }
-    catch (e) { setRmNote(`終止失敗:${String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`); setRm('ask'); }
+    catch (e) { setRmNote(`終止失敗:${String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`); setRm('ask'); refreshDraft(); }
   };
   const forkWhy = !cap?.fork ? `${BACKEND_LABEL[a.backend]} 不支援分支對話。` : !a.sessionId ? '這個節點還沒有 session(先對話一次),沒有可以分支的內容。' : '';
   const lastAgentSeq = items.findLast(i => i.kind === 'agent')?.seq ?? -1;
@@ -452,8 +457,8 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
         )}
         {(offerDraft || offerMemoir || draftMsg) && (
           <div className="dlg-draft need-op">
-            {offerDraft && <button className="ghost need-op" disabled={offline || rm === 'busy'} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
-            {offerMemoir && <button className="ghost need-op" disabled={offline || rm === 'busy'} onClick={requestMemoir} title="請這個節點用第一人稱寫一章回憶錄(未確認,每天最多 3 份),之後在記憶庫管理 app 確認">寫回憶錄</button>}
+            {offerDraft && <button className="ghost need-op" disabled={offline || rm === 'busy' || !!draft?.removing} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
+            {offerMemoir && <button className="ghost need-op" disabled={offline || rm === 'busy' || !!draft?.removing || !!draft?.memoirBusy} onClick={requestMemoir} title="請這個節點用第一人稱寫一章回憶錄(未確認,每天最多 3 份),之後在記憶庫管理 app 確認">寫回憶錄</button>}
             {draftMsg && <span className="muted">{draftMsg}</span>}
           </div>
         )}
