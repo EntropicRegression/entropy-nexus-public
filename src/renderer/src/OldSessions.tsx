@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BACKEND_LABEL, type Backend, type Capability, type OldSession } from '../../shared/types';
+import { BACKEND_LABEL, needsRestoreOf, type Backend, type Capability, type OldSession } from '../../shared/types';
 import { ForkPanel } from './Fork';
 import { BACKEND_COLOR, hex } from './theme';
 
@@ -29,6 +29,8 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
   const [busy, setBusy] = useState('');
   // 可能正在別處使用的對話,要按第二次才開啟
   const [confirm, setConfirm] = useState('');
+  // 對話檔已被工具清掉、有存點時,問要不要還原
+  const [restoreAsk, setRestoreAsk] = useState<{ s: OldSession; text: string } | null>(null);
   // 分支:新節點有自己的 session,不佔用這個舊 session;只有支援的後台可以用
   const [forking, setForking] = useState('');
   const [caps, setCaps] = useState<Capability[]>([]);
@@ -56,15 +58,20 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
     return c;
   }, [list]);
 
-  const open = async (s: OldSession) => {
-    if (s.maybeActive && confirm !== key(s)) { setConfirm(key(s)); return; }
+  const open = async (s: OldSession, restore = false) => {
+    if (!restore && s.maybeActive && confirm !== key(s)) { setConfirm(key(s)); return; }
     setBusy(key(s));
     setError('');
+    setRestoreAsk(null);
     try {
-      const agent = await window.nexus.openOldSession({ backend: s.backend, sessionId: s.sessionId, cwd: s.cwd, agentId: s.agentId, name: (names[key(s)] ?? s.name).trim(), character: s.character, model: s.model });
+      const agent = await window.nexus.openOldSession({ backend: s.backend, sessionId: s.sessionId, cwd: s.cwd, agentId: s.agentId, name: (names[key(s)] ?? s.name).trim(), character: s.character, model: s.model, ...(restore ? { restoreFromSavepoint: true } : {}) });
       onOpened(agent.id);
     } catch (e) {
-      setError(String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+      const msg = String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      // 原本的對話檔已被工具清掉:先問再從存點還原
+      const need = needsRestoreOf(msg);
+      if (need) setRestoreAsk({ s, text: `「${s.name}」的對話已經被 ${need.後台} 清除了。存點建立於 ${need.時間.replace('T', ' ').slice(0, 16)}(${(need.大小 / 1024 / 1024).toFixed(1)} MB),要還原並接回嗎?會把對話檔放回原本的位置,不覆蓋任何現有檔案。` });
+      else setError(msg);
       setBusy('');
     }
   };
@@ -86,6 +93,13 @@ export function OldSessions({ onOpened, onClose }: { onOpened: (agentId: string)
         <button className="ghost" onClick={onClose} aria-label="關閉">✕</button>
       </header>
       {error && <div className="rv-note err">{error}</div>}
+      {restoreAsk && (
+        <div className="rv-note os-restore">
+          {restoreAsk.text}
+          <button className="primary" disabled={busy !== ''} onClick={() => void open(restoreAsk.s, true)}>還原並接回</button>
+          <button className="ghost" onClick={() => setRestoreAsk(null)}>取消</button>
+        </div>
+      )}
       <div className="os-list">
         {list === null && !error && <div className="empty">讀取三家 CLI 的舊 session 中…</div>}
         {list !== null && shown.length === 0 && <div className="empty">沒有符合的舊 session。</div>}

@@ -47,6 +47,7 @@ const SUITES = [
   { name: 'memoir-unit', group: 'unit', min: 0.1, ...node('tests/memoir.test.mjs') },
   { name: 'memory-tools', group: 'unit', min: 0.2, ...node('tests/memory-tools.test.mjs') },
   { name: 'memory-archive-unit', group: 'unit', min: 0.1, ...node('tests/memory-archive.test.mjs') },
+  { name: 'session-savepoint', group: 'unit', min: 0.1, ...node('tests/session-savepoint.test.mjs') },
   { name: 'vault-integration', group: 'unit', min: 0.2, ...node('tests/vault-integration.test.mjs') },
   { name: 'project', group: 'unit', min: 0.3, ...node('tests/project.test.mjs') },
   { name: 'collab-unit', group: 'unit', min: 0.1, ...node('tests/collab.test.mjs') },
@@ -103,6 +104,7 @@ const SUITES = [
   { name: 'chief-real', group: 'real', min: 45, timeout: 80, ...bash('tests/chief-real.sh') },
   { name: 'bg-subagent', group: 'real', min: 5, ...bash('tests/bg-subagent.sh') },
   { name: 'agy-attach', group: 'real', min: 5, ...bash('tests/agy-attach.sh') },
+  { name: 'savepoint-real', group: 'real', min: 4, timeout: 30, cmd: 'bash', args: ['tests/savepoint-real.sh', 'claude', 'haiku'] },
   { name: 'stage7', group: 'real', min: 5, ...bash('tests/stage7.sh') },
   { name: 'kill-test', group: 'real', min: 3, ...bash('tests/kill-test.sh') },
 ];

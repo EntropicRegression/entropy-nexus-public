@@ -117,6 +117,36 @@ function saveRegistry(vault: string, reg: Record<string, WriteRecord>): void {
   renameSync(tmp, join(vault, REGISTRY));
 }
 
+/**
+ * 在主控台自己寫的記憶檔的屬性區塊最後加一個欄位(已有同名欄位就不動),其餘內容一字不改。
+ * 檔案被別人改過(editedByOthers)、沒有屬性區塊或讀寫失敗時不寫,回傳 false。寫完更新登記,下次寫入仍視為主控台寫的。
+ */
+export function addFrontMatterField(vault: string, rel: string, key: string, value: string): boolean {
+  const relPath = rel.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!relPath.endsWith('.md') || relPath.split('/').some(p => p === '..' || p === '') || !/^[^\s:#]+$/.test(key)) return false;
+  const abs = join(vault, ...relPath.split('/'));
+  try {
+    if (!existsSync(abs) || editedByOthers(vault, relPath)) return false;
+    const text = readFileSync(abs, 'utf8');
+    const m = /^(﻿?---\r?\n)([\s\S]*?)(\r?\n---[\t ]*(?:\r?\n|$))/.exec(text);
+    if (!m) return false;
+    if (m[2].split(/\r?\n/).some(l => l.startsWith(`${key}:`))) return false;
+    const v = maskSecrets(value).text;
+    const nl = m[1].endsWith('\r\n') ? '\r\n' : '\n';
+    const next = m[1] + m[2] + `${nl}${key}: ${needsQuote(v) ? quote(v) : v}` + m[3] + text.slice(m[0].length);
+    const tmp = `${abs}.tmp`;
+    writeFileSync(tmp, next);
+    renameSync(tmp, abs);
+    const st = statSync(abs);
+    const reg = readRegistry(vault);
+    reg[relPath] = { mtime: Math.floor(st.mtimeMs), size: st.size };
+    saveRegistry(vault, reg);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 這個檔案在 agent 上次寫入之後,有沒有被別人(使用者)改過;agent 沒寫過的既有檔案也算別人的。 */
 export function editedByOthers(vault: string, rel: string): boolean {
   const abs = join(vault, rel);

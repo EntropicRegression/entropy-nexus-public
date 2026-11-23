@@ -27,12 +27,26 @@ export function parseWakeUrl(raw: string): WakeParse {
 export interface RemovedNode { id: string; name: string; backend: Backend; sessionId: string | null; cwd: string; character: string; model: string }
 
 /**
- * 可不可以接回:主控台資料庫的已終止節點清單裡找得到(不在面板上)、有 sessionId、工作目錄還在。
- * 統計檔的「可接回」與喚醒網址(wakeTargetOf)用同一個判斷,寶庫顯示喚醒按鈕的節點,喚醒時一定接得回。
+ * 接回的基本條件:主控台資料庫的已終止節點清單裡找得到(不在面板上)、有 sessionId、工作目錄還在。
+ * 統計檔的「可接回」與喚醒網址(wakeTargetOf)再加上原檔或存點的條件,兩邊共用 canWake;寶庫顯示喚醒按鈕的節點,喚醒時一定接得回。
  * 只存在於封存檔的節點(資料庫沒有這一筆)不算:接回會變成新的節點 ID。
  */
 export function canResume(node: { sessionId: string | null; cwd: string }, inRemovedList: boolean, dirExists: (p: string) => boolean): boolean {
   return inRemovedList && !!node.sessionId && !!node.cwd && dirExists(node.cwd);
+}
+
+/**
+ * 主控台能不能從存點還原(session 存點里程碑 S3 起是 true)。false 時統計檔的「可接回」與喚醒網址都只看原檔;
+ * true 時原檔被清掉、但有可還原的存點也算「點喚醒會有結果」(接回時先問再還原,見 core.ts 的 openOldSession)。
+ */
+export const SAVEPOINT_RESTORE_SUPPORTED = true;
+
+/**
+ * 點喚醒會有結果(統計檔的「可接回」與喚醒網址共用):canResume 成立,而且工具資料夾裡還有這段對話的主檔
+ * (sessionOk 為 undefined 或 null 表示沒檢查,視為還在),或有可還原的存點(還原支援之後才算)。
+ */
+export function canWake(node: { sessionId: string | null; cwd: string }, inRemovedList: boolean, dirExists: (p: string) => boolean, sessionOk?: boolean | null, restorable = false): boolean {
+  return canResume(node, inRemovedList, dirExists) && (sessionOk !== false || (SAVEPOINT_RESTORE_SUPPORTED && restorable));
 }
 
 export type WakeTarget =
@@ -42,12 +56,20 @@ export type WakeTarget =
   | null;
 
 /** 喚醒網址的對象:在面板上、可以接回、找得到但接不回(附原因)、或找不到(null)。 */
-export function wakeTargetOf(id: string, live: ReadonlyArray<{ id: string; name: string; parentId: string | null }>, removed: readonly RemovedNode[], dirExists: (p: string) => boolean): WakeTarget {
+export function wakeTargetOf(
+  id: string, live: ReadonlyArray<{ id: string; name: string; parentId: string | null }>, removed: readonly RemovedNode[], dirExists: (p: string) => boolean,
+  /** 工具資料夾裡還有沒有這段對話的主檔;沒提供時不檢查。 */
+  sessionOk?: (backend: Backend, sessionId: string) => boolean,
+  /** 這個節點有沒有可還原的存點(還原支援之後才用得到)。 */
+  restorable?: (nodeId: string) => boolean,
+): WakeTarget {
   const on = live.find(a => a.id === id && !a.parentId);
   if (on) return { kind: 'board', name: on.name };
   const a = removed.find(x => x.id === id);
   if (!a) return null;
   if (!canResume(a, true, dirExists)) return { kind: 'unavailable', name: a.name, reason: !a.sessionId ? '沒有可以接回的對話' : '原本的工作目錄已經不存在' };
+  const ok = a.sessionId && sessionOk ? sessionOk(a.backend, a.sessionId) : undefined;
+  if (!canWake(a, true, dirExists, ok, restorable?.(a.id) ?? false)) return { kind: 'unavailable', name: a.name, reason: '這段對話已經被工具清除了,沒有辦法接回' };
   return { kind: 'removed', name: a.name, input: { backend: a.backend, sessionId: a.sessionId!, cwd: a.cwd, agentId: a.id, name: a.name, character: a.character, model: a.model } };
 }
 

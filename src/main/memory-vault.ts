@@ -51,10 +51,15 @@ const README_V3 = README_V2
     + '節點會透過記憶工具寫入(草稿與判例先標成「未確認」,在管理 app 確認後 agent 才查得到);你自己放進來的檔案也會被索引。\n');
 /** 第四版說明檔:子資料夾清單補上 meetings(會議紀錄)。 */
 const README_V4 = README_V3.replace('  preferences  使用者偏好\n', '  preferences  使用者偏好\n  meetings     會議紀錄(每場會議結束後自動寫入,每個專案一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n');
-/** 目前的說明檔:子資料夾清單再補上 memoirs(回憶錄)。 */
-export const README = README_V4.replace('\n\n以底線 _ 開頭的資料夾', '\n  memoirs      回憶錄(節點用第一人稱寫的經歷回顧,每個節點一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n\n以底線 _ 開頭的資料夾');
+/** 第五版說明檔:子資料夾清單再補上 memoirs(回憶錄)。 */
+const README_V5 = README_V4.replace('\n\n以底線 _ 開頭的資料夾', '\n  memoirs      回憶錄(節點用第一人稱寫的經歷回顧,每個節點一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n\n以底線 _ 開頭的資料夾');
+/** 目前的說明檔:附屬資料再說明 nodes/封存/_存點/(終止節點時封存的原始對話)。 */
+export const README = README_V5.replace('不會被索引,記憶庫管理 app 也應忽略。\n',
+  '不會被索引,記憶庫管理 app 也應忽略。\n'
+  + 'nodes/封存/_存點/ 是終止節點時封存的完整原始對話(各家工具的 session 檔),用來在工具清掉對話後還原、接回節點;'
+  + '內容沒有遮罩,記憶庫被同步或備份到別處時會跟著過去。可以刪除,刪了就不能還原那段對話。\n');
 /** 主控台寫過的舊版說明檔;內容和其中一版完全相同(使用者沒改過)才換成新版。 */
-const OLD_READMES = [README_V1, README_V2, README_V3, README_V4];
+const OLD_READMES = [README_V1, README_V2, README_V3, README_V4, README_V5];
 
 /** 說明檔要寫成什麼:沒有檔案就寫新版;內容是主控台寫過的舊版(使用者沒改過)就換成新版;改過或已是新版回傳 null(不動)。 */
 export function readmeUpdate(existing: string | null): string | null {

@@ -6,7 +6,7 @@ import { computeNodeStats, isWorkTask } from '../shared/node-stats.ts';
 import { parseFrontMatter } from './memory-vault.ts';
 import type { CharacterImages } from './vault-images.ts';
 import { wasChief, type ChiefTerm } from './chief-tenure.ts';
-import { canResume } from './wake.ts';
+import { canResume, canWake } from './wake.ts';
 
 /**
  * .nexus-stats.json:寫在記憶庫根目錄、給記憶庫管理 app 讀的節點統計(設計見 docs/記憶設計討論.md「第二輪定案」10、11)。
@@ -54,7 +54,14 @@ export interface StatsInput {
   chiefTerms?: ChiefTerm[];
   /** 專案根目錄是 git 版本庫還是一般資料夾;任務沒記下時才會問(路徑不存在算資料夾)。 */
   projectKind?(id: string): 'git' | '資料夾';
+  /** 節點的對話存點(說明檔讀得到的,新的在前);沒提供時每個節點都是空清單。見 session-savepoint.ts。 */
+  savepoints?(nodeId: string): SavepointSummary[];
+  /** 工具資料夾裡還有沒有這段對話的主檔(Claude、Codex 的 jsonl,Antigravity 的 .db);沒提供時不檢查(舊行為)。 */
+  sessionFileExists?(backend: Backend, sessionId: string): boolean;
 }
+
+/** 統計檔用的存點摘要(來自存點.json)。path 相對記憶庫根目錄。 */
+export interface SavepointSummary { path: string; time: string; backend: Backend; size: number; sessionId: string }
 
 /** 專案ID 是不是主控台產生的路徑形式(正規化後:磁碟代號 c:/…、或 / 開頭,含 //server/share);名稱形式的不是。 */
 export const isProjectPath = (id: string | null | undefined): id is string => !!id && /^(?:[a-zA-Z]:\/|\/)/.test(id);
@@ -65,7 +72,9 @@ const round2 = (r: number | null): number | null => (r === null ? null : Math.ro
  * 組出 .nexus-stats.json 的內容。
  * - 節點:面板上的(線上或休眠)、已終止還留著 session 的、只剩封存檔的;同一個節點ID 以前面的為準。
  *   統計用任務紀錄(排除封存與判例請求);任務紀錄已被清掉的封存節點改用封存檔裡的數字。專案是做過的專案名稱(最近的在前)。
- * - session.CLI有紀錄:session 出現在後台自己的紀錄清單裡;清單還沒查到時是 null。可接回:不在面板上、在主控台資料庫的已終止節點清單裡、有 sessionId、工作目錄還在(和喚醒網址同一個判斷,見 wake.ts 的 canResume;只存在於封存檔的節點不算)。
+ * - session.CLI有紀錄:session 出現在後台自己的紀錄清單裡;清單還沒查到時是 null。可接回(點喚醒會有結果):不在面板上、在主控台資料庫的已終止節點清單裡、有 sessionId、工作目錄還在(wake.ts 的 canResume;只存在於封存檔的節點不算),
+ *   而且工具資料夾裡還有這段對話的主檔,或有可還原的存點(存點要等 wake.ts 的 SAVEPOINT_RESTORE_SUPPORTED 為 true 才算;sessionFileExists 沒提供時不檢查主檔)。
+ * - 存點:節點的對話存點(新的在前),[{路徑, 時間, 後台ID, 大小, 原檔還在, 可還原}];可還原 = 上面除了主檔以外的條件都成立,而且存點是節點目前那段對話的。不帶工作目錄。
  * - 協作:最近 30 天的交辦(ask_node),依 從→到 彙總;同席:最近 30 天的會議,依參與的節點組合彙總(含主持人)。
  */
 export function buildVaultStats(i: StatsInput) {
@@ -105,6 +114,16 @@ export function buildVaultStats(i: StatsInput) {
     const backend = n.backend ?? a?.backend ?? null;
     const dirOk = !!n.cwd && i.dirExists(n.cwd);
     const cli = !sessionId || !backend ? false : i.cliSessions ? i.cliSessions.has(`${backend}:${sessionId}`) : null;
+    // 存點:可還原 = 已終止(在資料庫的已終止清單、不在面板上)、工作目錄還在、存點是這個節點目前那段對話的
+    const resumable = !onBoard && canResume({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists);
+    // 原檔還在:只對節點目前那段對話的存點有意義(喚醒接回的一定是目前那段);舊 session 的存點是 null,只列出
+    const fileOk = !i.sessionFileExists || !n.sessionId || !n.backend ? null : i.sessionFileExists(n.backend, n.sessionId);
+    const sps = (i.savepoints?.(n.id) ?? []).map(sp => {
+      const current = !!n.sessionId && sp.sessionId === n.sessionId;
+      return { 路徑: sp.path, 時間: sp.time, 後台ID: sp.backend, 大小: sp.size, 原檔還在: current ? fileOk : null, 可還原: resumable && current };
+    });
+    // 可接回 = 點喚醒會有結果,和喚醒網址共用 canWake(還原支援之前只看原檔)
+    const wakeable = !onBoard && canWake({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists, fileOk, sps.some(s => s.可還原));
     nodes[n.id] = {
       名稱: n.name, 角色: n.character || null, 狀態: status,
       任務數: fromTasks ? s!.tasks : a?.tasks ?? 0,
@@ -122,9 +141,11 @@ export function buildVaultStats(i: StatsInput) {
       頭像路徑: imgs.avatar, 立繪路徑: imgs.portrait,
       session: {
         後台: backend, sessionId, 主控台有紀錄: known, CLI有紀錄: cli, 工作目錄存在: dirOk,
-        // 和喚醒網址同一個判斷(wake.ts 的 canResume):主控台資料庫的已終止節點才算,只存在於封存檔的不算
-        可接回: !onBoard && canResume({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists),
+        // 點喚醒會有結果:主控台資料庫的已終止節點才算(只存在於封存檔的不算),而且原檔還在或有可還原的存點
+        可接回: wakeable,
       },
+      // 對話存點(新的在前):原檔還在 → 可直接喚醒;原檔不在且可還原 → 可從存點還原(喚醒網址一律用最新一份可還原的)
+      存點: sps,
     };
   };
   for (const n of i.live) add(n, n.state === 'sleeping' ? '休眠' : '線上', true, !!n.sessionId);

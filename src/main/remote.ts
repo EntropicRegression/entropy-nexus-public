@@ -5,6 +5,7 @@ import { homedir, hostname, networkInterfaces } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import QRCode from 'qrcode';
 import type { ApprovalDecision, AuditEntry, Backend, RemoteAccess, RemoteRole, RemoteStatus, Update } from '../shared/types';
+import { needsRestoreOf } from '../shared/types';
 import { actionOf, auditDetail, denial, filterSnapshot, filterUpdate, FULL, httpRule, normalizeAccess, rpcRule, visible, type Rule } from './access';
 import { allowAttachments } from './attachments';
 import type { Core } from './core';
@@ -558,7 +559,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         return;
       }
       case '/api/opensession':
-        json(res, 200, await core.openOldSession({ backend: b.backend, sessionId: String(b.sessionId), cwd: String(b.cwd), agentId: b.agentId ? String(b.agentId) : null, name: String(b.name || '舊對話').slice(0, 40), character: String(b.character ?? ''), model: String(b.model ?? '') }));
+        try {
+          json(res, 200, await core.openOldSession({ backend: b.backend, sessionId: String(b.sessionId), cwd: String(b.cwd), agentId: b.agentId ? String(b.agentId) : null, name: String(b.name || '舊對話').slice(0, 40), character: String(b.character ?? ''), model: String(b.model ?? '') }));
+        } catch (e) {
+          // 手機版不提供從存點還原(要在電腦上確認):把內部標記換成說明
+          if (needsRestoreOf(String((e as Error)?.message ?? e))) { json(res, 409, { error: '這段對話已經被工具清除了,需要在電腦的主控台上確認從存點還原。' }); return; }
+          throw e;
+        }
         return;
       case '/api/persona':
         if (typeof b.character !== 'string' || typeof b.text !== 'string') { json(res, 400, { error: '角色或內容不正確' }); return; }
