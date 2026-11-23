@@ -99,6 +99,7 @@
       // 立繪與標題列是 React 畫的,比面板晚一點:每次都更新這個發言者最後看到的樣子
       const cur = seen[seen.length - 1];
       cur.progress = prog();
+      (cur.progressSeen ??= new Set()).add(cur.progress);
       cur.portrait = portrait();
       return r.round === 2 && r.speakerId === r.hostId;
     }, 60000, 60);
@@ -107,7 +108,7 @@
     ok(/2P1,(2null,)?2P2,(2null,)?2Host$/.test(order), '發言者依序切換:P1 → P2 → 主持人', order);
     ok(at('P1')?.portrait.speaker === 'P1' && !!at('P1').portrait.img?.includes('RoomP1') && at('P1').portrait.role === '與會節點', 'P1 發言時立繪換成 P1 的', JSON.stringify(at('P1')?.portrait));
     ok(at('P2')?.portrait.speaker === 'P2' && at('P2').portrait.svg && !at('P2').portrait.img, 'P2 沒有立繪:改用預設圖', JSON.stringify(at('P2')?.portrait));
-    ok(at('P1')?.progress === '第 2/3 輪 · 正在發言:P1' && at('P1')?.readout === '第 2/3 輪 · P1', '標題列與會議室都顯示目前發言者', JSON.stringify(at('P1')));
+    ok(!!at('P1')?.progressSeen?.has('第 2/3 輪 · 正在發言:P1') && at('P1')?.readout === '第 2/3 輪 · P1', '標題列與會議室都顯示目前發言者', JSON.stringify({ ...at('P1'), progressSeen: [...(at('P1')?.progressSeen ?? [])] }));
     await wait(300);
     const t2 = transcript();
     ok(t2.map(x => `${x.node}${x.round}`).join() === 'P11,P21,Host1,P12,P22' && t2[2].meta.includes('主持人') && t2[2].text.includes('HOST-R1') && dlg().querySelectorAll('.meeting-msg .who')[2]?.textContent === 'Host', '第 2 輪的發言接在後面(主持人的發言標「主持人」)', JSON.stringify(t2.map(x => `${x.node}${x.round}:${x.meta}`)));

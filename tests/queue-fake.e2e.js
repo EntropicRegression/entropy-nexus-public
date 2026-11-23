@@ -144,6 +144,8 @@
       await wait(1500);
       check('等一下仍未送出', (await ag(C.id)).queued.length === 1);
       await window.nexus.wake(C.id);
+      // 佇列取出到建立任務之間有一小段空檔:先等任務出現,再等跑完
+      await until('喚醒後建立任務', async () => (await titles(C.id)).some(t => t.startsWith('程式碼 重開後才送=')), 20000).catch(() => {});
       await settled(C.id, '喚醒後送出');
       check('喚醒待命後自動送出', (await titles(C.id)).pop() === '程式碼 重開後才送=done', (await titles(C.id)).pop());
       // 手機版:開啟遠端後由 queue-fake.sh 從外部用 HTTP 排隊、取消,這裡等結果
