@@ -66,6 +66,7 @@ const SUITES = [
   { name: 'meeting-room', group: 'e2e', core: true, min: 1, ...bash('tests/meeting-room.sh') },
   { name: 'flow', group: 'e2e', core: true, min: 2.5, ...bash('tests/flow.sh') },
   { name: 'flow-scope', group: 'e2e', core: true, min: 2, ...bash('tests/flow-scope.sh') },
+  { name: 'flow-ui', group: 'e2e', core: true, min: 2.5, ...bash('tests/flow-ui.sh') },
   { name: 'chief', group: 'e2e', core: true, min: 1, ...bash('tests/chief.sh') },
   { name: 'voice-speech', group: 'e2e', core: true, min: 1.5, ...bash('tests/voice-speech.sh') },
   { name: 'queue-fake', group: 'e2e', core: true, min: 1.5, ...bash('tests/queue-fake.sh') },

@@ -1227,6 +1227,6 @@ export function toView(run: FlowRun, runDir = '', names: (id: string) => string 
     rejections: run.rejections, maxRejections: run.flow.limits.maxRejections, dispatches: run.dispatches, maxDispatches: run.flow.limits.maxDispatches,
     version: run.version === run.baseVersion && !run.assignments.some(a => a.version) ? '' : run.version,
     roles, steps, ...(run.pending ? { pending: run.pending } : {}), approvals: run.approvals.map(c => ({ ...c })), violations: run.violations.map(v => ({ ...v })),
-    ...(run.reason ? { reason: run.reason } : {}), activeMs, startedAt: run.startedAt, updatedAt: run.updatedAt, runDir,
+    ...(run.reason ? { reason: run.reason } : {}), activeMs, viewAt: now, startedAt: run.startedAt, updatedAt: run.updatedAt, runDir,
   };
 }

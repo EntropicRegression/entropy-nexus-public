@@ -164,6 +164,12 @@ export class FlowService {
     return this.allTemplates().map(t => ({
       id: t.flow?.id ?? '', name: t.flow?.name ?? t.file, description: t.flow?.description ?? '', source: t.flow?.source ?? 'user', file: t.file,
       errors: t.errors, warnings: t.warnings,
+      ...(t.flow ? {
+        roles: t.flow.roles,
+        steps: t.flow.steps.map(s => ({ id: s.id, label: s.label, role: s.role, mode: s.mode, requiresApproval: [...s.requiresApproval] })),
+        verify: t.flow.verify.commands, allowedPaths: t.flow.scope.allowedPaths, forbiddenActions: t.flow.scope.forbiddenActions,
+        offer: t.flow.finish.offer, limits: t.flow.limits,
+      } : {}),
     }));
   }
 

@@ -3,6 +3,7 @@ import {
   BACKEND_LABEL, STATE_LABEL, type AgentInfo, type AgentState, type Backend, type BackendUsage, type Capability, type DirInfo, type DispatchEntry, type LinkInfo, type MeetingView, type NexusEvent, type ObservedSession, type PermissionMode, type TaskInfo,
 } from '../../shared/types';
 import type { DashboardData } from '../../shared/dashboard';
+import type { FlowRunView } from '../../shared/flow';
 import { Dashboard, DashboardFull } from './Dashboard';
 import { HoverCard } from './Hover';
 import { VoicePanel } from './Voice';
@@ -11,6 +12,7 @@ import { PersonaEditor } from './PersonaEditor';
 import { RemoteHub } from './Remote';
 import { Review } from './Review';
 import { TaskPanel } from './Tasks';
+import { FlowApply, FlowDetail } from './Flow';
 import { Dialog, MeetingDialog } from './Dialog';
 import { AgyAllowEditor } from './AgyAllow';
 import { BoardScene, type BoardMore } from './board';
@@ -23,6 +25,24 @@ const ATTENTION: Record<AgentState, number> = { awaiting: 0, error: 1, lost: 1, 
 
 /** 瀏覽器版的遠端裝置可能不是完整權限(操作或唯讀);桌面視窗一律是完整。 */
 const fullAccess = !window.nexus.access || window.nexus.access.role === 'full';
+
+/** 畫面保留的流程:未結束的全部留著,已結束的只留最近 50 筆(主行程仍有完整紀錄)。 */
+function capFlows(list: FlowRunView[]): FlowRunView[] {
+  const done = list.filter(r => r.status === 'halted' || r.status === 'stopped' || r.status === 'completed');
+  if (done.length <= 50) return list;
+  const keep = new Set(done.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(r => r.id));
+  return list.filter(r => !(r.status === 'halted' || r.status === 'stopped' || r.status === 'completed') || keep.has(r.id));
+}
+
+/** 流程詳情裡有正在輸入或還沒送出的內容(手動補報表單、裁示欄、提交訊息):Esc 不要關掉詳情。 */
+function flowPanelBusy(): boolean {
+  const panel = document.querySelector('.flow-detail');
+  if (!panel) return false;
+  const active = document.activeElement;
+  if (active && panel.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return true;
+  if (panel.querySelector('.flow-manual, .flow-force, .flow-reassign')) return true;
+  return [...panel.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>('textarea, input[type="text"], input:not([type])')].some(x => x.value.trim() !== '');
+}
 
 export function App() {
   const [agents, setAgents] = useState<Record<string, AgentInfo>>({});
@@ -60,6 +80,10 @@ export function App() {
   const [dash, setDash] = useState<DashboardData | null>(null);
   const [showDash, setShowDash] = useState(false);
   const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null);
+  // 協作流程(M4):只有桌面畫面的快照附上 flows;null 表示這個畫面沒有流程功能(遠端或功能沒啟用),不顯示流程的操作
+  const [flows, setFlows] = useState<FlowRunView[] | null>(null);
+  const [flowOpen, setFlowOpen] = useState<string | null>(null);
+  const [flowApply, setFlowApply] = useState(false);
   const [muted, setMutedState] = useState(isMuted());
   // 主面板的節點在六角形裡顯示角色的 Q 版頭像(角色資料夾裡有 avatar 圖檔時);預設開啟,設定會記住
   const [avatarsOn, setAvatarsOn] = useState(() => localStorage.getItem('nexus.avatars') !== '0');
@@ -103,6 +127,7 @@ export function App() {
       setUsage(Object.fromEntries(s.usage.map(u => [u.backend, u])));
       setObserved(Object.fromEntries((s.observed ?? []).map(o => [o.sessionId, o])));
       setDash(prev => prev ?? s.dashboard ?? null);
+      if (Array.isArray(s.flows)) setFlows(capFlows(s.flows));
     });
     const off = window.nexus.onUpdate(u => {
       if (u.agent) { const a = u.agent; setAgents(prev => ({ ...prev, [a.id]: a })); }
@@ -128,6 +153,7 @@ export function App() {
       if (u.tasks) setTasks(u.tasks);
       if (u.usage) { const x = u.usage; setUsage(prev => ({ ...prev, [x.backend]: x })); }
       if (u.dashboard) setDash(u.dashboard);
+      if (u.flow) { const f = u.flow; setFlows(prev => { const list = prev ?? []; return capFlows(list.some(x => x.id === f.id) ? list.map(x => (x.id === f.id ? f : x)) : [f, ...list]); }); }
       if (u.links) setLinks(u.links);
       if (u.meetings) setMeetings(u.meetings);
       if (u.dispatches) setDispatches(u.dispatches);
@@ -161,7 +187,9 @@ export function App() {
       if (a) setSelectedId(a.id);
       return !!a;
     };
-    return () => { delete dbg.__nexusSelect; };
+    // 自我檢查用:直接打開某個流程的詳情(任務面板的流程卡可能因為清單太長被收起來)
+    dbg.__nexusFlowOpen = (id: string) => { setShowDash(false); setFlowApply(false); setFlowOpen(id); return true; };
+    return () => { delete dbg.__nexusSelect; delete dbg.__nexusFlowOpen; };
   }, []);
   // Alt+N 的順序:需要你的排最前面;子節點緊跟在呼叫它的節點後面
   const roster = useMemo(() => {
@@ -171,6 +199,8 @@ export function App() {
   const selected = selectedId ? agents[selectedId] ?? null : null;
   // 會議室和節點的對話視窗同時只開一個:打開節點就關掉會議室
   useEffect(() => { if (selectedId) { setRoomId(null); setRoomEnded(null); } }, [selectedId]);
+  // 流程的浮動面板會蓋住對話視窗的右半部:打開節點的對話視窗時關掉流程詳情與套用流程對話框
+  useEffect(() => { if (selectedId) { setFlowOpen(null); setFlowApply(false); } }, [selectedId]);
   const openRoom = (id: string) => { setSelectedId(null); setRoomEnded(null); setRoomId(id); };
   const liveRoom = roomId ? meetings.find(m => m.id === roomId) ?? null : null;
   if (liveRoom) roomLast.current = liveRoom;
@@ -197,7 +227,8 @@ export function App() {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && k === 'o') { e.preventDefault(); if (fullAccess) setShowOld(true); return; }
       if (e.key === 'Escape' && !reviewId && !showOld) {
         // 新增節點的面板開著時,Esc 不要關掉底下的對話視窗或會議室(面板要按「取消」關)
-        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (showDash) setShowDash(false); else if (adding) return; else if (selectedId) setSelectedId(null); else if (roomId) closeRoom();
+        // 套用流程的對話框開著時 Esc 不關(避免打到一半的主題不見),要按「取消」或 ✕
+        if (showMore) setShowMore(false); else if (showKeys) setShowKeys(false); else if (flowApply) return; else if (flowOpen) { if (!flowPanelBusy()) setFlowOpen(null); } else if (showDash) setShowDash(false); else if (adding) return; else if (selectedId) setSelectedId(null); else if (roomId) closeRoom();
         return;
       }
       if (!e.altKey || e.ctrlKey) return;
@@ -222,7 +253,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agents, roster, selectedId, roomId, reviewId, showOld, showKeys, showMore, showDash, adding]);
+  }, [agents, roster, selectedId, roomId, reviewId, showOld, showKeys, showMore, showDash, adding, flowApply, flowOpen]);
   const reviewTask = reviewId ? tasks.find(t => t.id === reviewId) ?? null : null;
   // 對話視窗的「變更」按鈕:這個節點最近一個有變更資料的任務
   const latestTask = (agentId: string) => tasks.filter(t => t.agentId === agentId && t.changes).sort((a, b) => b.startedAt - a.startedAt)[0]?.id ?? null;
@@ -280,6 +311,8 @@ ${c.note}` : ''}`}>
         </div>
       </header>
 
+      {flowApply && flows && fullAccess && <FlowApply agents={list} onClose={() => setFlowApply(false)} onStarted={id => { setFlowApply(false); setFlowOpen(id); }} />}
+      {!flowApply && flowOpen && flows && fullAccess && (() => { const r = flows.find(x => x.id === flowOpen); return r ? <FlowDetail key={r.id} run={r} agents={list} onClose={() => setFlowOpen(null)} /> : null; })()}
       {showDash && <DashboardFull dispatches={dispatches} tasks={tasks} agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
@@ -345,8 +378,9 @@ ${c.note}` : ''}`}>
 
       {/* 右側欄:最上面是常駐的總覽儀表(原本節點清單的位置),下面是任務面板與新增節點 */}
       <aside className="sidebar">
-        <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => setShowDash(v => !v)} onSelect={setSelectedId} />
-        {!adding && <TaskPanel tasks={tasks} chiefId={chiefId} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId} />}
+        <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => { setShowDash(v => !v); setFlowOpen(null); setFlowApply(false); }} onSelect={setSelectedId} />
+        {!adding && <TaskPanel tasks={tasks} chiefId={chiefId} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId}
+          flows={fullAccess ? flows : null} onOpenFlow={id => { setSelectedId(null); setShowDash(false); setFlowApply(false); setFlowOpen(id); }} onApplyFlow={() => { setSelectedId(null); setShowDash(false); setFlowOpen(null); setFlowApply(true); }} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>

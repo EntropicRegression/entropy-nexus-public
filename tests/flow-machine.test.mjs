@@ -5,10 +5,19 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseFlow } from '../src/main/flow/definition.ts';
+import { flowElapsed } from '../src/shared/flow.ts';
 import { chooseFixTarget, createRun, nextDeadline, reduce, restoreAfterRestart, toView } from '../src/main/flow/machine.ts';
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('[ok]', name); };
+
+test('畫面的已用時間從 viewAt 起算(載入快照時不會把 updatedAt 之後的時間算兩次)', () => {
+  // 主行程在 updatedAt=5000 之後一直執行,到 viewAt=65000 產生檢視時 activeMs 已經含這 60 秒
+  const v = { status: 'running', activeMs: 60000, updatedAt: 5000, viewAt: 65000 };
+  assert.equal(flowElapsed(v, 65000), 60000, '剛載入時就是 activeMs,不能變成 120 秒');
+  assert.equal(flowElapsed(v, 70000), 65000, '之後每過一秒加一秒');
+  assert.equal(flowElapsed({ ...v, status: 'paused' }, 99999), 60000, '暫停時不累加');
+});
 
 const TEMPLATE = parseFlow(readFileSync(new URL('../src/main/flow/templates/implement-review.yaml', import.meta.url), 'utf8'), 'builtin').flow;
 assert.ok(TEMPLATE, '內建範本解析成功');
@@ -132,6 +141,7 @@ test('一次通過:實作 → 核實 → 隔離審查可合併 → 走完並產�
   const view = toView(h.run, 'C:/runs/r1234567');
   assert.equal(view.steps.find(s => s.id === 'review').lamp, 'awaiting_approval');
   assert.equal(view.steps.find(s => s.id === 'implement').lamp, 'passed');
+  assert.equal(toView(h.run, '', () => undefined, h.run.updatedAt + 5000).viewAt, h.run.updatedAt + 5000, '檢視記下產生的時間(畫面只從這裡往後累加)');
 });
 
 test('退回一輪後通過:必修退回原 session 修正,再複審', () => {

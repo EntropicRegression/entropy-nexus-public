@@ -152,6 +152,15 @@ export interface FlowTemplateInfo {
   /** 解析失敗的使用者範本也列出來,讓使用者知道哪裡寫錯。 */
   errors: string[];
   warnings: string[];
+  /** 以下是對話框顯示用的摘要(M4);解析失敗時沒有。專案設定(核實指令覆寫、allowed_paths)要到啟動時才套用。 */
+  roles?: Record<string, FlowRoleDef>;
+  steps?: { id: string; label: string; role: string; mode: StepMode; requiresApproval: HighRiskAction[] }[];
+  verify?: VerifyCommandDef[];
+  allowedPaths?: string[];
+  forbiddenActions?: ForbiddenAction[];
+  /** 流程通過後提供的授權卡。 */
+  offer?: HighRiskAction[];
+  limits?: FlowLimits;
 }
 
 // ---- 專案設定(<資料夾>/flows/projects.yaml) ----
@@ -447,10 +456,20 @@ export interface FlowRunView {
   reason?: string;
   /** 只計執行中的時間(毫秒)。 */
   activeMs: number;
+  /** 產生這份檢視的時間(毫秒):activeMs 算到這個時間為止,畫面只要再加上 now - viewAt(只在執行中)。 */
+  viewAt: number;
   startedAt: number;
   updatedAt: number;
   /** runs/<id>/ 的完整路徑。 */
   runDir: string;
+}
+
+/**
+ * 畫面上的已用時間(毫秒):activeMs 是主行程算到 viewAt 為止的值,執行中的流程再加上 viewAt 到 now 的時間。
+ * 不能從 updatedAt 起算:updatedAt 到 viewAt 那段已經算進 activeMs(例如載入快照、只改內部欄位的推送),會重複計算。
+ */
+export function flowElapsed(v: Pick<FlowRunView, 'status' | 'activeMs' | 'viewAt'>, now: number): number {
+  return v.activeMs + (v.status === 'running' && typeof v.viewAt === 'number' ? Math.max(0, now - v.viewAt) : 0);
 }
 
 export interface FlowStartInput {

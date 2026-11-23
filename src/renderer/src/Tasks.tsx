@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { AgentInfo, TaskInfo, TaskStatus, TaskVerdict } from '../../shared/types';
 import { sourceLabel } from '../../shared/collab';
+import type { FlowRunView } from '../../shared/flow';
 import { BACKEND_COLOR, hex } from './theme';
+import { FlowCards } from './Flow';
 
 const LABEL: Record<TaskStatus, string> = { running: '執行中', awaiting: '待授權', done: '完成', failed: '失敗', interrupted: '已中斷' };
 const ORDER: Record<TaskStatus, number> = { awaiting: 0, running: 1, failed: 2, interrupted: 3, done: 3 };
@@ -57,13 +59,17 @@ function CaseMark({ task, status }: { task: TaskInfo; status: string }) {
  * 任務面板:每送出一句指令就自動多一筆任務,顯示內容、狀態、由誰執行與經過時間;
  * 後台有回報計畫步驟或呼叫子代理時一併列出。資料全部來自核心服務,這裡只負責呈現。
  */
-export function TaskPanel({ tasks, chiefId, agents, selectedId, onSelect, onReview }: {
+export function TaskPanel({ tasks, chiefId, agents, selectedId, onSelect, onReview, flows, onOpenFlow, onApplyFlow }: {
   tasks: TaskInfo[];
   chiefId: string | null;
   agents: Record<string, AgentInfo>;
   selectedId: string | null;
   onSelect: (agentId: string) => void;
   onReview: (taskId: string) => void;
+  /** 協作流程(只有完整權限的桌面畫面才有;沒有時不顯示流程區與「套用流程」)。 */
+  flows?: FlowRunView[] | null;
+  onOpenFlow?: (runId: string) => void;
+  onApplyFlow?: () => void;
 }) {
   const active = tasks.filter(t => t.endedAt === null);
   const [now, setNow] = useState(Date.now());
@@ -100,8 +106,10 @@ export function TaskPanel({ tasks, chiefId, agents, selectedId, onSelect, onRevi
         任務
         <span className="tasks-count">{active.length ? `${active.length} 項進行中` : '沒有進行中的任務'}{queued.length ? ` · ${queued.length} 項排隊中` : ''}</span>
         {finished > 0 && <button className="ghost need-full" onClick={() => void window.nexus.clearFinishedTasks()} title="清除已結束的任務">清除已結束</button>}
+        {flows && onApplyFlow && <button className="ghost need-full flow-apply-btn" onClick={onApplyFlow} title="套用協作流程:選範本、主題與專案,由主控台依步驟交辦、核實與審查">套用流程</button>}
       </div>
       <div className="tasks-list">
+        {flows && onOpenFlow && <FlowCards flows={flows} onOpen={onOpenFlow} />}
         {queued.map(({ a, q }) => (
           <div key={q.id} className={`task t-queued ${a.id === selectedId ? 'on' : ''}`} role="button" tabIndex={0} onClick={() => onSelect(a.id)} title="開啟這個節點的對話視窗">
             <span className="task-head">
