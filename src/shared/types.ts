@@ -520,6 +520,14 @@ export function needsRestoreOf(message: string): { 時間: string; 大小: numbe
  * 分支對話:從既有的 session 分支出一個新節點,新節點有自己的 session,不會佔用來源。
  * 來源可以是面板上的節點,或「開啟舊 session」清單上的一列。
  */
+/**
+ * 轉移工作區的目的地(docs/工作區轉移規劃.md):既有的資料夾,或在某個 git 版本庫開一個新的獨立工作區。
+ * 節點用同一個 session 在新資料夾續接,對話內容保留。
+ */
+export type MoveTarget = { kind: 'folder'; path: string } | { kind: 'worktree'; repo: string };
+/** 轉移工作區的結果:節點,以及寫進對話的說明。 */
+export interface MoveResult { agent: AgentInfo; note: string }
+
 export interface ForkAgentInput {
   source: { kind: 'agent'; agentId: string } | { kind: 'session'; backend: Backend; sessionId: string; cwd: string; agentId: string | null };
   name: string;
@@ -794,6 +802,8 @@ export interface NexusApi {
   openOldSession(input: OpenOldSessionInput): Promise<AgentInfo>;
   /** 從節點或舊 session 分支出新節點;新節點有自己的 session,來源不受影響。 */
   forkAgent(input: ForkAgentInput): Promise<AgentInfo>;
+  /** 轉移節點的工作區:停下 session、換工作目錄、用同一個 session 在新資料夾續接(Antigravity 暫不支援)。 */
+  moveWorkspace(id: string, target: MoveTarget): Promise<MoveResult>;
   pickDirectory(): Promise<string | null>;
   // ---- 協作流程(只有完整權限;畫面在 M4) ----
   flowTemplates(): Promise<FlowTemplateInfo[]>;

@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
 import { BACKEND_LABEL, NEEDS_RESTORE, usageWindowsFor, type MeetingView, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
 import type {
   DispatchEntry, LinkInfo, TaskFrom,
-  AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
+  AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, MoveResult, MoveTarget, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
 import type { Adapter, AdapterSession, StartOptions } from './adapters/adapter';
 import { AntigravityAdapter } from './adapters/antigravity';
@@ -22,7 +22,7 @@ import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } 
 import { characterImages } from './vault-images';
 import { readArchives, type MeetingRecord, type SavepointSummary, type StatsInput } from './vault-stats';
 import { removeMedia } from './media';
-import { projectKindFromPath, projectOf } from './project';
+import { normalizePath, projectKindFromPath, projectOf } from './project';
 import { wakeTargetOf, type WakeTarget } from './wake';
 import { uniqueProjects, type KnownProject } from './project-choice';
 import { parseChiefTerms, updateChiefTerms, type ChiefTerm } from './chief-tenure';
@@ -553,6 +553,84 @@ export class Core {
     }, null, { from: from.sessionId, copyFrom: from.copyFrom, note });
   }
 
+  /** 協作流程正在用這個節點時回傳流程名稱(由 index.ts 接上 FlowService);轉移工作區時用來擋下。 */
+  flowHolding: ((agentId: string) => string | null) | null = null;
+  /** 正在轉移工作區的節點:這段期間不重開 session、不重複轉移。 */
+  private moving = new Set<string>();
+  /** 轉移工作區後,下一則指令前面要加的通知(舊、新工作目錄)。 */
+  private cwdNotices = new Map<string, { from: string; to: string }>();
+
+  /**
+   * 轉移工作區(docs/工作區轉移規劃.md W1):停下 session、換工作目錄(與獨立工作區資訊),用同一個 session 在新資料夾續接。
+   * 各家工具的對話檔不搬、不改:實驗證明 Claude Code 的 --resume、Codex 的 thread/resume 換資料夾續接都會保留記憶並在新資料夾工作。
+   * Antigravity 續接後仍以舊資料夾為主要工作目錄,工具行為還沒驗證,暫不開放(使用者裁示,W3 再做)。
+   * 移出獨立工作區時,舊的 worktree 照終止時的規則:乾淨且已合併才移除,否則保留並說明。
+   */
+  async moveWorkspace(id: string, target: MoveTarget): Promise<MoveResult> {
+    const a = this.agents.get(id);
+    if (!a || a.parentId) throw new Error('找不到這個節點(子代理不能轉移工作區)。');
+    if (a.backend === 'antigravity') throw new Error('Antigravity 換資料夾續接後仍以原本的資料夾為主要工作目錄,暫時不支援轉移工作區。');
+    if (a.terminal) throw new Error('節點在終端機模式,請先回到主控台模式。');
+    if (BUSY.has(a.state) || this.starting.has(id) || a.pendingApproval || a.pendingQuestion) throw new Error('節點正在執行或等待回應,請等它停下來再轉移。');
+    if (this.moving.has(id) || this.terminating.has(id) || this.removing.has(id)) throw new Error('這個節點正在轉移或終止中。');
+    const flow = this.flowHolding?.(id);
+    if (flow) throw new Error(`協作流程「${flow}」正在使用這個節點,流程結束後才能轉移。`);
+    if (this.meetingViews.some(m => m.hostId === id || m.participants.some(p => p.id === id))) throw new Error('節點正在開會,會議結束後才能轉移。');
+    if (a.queued.length) throw new Error('節點還有排隊中的指令,請先清掉或等它們送出。');
+
+    this.moving.add(id);
+    try {
+      const from = a.cwd;
+      const oldWt = a.worktree;
+      let cwd: string;
+      let worktree: WorktreeInfo | null = null;
+      let setup = '';
+      if (target?.kind === 'folder') {
+        const p = String(target.path ?? '').trim();
+        if (!p || !isAbsolute(p)) throw new Error('請選擇一個資料夾(絕對路徑)。');
+        let st;
+        try { st = statSync(p); } catch { throw new Error('這個資料夾不存在。'); }
+        if (!st.isDirectory()) throw new Error('目的地不是資料夾。');
+        cwd = resolve(p);
+      } else if (target?.kind === 'worktree') {
+        const repo = String(target.repo ?? '').trim();
+        if (!repo || !isAbsolute(repo) || !existsSync(repo)) throw new Error('請選擇一個 git 版本庫的資料夾。');
+        const made = await createWorktree(repo, a.name, a.id);
+        cwd = made.cwd;
+        worktree = made.info;
+        setup = made.setup;
+      } else throw new Error('目的地不正確。');
+      if (normalizePath(cwd) === normalizePath(from) && !worktree) throw new Error('目的地和目前的工作目錄相同。');
+
+      // 停下 session(休眠中的節點本來就沒有 session),換工作目錄;原本醒著的才用同一個 session 在新資料夾續接
+      const wasAwake = this.sessions.has(id);
+      if (wasAwake) await this.stopSession(id);
+      a.cwd = cwd;
+      a.worktree = worktree;
+      this.store.updateAgentPlace(a);
+      this.cwdNotices.set(id, { from, to: cwd });
+
+      const notes = [`工作目錄已從「${from}」換到「${cwd}」,用同一個 session 續接,對話內容保留。下一則指令會先通知節點以新的資料夾為準。`];
+      if (setup) notes.push(setup);
+      if (oldWt && oldWt.path !== worktree?.path) {
+        const removed = await removeWorktree(oldWt, false).catch(() => false);
+        notes.push(removed ? `原本的獨立工作區(分支 ${oldWt.branch})乾淨且已合併,已移除。` : `原本的獨立工作區還有未提交或未合併的修改,已保留在 ${oldWt.path}(分支 ${oldWt.branch})。`);
+      }
+      const note = notes.join('\n');
+      this.onAdapterEvent(id, { type: 'note', text: note });
+      this.broadcast({ agent: { ...a } });
+      this.onStatsDirty?.();
+      this.moving.delete(id);
+      if (wasAwake) {
+        this.onAdapterEvent(id, { type: 'state', state: 'planning', detail: '續接中' });
+        this.startSession(a);
+      }
+      return { agent: { ...a }, note };
+    } finally {
+      this.moving.delete(id);
+    }
+  }
+
   async createAgent(input: CreateAgentInput, resumeSessionId: string | null = null, fork: { from: string; copyFrom: string | null; note: string } | null = null): Promise<AgentInfo> {
     const cap = this.capabilities.get(input.backend);
     if (!cap?.available) throw new Error(cap?.note ?? '這個後台目前無法使用');
@@ -892,10 +970,13 @@ ${text}
 
   /** 取出並清掉這個節點待通知的變更,組成指令前面的「主控台通知」。 */
   private takeNotice(agent: AgentInfo): string {
-    const kinds = this.notices.get(agent.id);
-    if (!kinds?.size) return '';
+    const kinds = this.notices.get(agent.id) ?? new Set<'name' | 'persona'>();
+    const moved = this.cwdNotices.get(agent.id);
+    if (!kinds.size && !moved) return '';
     this.notices.delete(agent.id);
+    this.cwdNotices.delete(agent.id);
     const parts: string[] = [];
+    if (moved) parts.push(`(主控台通知:你的工作目錄已從「${moved.from}」換到「${moved.to}」。之後讀寫檔案、執行指令都以新的資料夾為準;先前對話裡提到的舊路徑不再是你的工作目錄。)`);
     if (kinds.has('name')) parts.push(`(主控台通知:你的名字已改為「${agent.name}」。)`);
     if (kinds.has('persona')) {
       const card = this.personaCard(agent);
@@ -1044,7 +1125,7 @@ ${text}
 
   async wake(id: string): Promise<void> {
     const agent = this.agents.get(id);
-    if (!agent || agent.parentId || this.terminating.has(id)) return;
+    if (!agent || agent.parentId || this.terminating.has(id) || this.moving.has(id)) return;
     if (this.sessions.has(id)) {
       // 行程還在就不必喚醒;失聯的先清掉舊 session 再重新啟動
       if (agent.state !== 'lost') return;
@@ -1176,7 +1257,7 @@ ${text}
   }
 
   private startSession(agent: AgentInfo): void {
-    if (this.terminating.has(agent.id)) return;
+    if (this.terminating.has(agent.id) || this.moving.has(agent.id)) return;
     const session = this.adapters[agent.backend].start(
       { agentId: agent.id, cwd: agent.cwd, permissionMode: agent.permissionMode, model: agent.model, sessionId: agent.sessionId, forkFrom: agent.sessionId ? null : this.forks.get(agent.id) ?? null, interop: agent.parentId ? null : this.interop?.(agent.id) ?? null, persona: this.persona(agent), ...(agent.backend === 'antigravity' ? { agyAllow: [...this.agyAllow] } : {}) },
       (e, subId) => this.onAdapterEvent(agent.id, e, subId),

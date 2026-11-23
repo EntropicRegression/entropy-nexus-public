@@ -93,6 +93,16 @@ function makeRepo(name, files, ignore) {
   check('C 正常規則仍有效', fs.existsSync(path.join(mc.info.path, '.env')));
   await wt.removeWorktree(mc.info, true);
 
+  // 情境 D:同一個節點在同一個版本庫再開一個工作區(轉移工作區)不會撞名
+  const d = makeRepo('repo-d', { 'a.txt': 'a\n' }, '');
+  const d1 = await wt.createWorktree(d, 'Mover', 'dddddd444444');
+  const d2 = await wt.createWorktree(d, 'Mover', 'dddddd444444');
+  check('D 第二個工作區的分支與資料夾都不同', d1.info.branch !== d2.info.branch && d1.info.path !== d2.info.path, `${d1.info.branch} / ${d2.info.branch}`);
+  check('D 第二個分支加上 -2', d2.info.branch === `${d1.info.branch}-2` && d2.info.path === `${d1.info.path}-2`);
+  check('D 兩個工作區都存在', fs.existsSync(d1.info.path) && fs.existsSync(d2.info.path));
+  await wt.removeWorktree(d1.info, true);
+  await wt.removeWorktree(d2.info, true);
+
   console.log(failures ? `[test] 共 ${failures} 項失敗` : '[test] 全部通過');
   fs.rmSync(base, { recursive: true, force: true });
   process.exit(failures ? 1 : 0);

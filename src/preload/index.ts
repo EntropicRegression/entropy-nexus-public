@@ -73,6 +73,7 @@ const api: NexusApi = {
   observeTakeover: (sessionId, name) => ipcRenderer.invoke('nexus:observeTakeover', sessionId, name),
   openOldSession: input => ipcRenderer.invoke('nexus:openOldSession', input),
   forkAgent: input => ipcRenderer.invoke('nexus:forkAgent', input),
+  moveWorkspace: (id, target) => ipcRenderer.invoke('nexus:moveWorkspace', id, target),
   pickDirectory: () => ipcRenderer.invoke('nexus:pickDirectory'),
   // 協作流程(只有完整權限;畫面在 M4)
   flowTemplates: () => ipcRenderer.invoke('nexus:flowTemplates'),

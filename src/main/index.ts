@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { BACKEND_LABEL, needsRestoreOf, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
+import { BACKEND_LABEL, needsRestoreOf, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type MoveTarget, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -206,6 +206,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     observeTakeover: (sessionId: string, name: string) => observeTakeover(String(sessionId), String(name ?? '')),
     openOldSession: (input: OpenOldSessionInput) => c.openOldSession(input),
     forkAgent: (input: ForkAgentInput) => c.forkAgent(input),
+    moveWorkspace: (id: string, target: MoveTarget) => c.moveWorkspace(String(id ?? ''), target),
     getAvatar: (character: string) => avatarDataUrl(String(character ?? '')),
     getPersona: (character: string) => c.getPersona(String(character ?? '')),
     getAgyAllow: () => c.getAgyAllow(),
@@ -505,6 +506,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       ...(Number(process.env.NEXUS_FLOW_ENSURE_MS) > 0 ? { ensureTimeoutMs: Number(process.env.NEXUS_FLOW_ENSURE_MS) } : {}),
       ...(Number(process.env.NEXUS_FLOW_QUEUE_WARN_MS) > 0 ? { queueWarnMs: Number(process.env.NEXUS_FLOW_QUEUE_WARN_MS) } : {}),
     });
+    c.flowHolding = agentId => flows?.holding(agentId) ?? null;
     const flowSvc = flows;
     interop.stepReport = (callerId, args) => flowSvc.submitReport(callerId, args);
     handleFileRequests(id => core?.agentCwd(id) ?? null);

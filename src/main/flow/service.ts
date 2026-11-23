@@ -384,6 +384,15 @@ export class FlowService {
     try { return new Set((await changedPaths(cwd, head, version)).map(p => p.path)); } catch { return null; }
   }
 
+  /** 還沒結束的流程有用到這個節點(任何角色)時回傳流程名稱;轉移工作區時用來擋下。 */
+  holding(agentId: string): string | null {
+    for (const r of this.runs.values()) {
+      if (TERMINAL_STATUSES.includes(r.status)) continue;
+      if (Object.values(r.roles).some(x => x.agentId === agentId)) return r.flow.name;
+    }
+    return null;
+  }
+
   views(): FlowRunView[] {
     return [...this.runs.values()].sort((a, b) => b.startedAt - a.startedAt).map(r => this.view(r));
   }

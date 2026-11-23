@@ -241,9 +241,15 @@ export async function createWorktree(cwd: string, name: string, id: string): Pro
   const base = abbrev.ok && abbrev.out !== 'HEAD' ? abbrev.out : (await git(repoRoot, ['rev-parse', 'HEAD'])).out;
   const slug = name.replace(/[^\w-]+/g, '').slice(0, 20) || 'node';
   const short = id.slice(0, 6);
-  const branch = `nexus/${slug}-${short}`;
   mkdirSync(home, { recursive: true });
-  const path = join(home, `${basename(repoRoot).replace(/[^\w.-]+/g, '_')}-${slug}-${short}`);
+  // 同一個節點可能再開一個工作區(轉移工作區):分支或資料夾已存在就加 -2、-3
+  let branch = '', path = '';
+  for (let k = 1; k < 100; k++) {
+    const tail = k === 1 ? '' : `-${k}`;
+    branch = `nexus/${slug}-${short}${tail}`;
+    path = join(home, `${basename(repoRoot).replace(/[^\w.-]+/g, '_')}-${slug}-${short}${tail}`);
+    if (!existsSync(path) && !(await git(repoRoot, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`])).ok) break;
+  }
   const add = await git(repoRoot, ['worktree', 'add', '-b', branch, path, 'HEAD']);
   if (!add.ok) throw fail('建立獨立工作區失敗', add);
   // 節點原本選的若是版本庫裡的子資料夾,在工作區裡也進到同一個子資料夾
