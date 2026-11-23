@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   TERMINAL_STATUSES,
   type DecisionChoice, type FlowDefinition, type FlowParseResult, type FlowRunView, type FlowStartInput, type FlowTemplateInfo, type ProjectFlowConfig, type StepReport,
@@ -63,7 +63,14 @@ export interface FlowDeps {
 }
 
 const WIN = process.platform === 'win32';
-const lockKey = (p: string) => { const s = resolve(p).replace(/\\/g, '/').replace(/\/+$/, ''); return WIN ? s.toLowerCase() : s; };
+/** 實際路徑:展開 Windows 的 8.3 短名稱(例如 CI 的 C:\Users\RUNNER~1\…;git 回報的一律是長名稱),不存在時展開最近一層存在的上層。 */
+const longPath = (p: string): string => {
+  const abs = resolve(p);
+  try { return realpathSync.native(abs); } catch { /* 不存在:往上找 */ }
+  const parent = dirname(abs);
+  return parent === abs ? abs : join(longPath(parent), basename(abs));
+};
+const lockKey = (p: string) => { const s = longPath(p).replace(/\\/g, '/').replace(/\/+$/, ''); return WIN ? s.toLowerCase() : s; };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 function gitTop(cwd: string): Promise<string | null> {
