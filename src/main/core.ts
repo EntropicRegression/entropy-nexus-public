@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BACKEND_LABEL, usageWindowsFor, type MeetingView, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
+import { BACKEND_LABEL, NEEDS_RESTORE, usageWindowsFor, type MeetingView, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
@@ -30,7 +30,7 @@ import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from 
 import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
 import { addFrontMatterField, nodeProfilePath } from './memory-write';
-import { cleanStaleSavepointTemps, createSavepoint, defaultSessionRoots, savepointNote, savepointSummaries, sessionIndex, sessionMainExists, type SavepointResult, type SessionRoots } from './session-savepoint';
+import { cleanStaleSavepointTemps, createSavepoint, defaultSessionRoots, savepointNote, restoreSavepoint, savepointSummaries, sessionIndex, sessionMainExists, type SavepointResult, type SessionRoots } from './session-savepoint';
 import { writeMeetingRecord, type MeetingRecordInput } from './meeting-record';
 import { isDraftRequest, isMemoirRequest, waitForMemoir, type PromptOrigin } from './memoir';
 import type { Store } from './store';
@@ -481,6 +481,15 @@ export class Core {
 
   /** 接回一個舊 session。主控台開過的會復原原本的節點(對話紀錄也回來);否則建立新節點,名稱從此跟著這個 session 保存。 */
   async openOldSession(input: OpenOldSessionInput): Promise<AgentInfo> {
+    // 同一段對話同時只接回一次(桌面與喚醒網址可能同時觸發;還原要先算檢查碼,可能要好幾秒)
+    const lock = `${input.backend}:${input.sessionId}`;
+    if (this.opening.has(lock)) throw new Error('這段對話正在接回中,請稍候。');
+    this.opening.add(lock);
+    try { return await this.openOldSessionInner(input); } finally { this.opening.delete(lock); }
+  }
+  private opening = new Set<string>();
+
+  private async openOldSessionInner(input: OpenOldSessionInput): Promise<AgentInfo> {
     if (!existsSync(input.cwd)) throw new Error('原本的工作目錄已經不存在,無法接回這個 session。');
     if ([...this.agents.values()].some(a => a.backend === input.backend && a.sessionId === input.sessionId)) throw new Error('這個 session 已經在面板上。');
     const cap = this.capabilities.get(input.backend);
@@ -488,6 +497,16 @@ export class Core {
     const removed = input.agentId ? this.store.loadRemovedAgents().find(r => r.agent.id === input.agentId && r.agent.sessionId === input.sessionId) : undefined;
     if (removed) {
       const a = removed.agent;
+      // 對話檔已被工具清掉:有這段對話的存點就先問再還原(第一次回 NEEDS_RESTORE,使用者同意後帶 restoreFromSavepoint 重試)
+      if (!cap.simulated && !sessionMainExists(a.backend, input.sessionId, this.sessionRoots)) {
+        const vault = this.vault;
+        const sp = vault ? savepointSummaries(vault.dir, a.id).find(s => s.sessionId === input.sessionId && s.backend === a.backend) : undefined;
+        if (!vault || !sp) throw new Error(`這段對話已經被 ${BACKEND_LABEL[a.backend]} 清除了,也沒有可以還原的存點,無法接回。`);
+        if (!input.restoreFromSavepoint) throw new Error(`${NEEDS_RESTORE}${JSON.stringify({ 時間: sp.time, 大小: sp.size, 後台: BACKEND_LABEL[a.backend] })}`);
+        const r = await restoreSavepoint(vault.dir, sp.path, this.sessionRoots);
+        this.sessionIdx.delete(a.backend);
+        if (!r.ok) throw new Error(`從存點還原失敗:${r.reason}`);
+      }
       a.name = input.name.trim() || a.name;
       a.simulated = this.isSimulated(a.backend);
       this.store.restoreAgent(a.id, a.name);

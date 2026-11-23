@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, screen, session, shell } from 'electron';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { BACKEND_LABEL, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
+import { BACKEND_LABEL, needsRestoreOf, type ApprovalDecision, type Backend, type CreateAgentInput, type ForkAgentInput, type OpenOldSessionInput, type PermissionMode, type RemoteAccess, type ReviewComment, type SpeechSource, type TaskVerdict, type Update } from '../shared/types';
 import { allowAttachments, attachmentPreview, initAttachments, savePastedImage } from './attachments';
 import { Core } from './core';
 import { avatarDataUrl, handlePortraitRequests, initPortraits, portraitsDir, registerPortraitScheme, saveVoice, voiceProfile, voiceWav } from './portraits';
@@ -76,7 +76,20 @@ async function handleWake(raw: string): Promise<void> {
   const r = await dialog.showMessageBox(win, { type: 'question', title: '喚醒節點', message: `要接回 ${target.name} 的舊對話嗎?`, detail: '會把這個已封存的節點放回面板,繼續原本的對話。', buttons: ['接回', '取消'], defaultId: 1, cancelId: 1, noLink: true });
   if (r.response !== 0) return;
   try { await core.openOldSession(target.input); }
-  catch (e) { await notice(`接回失敗:${String((e as Error)?.message ?? e)}`, 'error'); }
+  catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    const need = needsRestoreOf(msg);
+    if (!need) { await notice(`接回失敗:${msg}`, 'error'); return; }
+    // 原本的對話檔已被工具清掉:先問再從存點還原
+    const ask = await dialog.showMessageBox(win, {
+      type: 'question', title: '喚醒節點', message: `「${target.name}」的對話已經被 ${need.後台} 清除了。要從存點還原嗎?`,
+      detail: `存點建立於 ${need.時間.replace('T', ' ').slice(0, 16)},大小 ${(need.大小 / 1024 / 1024).toFixed(1)} MB。會把對話檔放回 ${need.後台} 原本的位置(不覆蓋任何現有檔案),再接回這個節點。`,
+      buttons: ['還原並接回', '取消'], defaultId: 1, cancelId: 1, noLink: true,
+    });
+    if (ask.response !== 0) return;
+    try { await core.openOldSession({ ...target.input, restoreFromSavepoint: true }); }
+    catch (e2) { await notice(`還原失敗:${String((e2 as Error)?.message ?? e2)}`, 'error'); }
+  }
 }
 
 /**

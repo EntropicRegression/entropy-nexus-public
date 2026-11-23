@@ -10,9 +10,9 @@
  *
  * 純 Node(不依賴 Electron);各家工具的資料夾由 SessionRoots 傳入,測試可以指向暫存的假資料夾。
  */
-import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, lstatSync, readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
-import { copyFile, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants, createReadStream, existsSync, lstatSync, readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
+import { copyFile, link, mkdir, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Backend } from '../shared/types';
@@ -285,50 +285,59 @@ export function listSavepoints(vaultDir: string, nodeId: string): string[] {
 
 const BACKEND_IDS: readonly Backend[] = ['claude', 'codex', 'antigravity'];
 
+/** 存在檢查用:跟隨連結(使用者可能把工具資料夾用 junction 搬到別的磁碟,對話照樣算在)。 */
+const isFileFollow = (p: string): boolean => { try { return statSync(p).isFile(); } catch { return false; } };
+const isDirFollow = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };
+const listDirs = (dir: string): string[] => list(dir).filter(e => e.isDirectory() || (e.isSymbolicLink() && isDirFollow(join(dir, e.name)))).map(e => e.name);
+const listFiles = (dir: string): string[] => list(dir).filter(e => e.isFile() || (e.isSymbolicLink() && isFileFollow(join(dir, e.name)))).map(e => e.name);
+
+/** Codex 的對話檔名(跟隨連結,存在檢查用),深度和 codexFiles 相同。 */
+function codexNamesFollow(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth < 0 || !isDirFollow(dir)) return;
+    for (const f of listFiles(dir)) if (f.toLowerCase().endsWith('.jsonl')) out.push(f.toLowerCase());
+    for (const d of listDirs(dir)) walk(join(dir, d), depth - 1);
+  };
+  walk(join(root, 'sessions'), 4);
+  walk(join(root, 'archived_sessions'), 4);
+  return out;
+}
+
 /**
  * 一家工具資料夾裡所有對話主檔的 id(統計檔用:每家掃一次,之後每個節點只查 Set,不必各自走整棵資料夾)。
- * 判斷和 sessionMainExists 相同:Claude 是 projects/<專案>/<id>.jsonl;Antigravity 是 conversations/<id>.db;
+ * 判斷和 sessionMainExists 相同(跟隨連結):Claude 是 projects/<專案>/<id>.jsonl;Antigravity 是 conversations/<id>.db;
  * Codex 是 sessions/**、archived_sessions/** 裡檔名 <id>.jsonl 或以 -<id>.jsonl 結尾的(收錄檔名在每個 - 之後的尾段)。
  */
 export function sessionIndex(backend: Backend, roots: SessionRoots): Set<string> {
   const ids = new Set<string>();
   if (backend === 'claude') {
-    if (!isPlainDir(join(roots.claude, 'projects'))) return ids;
-    for (const p of list(join(roots.claude, 'projects'))) {
-      if (!p.isDirectory() || p.isSymbolicLink()) continue;
-      for (const f of list(join(roots.claude, 'projects', p.name))) if (f.isFile() && !f.isSymbolicLink() && f.name.endsWith('.jsonl')) ids.add(f.name.slice(0, -6).toLowerCase());
-    }
+    const projects = join(roots.claude, 'projects');
+    for (const p of listDirs(projects)) for (const f of listFiles(join(projects, p))) if (f.endsWith('.jsonl')) ids.add(f.slice(0, -6).toLowerCase());
   } else if (backend === 'antigravity') {
-    if (!isPlainDir(join(roots.agy, 'conversations'))) return ids;
-    for (const f of list(join(roots.agy, 'conversations'))) if (f.isFile() && !f.isSymbolicLink() && f.name.endsWith('.db')) ids.add(f.name.slice(0, -3).toLowerCase());
+    for (const f of listFiles(join(roots.agy, 'conversations'))) if (f.endsWith('.db')) ids.add(f.slice(0, -3).toLowerCase());
   } else if (backend === 'codex') {
-    const walk = (rel: string, depth: number) => {
-      if (depth < 0 || !isPlainDir(join(roots.codex, ...rel.split('/')))) return;
-      for (const e of list(join(roots.codex, ...rel.split('/')))) {
-        if (e.isSymbolicLink()) continue;
-        if (e.isDirectory()) walk(`${rel}/${e.name}`, depth - 1);
-        else if (e.isFile() && e.name.toLowerCase().endsWith('.jsonl')) {
-          const base = e.name.slice(0, -6).toLowerCase();
-          ids.add(base);
-          for (let i = base.indexOf('-'); i >= 0; i = base.indexOf('-', i + 1)) ids.add(base.slice(i + 1));
-        }
-      }
-    };
-    walk('sessions', 4);
-    walk('archived_sessions', 4);
+    for (const name of codexNamesFollow(roots.codex)) {
+      const base = name.slice(0, -6);
+      ids.add(base);
+      for (let i = base.indexOf('-'); i >= 0; i = base.indexOf('-', i + 1)) ids.add(base.slice(i + 1));
+    }
   }
   return ids;
 }
 
-/** 工具資料夾裡還有沒有這段對話的主檔(不跟隨連結);sessionId 格式不對時是 false。 */
+/** 工具資料夾裡還有沒有這段對話的主檔(跟隨連結);sessionId 格式不對時是 false。決定要不要還原、統計檔的原檔還在都用它。 */
 export function sessionMainExists(backend: Backend, sessionId: string, roots: SessionRoots): boolean {
   if (!SESSION_RE.test(sessionId)) return false;
   if (backend === 'claude') {
-    if (!isPlainDir(join(roots.claude, 'projects'))) return false;
-    return list(join(roots.claude, 'projects')).some(p => p.isDirectory() && !p.isSymbolicLink() && isPlainFile(join(roots.claude, 'projects', p.name, `${sessionId}.jsonl`)));
+    const projects = join(roots.claude, 'projects');
+    return listDirs(projects).some(p => isFileFollow(join(projects, p, `${sessionId}.jsonl`)));
   }
-  if (backend === 'antigravity') return isPlainFile(join(roots.agy, 'conversations', `${sessionId}.db`));
-  if (backend === 'codex') return codexFiles(roots.codex, sessionId).length > 0;
+  if (backend === 'antigravity') return isFileFollow(join(roots.agy, 'conversations', `${sessionId}.db`));
+  if (backend === 'codex') {
+    const want = `${sessionId}.jsonl`.toLowerCase();
+    return codexNamesFollow(roots.codex).some(n => n === want || n.endsWith(`-${want}`));
+  }
   return false;
 }
 
@@ -343,6 +352,107 @@ export function savepointSummaries(vaultDir: string, nodeId: string): Array<{ pa
     out.push({ path, time: m.建立時間, backend: m.後台ID, size: Number.isFinite(size) && size >= 0 ? size : 0, sessionId: m.sessionId });
   }
   return out;
+}
+
+const ROOT_OF: Record<Backend, RootKey> = { claude: 'claude', codex: 'codex', antigravity: 'agy' };
+/** Windows 不能用的檔名:保留名稱、特殊字元(含 ADS 的 :)、控制字元、結尾的 . 或空白。 */
+const WIN_RESERVED = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$/i;
+const okSegment = (s: string): boolean => !!s && s !== '.' && s !== '..' && /^[^<>:"/\\|?*\x00-\x1f]+$/.test(s) && !/[. ]$/.test(s) && !WIN_RESERVED.test(s);
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * 說明檔裡的一個檔案位置能不能還原:每家只接受建立存點時會產生的那幾種位置(說明檔被改過也不會寫到別的地方)。
+ * - Claude:projects/<專案>/<id>.jsonl、projects/<專案>/<id>/…
+ * - Codex:sessions|archived_sessions/…/<id>.jsonl 或 …-<id>.jsonl(最多 4 層資料夾)
+ * - Antigravity:conversations/<id>.db、.db-wal、.db-shm、brain/<id>/…
+ * 每一段都要是 Windows 合法的檔名。
+ */
+function safeRestorePath(f: SavepointFile, backend: Backend, sessionId: string): boolean {
+  if (f.根目錄 !== ROOT_OF[backend] || typeof f.位置 !== 'string') return false;
+  const segs = f.位置.split('/');
+  if (!segs.every(okSegment)) return false;
+  const id = escRe(sessionId.toLowerCase());
+  const rel = f.位置.toLowerCase();
+  if (backend === 'claude') return new RegExp(`^projects/[^/]+/(?:${id}\\.jsonl|${id}/.+)$`).test(rel);
+  if (backend === 'codex') return new RegExp(`^(?:archived_)?sessions/(?:[^/]+/){0,4}(?:[^/]*-)?${id}\\.jsonl$`).test(rel);
+  return new RegExp(`^(?:conversations/${id}\\.db(?:-wal|-shm)?|brain/${id}/.+)$`).test(rel);
+}
+
+/** 工具根目錄到目的資料夾之間已經存在的每一層都不能是連結(根目錄本身可以):避免穿過 junction 寫到別處。 */
+function linkFreeBelowRoot(root: string, rel: string): boolean {
+  const segs = rel.split('/');
+  let p = root;
+  for (const s of segs.slice(0, -1)) {
+    p = join(p, s);
+    let st;
+    try { st = lstatSync(p); } catch { return true; } // 這一層還不存在,之後由 mkdir 建立
+    if (st.isSymbolicLink() || !st.isDirectory()) return false;
+  }
+  return true;
+}
+
+export type RestoreResult = { ok: true; restored: number; kept: number } | { ok: false; reason: string };
+
+/**
+ * 從存點把對話檔放回工具資料夾(里程碑 S3)。一律先檢查,全部通過才寫:
+ * - 說明檔讀得到、每個位置都符合那家的格式、存點裡每個檔案的大小與 sha256 都對得上;
+ * - 目的路徑在工具根目錄底下不能經過連結;Antigravity 的主檔不在、舊的 -wal/-shm 卻還在時不還原(避免配上別的 wal);
+ * - **不覆蓋**已經存在的檔案(算在 kept):先複製成獨一無二的暫存檔,再用硬連結放到目的位置(目的已存在就失敗,不會覆蓋),
+ *   不支援硬連結的磁碟才改用「確認不存在再改名」;暫存檔一律刪掉;
+ * - 主檔最後才放回:主檔在就代表整組放齊了(中途失敗時下次還會再還原);
+ * - Claude Code 的檔案把修改時間設成現在,否則下次啟動可能又因為超過保存期限被刪掉。
+ */
+export async function restoreSavepoint(vaultDir: string, dir: string, roots: SessionRoots, now: Date = new Date()): Promise<RestoreResult> {
+  if (!dir.startsWith(`${SAVEPOINT_DIR}/`) || dir.includes('\\') || dir.split('/').some(s => !s || s === '..' || s === '.')) return { ok: false, reason: '存點路徑不正確' };
+  const m = readSavepoint(vaultDir, dir);
+  if (!m || !BACKEND_IDS.includes(m.後台ID) || !SESSION_RE.test(m.sessionId)) return { ok: false, reason: '存點的說明檔讀不到或格式不對' };
+  if (!m.檔案.length || !m.檔案.every(f => safeRestorePath(f, m.後台ID, m.sessionId))) return { ok: false, reason: '存點裡有不能還原的檔案位置' };
+  if (!m.檔案.some(f => isMainFile(f.位置, m.sessionId))) return { ok: false, reason: '存點裡沒有對話的主檔' };
+  const root = roots[ROOT_OF[m.後台ID]];
+  if (!m.檔案.every(f => linkFreeBelowRoot(root, f.位置))) return { ok: false, reason: '工具資料夾裡的路徑經過連結(junction 或符號連結),為了安全不還原' };
+  if (m.後台ID === 'antigravity' && !sessionMainExists('antigravity', m.sessionId, roots)
+    && ['-wal', '-shm'].some(x => existsSync(join(root, 'conversations', `${m.sessionId}.db${x}`)))) {
+    return { ok: false, reason: 'Antigravity 的對話主檔不在,但舊的 -wal/-shm 還在;放回主檔可能和它們不一致,不還原' };
+  }
+  const base = join(vaultDir, ...dir.split('/'), 'files');
+  // 第一階段:只讀,確認存點完整
+  for (const f of m.檔案) {
+    const src = join(base, f.根目錄, ...f.位置.split('/'));
+    if (!isPlainFile(src)) return { ok: false, reason: `存點缺少檔案:${f.位置}` };
+    if (statSync(src).size !== f.大小 || (await sha256File(src)) !== f.sha256) return { ok: false, reason: `存點的檔案已損壞(檢查碼不符):${f.位置}` };
+  }
+  // 第二階段:放回,不覆蓋;主檔最後
+  const ordered = [...m.檔案.filter(f => !isMainFile(f.位置, m.sessionId)), ...m.檔案.filter(f => isMainFile(f.位置, m.sessionId))];
+  let restored = 0, kept = 0;
+  for (const f of ordered) {
+    const src = join(base, f.根目錄, ...f.位置.split('/'));
+    const dst = join(root, ...f.位置.split('/'));
+    if (existsSync(dst)) { kept++; continue; }
+    const tmp = `${dst}.${randomUUID().slice(0, 8)}.nexus-restore.tmp`;
+    try {
+      await mkdir(dirname(dst), { recursive: true });
+      await copyFile(src, tmp, fsConstants.COPYFILE_EXCL);
+      if (f.根目錄 === 'claude') await utimes(tmp, now, now);
+      let placed = false;
+      try { await link(tmp, dst); placed = true; } catch (e) {
+        const c = errCode(e);
+        if (c === 'EEXIST') { kept++; continue; }
+        // 不支援硬連結的磁碟(FAT、部分網路磁碟):退回「確認不存在再改名」
+        if (!['EPERM', 'ENOTSUP', 'EXDEV', 'ENOSYS', 'EINVAL'].includes(c)) throw e;
+      }
+      if (!placed) {
+        if (existsSync(dst)) { kept++; continue; }
+        await rename(tmp, dst);
+      }
+      restored++;
+    } catch (e) {
+      return { ok: false, reason: `放回檔案失敗(${f.位置}):${errCode(e) || String((e as Error)?.message ?? e)}` };
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {});
+    }
+  }
+  if (!sessionMainExists(m.後台ID, m.sessionId, roots)) return { ok: false, reason: '放回之後仍找不到對話的主檔' };
+  return { ok: true, restored, kept };
 }
 
 /** 用在刪除結果的說明文字。 */

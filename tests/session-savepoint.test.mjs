@@ -4,7 +4,7 @@
 // 用法:node --no-warnings tests/session-savepoint.test.mjs(Node 22.18 以上可直接載入 .ts)
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { register } from 'node:module';
@@ -15,6 +15,7 @@ const { addFrontMatterField, writeMemory } = await import('../src/main/memory-wr
 const { MemoryVault, parseFrontMatter, README } = await import('../src/main/memory-vault.ts');
 const { buildVaultStats } = await import('../src/main/vault-stats.ts');
 const { SAVEPOINT_RESTORE_SUPPORTED, wakeTargetOf } = await import('../src/main/wake.ts');
+const { NEEDS_RESTORE, needsRestoreOf } = await import('../src/shared/types.ts');
 
 let passed = 0;
 const test = async (name, fn) => { await fn(); passed++; console.log('[ok]', name); };
@@ -334,9 +335,9 @@ await test('統計檔:存點清單、可還原、原檔還在,以及「可接回
     { 路徑: 'nodes/封存/_存點/r1/b', 時間: '2026-11-23T20:05:09+08:00', 後台ID: 'claude', 大小: 10, 原檔還在: false, 可還原: true },
     { 路徑: 'nodes/封存/_存點/r1/a', 時間: '2026-11-23T20:05:09+08:00', 後台ID: 'claude', 大小: 10, 原檔還在: null, 可還原: false },
   ], '只有目前那段對話的存點可還原;舊 session 的存點原檔還在是 null');
-  // 還原(S3)支援之前,有可還原的存點也不算可接回,和喚醒網址一致
-  assert.equal(SAVEPOINT_RESTORE_SUPPORTED, false);
-  assert.equal(n('r1').session.可接回, false, '原檔沒了、還不能從存點還原');
+  // S3 起支援從存點還原:原檔沒了但有可還原的存點也算可接回(和喚醒網址一致)
+  assert.equal(SAVEPOINT_RESTORE_SUPPORTED, true);
+  assert.equal(n('r1').session.可接回, true, '原檔沒了、可以從存點還原');
   assert.equal(n('r2').session.可接回, true, '原檔還在');
   assert.equal(n('r2').存點[0].原檔還在, true);
   assert.equal(n('r3').session.可接回, false, '原檔沒了也沒有存點');
@@ -407,6 +408,137 @@ await test('存點摘要:說明檔的節點ID、後台ID、sessionId 不對時�
   }
   writeFileSync(file, JSON.stringify({ ...m, 總大小: 'x' }));
   assert.equal(sp.savepointSummaries(vault, node().id)[0].size, 0, '大小不是數字時是 0');
+});
+
+// ---- S3:還原 ----
+
+/** 建一個存點,再把原檔刪掉(模擬工具清掉對話)。 */
+async function savedThenGone(backend = 'claude') {
+  const { roots } = fakeHome();
+  const vault = tmp('vault');
+  const n = backend === 'claude' ? node() : backend === 'codex' ? node({ backend, backendLabel: 'Codex', sessionId: CODEX }) : node({ backend, backendLabel: 'Antigravity' });
+  const r = await sp.createSavepoint(vault, n, roots, NOW);
+  assert.equal(r.ok, true);
+  for (const f of sp.locateSessionFiles(backend, n.sessionId, roots)) rmSync(join(roots[f.root], ...f.rel.split('/')), { force: true });
+  assert.equal(sp.sessionMainExists(backend, n.sessionId, roots), false);
+  return { roots, vault, r, n };
+}
+
+await test('還原:三家都放回原位、內容相同,Claude 的修改時間設成現在', async () => {
+  for (const backend of ['claude', 'codex', 'antigravity']) {
+    const { roots, vault, r, n } = await savedThenGone(backend);
+    const later = new Date(2026, 11, 31, 12, 0, 0);
+    const res = await sp.restoreSavepoint(vault, r.path, roots, later);
+    assert.equal(res.ok, true, `${backend}:${res.reason}`);
+    assert.equal(sp.sessionMainExists(backend, n.sessionId, roots), true, backend);
+    const m = sp.readSavepoint(vault, r.path);
+    assert.equal(res.restored, m.檔案.length, backend);
+    for (const f of m.檔案) {
+      const dst = join(roots[f.根目錄], ...f.位置.split('/'));
+      assert.equal(await sp.sha256File(dst), f.sha256, f.位置);
+      if (backend === 'claude') assert.equal(statSync(dst).mtime.getTime(), later.getTime(), '修改時間是還原當下');
+      assert.equal(existsSync(`${dst}.nexus-restore.tmp`), false);
+    }
+  }
+});
+
+await test('還原:不覆蓋已經存在的檔案', async () => {
+  const { roots, vault, r } = await savedThenGone('claude');
+  const main = join(roots.claude, 'projects', 'C--work-a', `${SID}.jsonl`);
+  writeFileSync(main, 'NEWER');
+  const res = await sp.restoreSavepoint(vault, r.path, roots, NOW);
+  assert.equal(res.ok, true);
+  assert.equal(res.kept, 1);
+  assert.equal(readFileSync(main, 'utf8'), 'NEWER');
+});
+
+await test('還原:存點損壞時什麼都不寫', async () => {
+  const { roots, vault, r } = await savedThenGone('claude');
+  const copied = join(vault, ...r.path.split('/'), 'files', 'claude', 'projects', 'C--work-a', `${SID}.jsonl`);
+  writeFileSync(copied, '{"a":2}\n');
+  const res = await sp.restoreSavepoint(vault, r.path, roots, NOW);
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /損壞/);
+  assert.equal(existsSync(join(roots.claude, 'projects', 'C--work-a', SID, 'subagents', 'agent-1.jsonl')), false, '子代理紀錄也沒有寫回');
+  assert.equal(sp.sessionMainExists('claude', SID, roots), false);
+});
+
+await test('還原:說明檔被改成寫到別處時拒絕(..、絕對路徑、別家資料夾、不含 id、別的根目錄)', async () => {
+  const { roots, vault, r } = await savedThenGone('claude');
+  const file = join(vault, ...r.path.split('/'), '存點.json');
+  const m = JSON.parse(readFileSync(file, 'utf8'));
+  const main = m.檔案.find(f => f.位置.endsWith(`${SID}.jsonl`));
+  const bad = [
+    { 位置: `projects/../../evil/${SID}.jsonl` }, { 位置: `C:/evil/${SID}.jsonl` }, { 位置: `/evil/${SID}.jsonl` },
+    { 位置: `settings/${SID}.jsonl` }, { 位置: 'projects/C--work-a/other.jsonl' }, { 根目錄: 'codex' }, { 位置: `projects\\x\\${SID}.jsonl` },
+    { 位置: `projects/C--work-a/memory/x-${SID}.md` }, { 位置: `projects/C--work-a/${SID}.jsonl:ads` }, { 位置: `projects/CON/${SID}.jsonl` },
+    { 位置: `projects/C--work-a./${SID}.jsonl` }, { 位置: `projects/a/b/${SID}.jsonl` },
+  ];
+  for (const b of bad) {
+    // 存點的 files/ 底下真的放好對應的來源檔,確定是被「位置」檢查擋下,而不是缺檔
+    writeFileSync(file, JSON.stringify({ ...m, 檔案: [{ ...main, ...b }] }));
+    const res = await sp.restoreSavepoint(vault, r.path, roots, NOW);
+    assert.equal(res.ok, false, JSON.stringify(b));
+    assert.match(res.reason, /不能還原的檔案位置/, JSON.stringify(b));
+  }
+  assert.equal((await sp.restoreSavepoint(vault, 'nodes/other/x', roots, NOW)).ok, false, '存點路徑不在 _存點 底下');
+  assert.equal((await sp.restoreSavepoint(vault, `${r.path}/../..`, roots, NOW)).ok, false);
+});
+
+await test('還原:主檔最後放回;附屬檔失敗時主檔不放,下次還能再還原', async () => {
+  const { roots, vault, r } = await savedThenGone('claude');
+  // 子代理資料夾的位置被一個檔案佔住:附屬檔放不回去
+  const dirPath = join(roots.claude, 'projects', 'C--work-a', SID);
+  rmSync(dirPath, { recursive: true, force: true });
+  writeFileSync(dirPath, 'blocker');
+  const res = await sp.restoreSavepoint(vault, r.path, roots, NOW);
+  assert.equal(res.ok, false);
+  assert.equal(sp.sessionMainExists('claude', SID, roots), false, '主檔沒有放回,所以下次接回仍會詢問還原');
+  assert.ok(!readdirSync(join(roots.claude, 'projects', 'C--work-a')).some(n => n.includes('nexus-restore')), '沒有留下暫存檔');
+  rmSync(dirPath, { force: true });
+  assert.equal((await sp.restoreSavepoint(vault, r.path, roots, NOW)).ok, true, '排除問題後可以再還原');
+});
+
+await test('還原:目的路徑經過 junction 時拒絕;存在檢查會跟隨 junction', async () => {
+  const { roots, vault, r } = await savedThenGone('claude');
+  const proj = join(roots.claude, 'projects', 'C--work-a');
+  const moved = join(tmp('moved'), 'C--work-a');
+  mkdirSync(moved, { recursive: true });
+  rmSync(proj, { recursive: true, force: true });
+  symlinkSync(moved, proj, 'junction');
+  const res = await sp.restoreSavepoint(vault, r.path, roots, NOW);
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /連結/);
+  assert.deepEqual(readdirSync(moved), [], '沒有穿過 junction 寫入');
+  // 使用者把專案資料夾搬到別處用 junction 接回:對話照樣算在(不會被誤判成已清除)
+  writeFileSync(join(moved, `${SID}.jsonl`), 'x');
+  assert.equal(sp.sessionMainExists('claude', SID, roots), true);
+  assert.ok(sp.sessionIndex('claude', roots).has(SID));
+});
+
+await test('還原:Antigravity 主檔不在但舊的 -wal 還在時不還原', async () => {
+  const { roots, vault, r } = await savedThenGone('antigravity');
+  writeFileSync(join(roots.agy, 'conversations', `${SID}.db-wal`), 'stale');
+  const res = await sp.restoreSavepoint(vault, r.path, roots, NOW);
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /-wal/);
+  assert.equal(existsSync(join(roots.agy, 'conversations', `${SID}.db`)), false);
+});
+
+await test('還原:兩個同時還原不會寫壞檔案', async () => {
+  const { roots, vault, r } = await savedThenGone('codex');
+  const [a, b] = await Promise.all([sp.restoreSavepoint(vault, r.path, roots, NOW), sp.restoreSavepoint(vault, r.path, roots, NOW)]);
+  assert.equal(a.ok && b.ok, true, `${a.reason ?? ''} ${b.reason ?? ''}`);
+  const m = sp.readSavepoint(vault, r.path);
+  assert.equal(a.restored + b.restored, m.檔案.length, '每個檔案只放回一次');
+  for (const f of m.檔案) assert.equal(await sp.sha256File(join(roots.codex, ...f.位置.split('/'))), f.sha256);
+});
+
+await test('還原的詢問:NEEDS_RESTORE 錯誤訊息讀得回資料,其他錯誤是 null', () => {
+  const msg = `Error invoking remote method 'x': Error: ${NEEDS_RESTORE}${JSON.stringify({ 時間: '2026-11-23T20:05:09+08:00', 大小: 5, 後台: 'Claude Code' })}`;
+  assert.deepEqual(needsRestoreOf(msg), { 時間: '2026-11-23T20:05:09+08:00', 大小: 5, 後台: 'Claude Code' });
+  assert.equal(needsRestoreOf('一般錯誤'), null);
+  assert.equal(needsRestoreOf(`${NEEDS_RESTORE}not json`), null);
 });
 
 console.log(`session-savepoint:${passed} 項通過`);

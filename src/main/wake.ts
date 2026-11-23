@@ -36,10 +36,10 @@ export function canResume(node: { sessionId: string | null; cwd: string }, inRem
 }
 
 /**
- * 主控台是不是已經能從存點還原(session 存點里程碑 S3)。還沒有時,統計檔的「可接回」與喚醒網址都只看原檔:
- * 存點照樣列出、標可還原,但不算進「點喚醒會有結果」,兩邊的判斷才一致。
+ * 主控台能不能從存點還原(session 存點里程碑 S3 起是 true)。false 時統計檔的「可接回」與喚醒網址都只看原檔;
+ * true 時原檔被清掉、但有可還原的存點也算「點喚醒會有結果」(接回時先問再還原,見 core.ts 的 openOldSession)。
  */
-export const SAVEPOINT_RESTORE_SUPPORTED = false;
+export const SAVEPOINT_RESTORE_SUPPORTED = true;
 
 /**
  * 點喚醒會有結果(統計檔的「可接回」與喚醒網址共用):canResume 成立,而且工具資料夾裡還有這段對話的主檔

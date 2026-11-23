@@ -503,6 +503,17 @@ export interface OpenOldSessionInput {
   name: string;
   character: string;
   model: string;
+  /** 原本的對話檔已被工具清掉時,使用者同意從存點還原(先問再還原:第一次不帶,收到 NEEDS_RESTORE 的錯誤再帶 true 重試)。 */
+  restoreFromSavepoint?: boolean;
+}
+
+/** openOldSession 需要使用者同意從存點還原時,錯誤訊息的開頭;後面接 JSON {時間, 大小, 後台}。 */
+export const NEEDS_RESTORE = 'NEXUS_NEEDS_RESTORE:';
+/** 從錯誤訊息取出「需要從存點還原」的資料;不是這種錯誤時是 null。 */
+export function needsRestoreOf(message: string): { 時間: string; 大小: number; 後台: string } | null {
+  const i = message.indexOf(NEEDS_RESTORE);
+  if (i < 0) return null;
+  try { return JSON.parse(message.slice(i + NEEDS_RESTORE.length)); } catch { return null; }
 }
 
 /**
