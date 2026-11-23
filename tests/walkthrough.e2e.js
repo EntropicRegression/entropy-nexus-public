@@ -110,7 +110,10 @@
     await wait(500);
     await click(btn('.dialog', '終止'));
     await wait(300);
-    await click(btn('.dialog', '直接刪除'));
+    await click(btn('.dialog', '直接刪除(只存統計)'));
+    await wait(300);
+    // 第二個問題:要不要也寫回憶錄(比照 memory-archive.e2e.js,選不用)
+    await click(btn('.dialog', '不用寫回憶錄'));
     await until('節點移除', async () => !(await snap()).agents.some(a => a.id === mine.id), 10000);
     check('點「終止」移除節點', true);
 

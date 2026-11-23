@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { attachmentKind, type AdapterEvent, type ApprovalDecision, type Backend, type Capability } from '../../shared/types';
+import { MEMOIR_PROMPT_LEAD } from '../../shared/memory-draft';
 import { saveImage } from '../media';
 import { pathOnlyNote, withPaths, type Adapter, type AdapterSession, type StartOptions } from './adapter';
 
@@ -248,6 +249,35 @@ class FakeSession implements AdapterSession {
       this.emit({ type: 'note', text: `[draft] ${await submit()}` });
       if (_text.includes('〔測試重複提交〕')) this.emit({ type: 'note', text: `[draft] ${await submit()}` });
       this.emit({ type: 'message', role: 'agent', text: '草稿已提交。' });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
+    // 【只給驗收測試用】回憶錄:
+    //   NEXUS_FAKE_MEMOIR=1 時,收到主控台的「回憶錄請求」就依序用 memory_draft(kind memoir)提交四次:
+    //   缺「## 不確定之處」(應被拒收)、起日晚於迄日(應被拒收)、合格的一份(參數裡偽造 節點ID / 節點 / 後台,應被忽略;
+    //   正文含假金鑰與本機絕對路徑,應被遮罩)、再交一次(同一個請求應被擋)。結果以 [memoir] 開頭的 note 事件回報。
+    if (process.env.NEXUS_FAKE_MEMOIR === '1' && _text.includes(MEMOIR_PROMPT_LEAD)) {
+      this.emit({ type: 'state', state: 'working', detail: '寫回憶錄' });
+      await this.wait(300);
+      const url = this.opts.interop?.url;
+      const good = '我在這段期間幫使用者整理了部署流程。設定檔在 C:\\Users\\example\\star\\deploy.json,金鑰 api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 不該留下。\n\n## 來源\n\n這個 session 的對話。\n\n## 不確定之處\n\n無';
+      const forged = { 節點ID: 'node-forged', 節點: '冒名者', 後台: '假後台', node_id: 'node-forged', node: '冒名者', backend: 'fake' };
+      const attempts = [
+        { kind: 'memoir', title: '測試回憶錄', period: '2026-11-16/2026-11-17', content: '只有正文。\n\n## 來源\n\n對話。' },
+        { kind: 'memoir', title: '測試回憶錄', period: '2026-11-18/2026-11-16', content: good },
+        { kind: 'memoir', title: '測試回憶錄', period: '2026-11-16/2026-11-17', content: good, ...forged },
+        { kind: '回憶錄', title: '測試回憶錄', period: '2026-11-16', content: good },
+      ];
+      const submit = async (args: Record<string, unknown>): Promise<string> => {
+        if (!url) return 'no-interop-url';
+        try {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'memory_draft', arguments: args } }) });
+          const j = await r.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+          return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+        } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+      };
+      for (const args of attempts) this.emit({ type: 'note', text: `[memoir] ${await submit(args)}` });
+      this.emit({ type: 'message', role: 'agent', text: '回憶錄已提交。' });
       this.emit({ type: 'state', state: 'idle', detail: '' });
       return;
     }

@@ -122,6 +122,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
     setDraftMsg('');
     window.nexus.requestDraft(a.id).then(msg => { setDraftMsg(msg); void window.nexus.draftInfo(a.id).then(setDraft); }, e => setDraftMsg(clean(e)));
   };
+  // 寫回憶錄:不看累積字數,最上層的對話模式節點都可以按;節點用第一人稱寫一章(未確認),每天最多 3 份由主控台把關
+  const offerMemoir = !isSub && !a.terminal;
+  const requestMemoir = () => {
+    setDraftMsg('');
+    window.nexus.requestMemoir(a.id).then(setDraftMsg, e => setDraftMsg(clean(e)));
+  };
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
@@ -234,12 +240,22 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   // 分支對話:需要後台支援,而且節點已經有 session
   const [forking, setForking] = useState(false);
   // 終止最上層節點:先確認要不要請它寫工作總結再歸檔進記憶庫(ask = 等使用者選,busy = 正在寫總結)
-  const [rm, setRm] = useState<null | 'ask' | 'busy'>(null);
+  // memoir = 選好總結方式後,再問一次要不要先寫回憶錄(節點離線、異常或在終端機模式時寫不了,不問)
+  const [rm, setRm] = useState<null | 'ask' | 'memoir' | 'busy'>(null);
   const [rmNote, setRmNote] = useState('');
-  const removeWith = async (mode: 'summary' | 'stats') => {
+  const [rmMode, setRmMode] = useState<'summary' | 'stats'>('summary');
+  const chooseRemove = (mode: 'summary' | 'stats') => {
+    // 離線、終端機模式、異常狀態的節點寫不了回憶錄,不多問
+    if (offline || a.terminal || a.state === 'error') { void removeWith(mode, false); return; }
+    setRmMode(mode);
+    setRm('memoir');
+  };
+  const removeWith = async (mode: 'summary' | 'stats', memoir: boolean) => {
     setRm('busy');
-    setRmNote(mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘…' : '正在歸檔統計…');
-    try { await window.nexus.removeAgentArchived(a.id, mode); }
+    setRmNote(memoir
+      ? (mode === 'summary' ? '正在請它寫回憶錄與工作總結,最多各等 3 分鐘…' : '正在請它寫回憶錄,之後歸檔統計,最多等 3 分鐘…')
+      : (mode === 'summary' ? '正在請它寫工作總結,最多等 3 分鐘…' : '正在歸檔統計…'));
+    try { await window.nexus.removeAgentArchived(a.id, mode, memoir); }
     catch (e) { setRmNote(`終止失敗:${String((e as Error).message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`); setRm('ask'); }
   };
   const forkWhy = !cap?.fork ? `${BACKEND_LABEL[a.backend]} 不支援分支對話。` : !a.sessionId ? '這個節點還沒有 session(先對話一次),沒有可以分支的內容。' : '';
@@ -282,11 +298,20 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
 
         {rm && !isSub && (
           <div className="dlg-settings dlg-remove need-full">
-            <span className="muted">終止「{a.name}」前,要先請它寫一份工作總結,和任務統計一起封存進記憶庫嗎?之後建立同名節點時可以接回。</span>
+            {rm === 'memoir'
+              ? <span className="muted">刪除前,要不要也請「{a.name}」用第一人稱寫一章回憶錄,存進記憶庫(未確認,在記憶庫管理 app 確認)?</span>
+              : <span className="muted">終止「{a.name}」前,要先請它寫一份工作總結,和任務統計一起封存進記憶庫嗎?之後建立同名節點時可以接回。</span>}
             <span className="spacer" />
             {rmNote && <span className="muted">{rmNote}</span>}
-            <button className="primary" disabled={rm === 'busy'} onClick={() => void removeWith('summary')}>先請它寫工作總結再刪除</button>
-            <button className="danger" disabled={rm === 'busy'} onClick={() => void removeWith('stats')}>直接刪除(只存統計)</button>
+            {rm === 'memoir'
+              ? <>
+                <button className="primary" onClick={() => void removeWith(rmMode, true)}>寫回憶錄再刪除</button>
+                <button className="ghost" onClick={() => void removeWith(rmMode, false)}>不用寫回憶錄</button>
+              </>
+              : <>
+                <button className="primary" disabled={rm === 'busy'} onClick={() => chooseRemove('summary')}>先請它寫工作總結再刪除</button>
+                <button className="danger" disabled={rm === 'busy'} onClick={() => chooseRemove('stats')}>直接刪除(只存統計)</button>
+              </>}
             <button className="ghost" disabled={rm === 'busy'} onClick={() => { setRm(null); setRmNote(''); }}>取消</button>
           </div>
         )}
@@ -425,9 +450,10 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             })}
           </div>
         )}
-        {(offerDraft || draftMsg) && (
-          <div className="dlg-draft">
-            {offerDraft && <button className="ghost need-op" disabled={offline} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
+        {(offerDraft || offerMemoir || draftMsg) && (
+          <div className="dlg-draft need-op">
+            {offerDraft && <button className="ghost need-op" disabled={offline || rm === 'busy'} onClick={requestDraft} title={`上次儲存之後已累積約 ${draftChars} 字的對話。請這個節點整理成記憶草稿(未確認),之後在記憶庫管理 app 確認`}>儲存這段記憶</button>}
+            {offerMemoir && <button className="ghost need-op" disabled={offline || rm === 'busy'} onClick={requestMemoir} title="請這個節點用第一人稱寫一章回憶錄(未確認,每天最多 3 份),之後在記憶庫管理 app 確認">寫回憶錄</button>}
             {draftMsg && <span className="muted">{draftMsg}</span>}
           </div>
         )}

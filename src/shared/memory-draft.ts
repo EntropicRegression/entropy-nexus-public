@@ -9,8 +9,10 @@ export const DRAFT_THRESHOLD = 3000;
 export const DRAFT_SEGMENT_MAX = 6000;
 /** 草稿請求提示詞的開頭;假資料轉接器靠它認出這是草稿請求。 */
 export const DRAFT_PROMPT_LEAD = '(主控台:記憶草稿請求。';
+/** 回憶錄請求提示詞的開頭;假資料轉接器靠它認出這是回憶錄請求(以「(主控台」開頭,所以也不算對話內容)。 */
+export const MEMOIR_PROMPT_LEAD = '(主控台:回憶錄請求。';
 
-export interface DraftEvent { type: string; seq: number; role?: string; text?: string }
+export interface DraftEvent { type: string; seq: number; role?: string; text?: string; ts?: number }
 export interface DraftLine { seq: number; role: 'user' | 'agent'; text: string }
 
 /** 主控台自己發給節點的請求(歸檔總結、判例、草稿)不算對話內容。 */

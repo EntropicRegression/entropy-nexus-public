@@ -31,6 +31,7 @@ import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
 import { nodeProfilePath } from './memory-write';
 import { writeMeetingRecord, type MeetingRecordInput } from './meeting-record';
+import { isMemoirPrompt, waitForMemoir } from './memoir';
 import type { Store } from './store';
 import type { MemoryVault } from './memory-vault';
 import { gitCommitsAhead, gitHead, readNodeStrengths, type MemoryCaller, type MemoryToolsDeps } from './memory-tools';
@@ -54,6 +55,13 @@ const FAULT_MS = Number(process.env.NEXUS_FAULT_WARN_MS) || FAULT_WARN_MS;
 const DAILY_KEEP_DAYS = 90;
 
 const DEMO_PROMPTS = ['整理這個模組', '跑一次測試', '找出效能瓶頸', '更新說明文件', '修正型別錯誤'];
+
+/** 刪除節點前寫回憶錄用的介面(由 memory-draft.ts 的 DraftService 提供)。 */
+export interface MemoirHook {
+  request(agentId: string): Promise<string>;
+  pending(agentId: string): boolean;
+  cancel(agentId: string): void;
+}
 
 /**
  * 核心服務:管理節點與它們的 CLI session。
@@ -89,6 +97,8 @@ export class Core {
   /** 上一次送給總管的節點統計段落與時間;用來判斷下一則指令前要不要再通知。 */
   private chiefStatsSent = { text: '', at: 0 };
   private cases: { onTaskEnded(task: TaskInfo): unknown } | null = null;
+  /** 回憶錄(刪除節點前可以先請它寫一章);啟動時由 index.ts 接上草稿服務。 */
+  private memoir: MemoirHook | null = null;
   /** 記憶庫(長期記憶);沒有設定時記憶工具不可用。 */
   private vault: MemoryVault | null = null;
   /** 要在下一則指令前告訴總管的記憶相關通知(例如專案知識超過上限)。 */
@@ -572,16 +582,46 @@ export class Core {
    * 刪除最上層節點前先歸檔進記憶庫(長期記憶階段 4)。mode:summary 先請節點寫工作總結(不行就請總管代寫),stats 只存統計。
    * 歸檔失敗不會擋住刪除:失敗的原因回傳給畫面,節點照樣移除。
    */
-  async removeWithArchive(id: string, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }> {
+  async removeWithArchive(id: string, mode: 'summary' | 'stats', memoir = false): Promise<{ archive: string | null; note: string }> {
     const agent = this.agents.get(id);
     let out: { archive: string | null; note: string } = { archive: null, note: '' };
+    // 先寫回憶錄(使用者選了才寫),再寫工作總結:兩份都要節點本人有空才寫得出來,回憶錄等完節點才會回到待命
+    const memoirNote = memoir && agent && !agent.parentId ? await this.askForMemoir(agent) : '';
     if (agent && !agent.parentId && this.vault) {
       try { out = await this.archiveNode(agent, mode === 'stats' ? 'stats' : 'summary'); }
       catch (e) { out = { archive: null, note: `歸檔失敗,節點仍已刪除:${String((e as Error)?.message ?? e)}` }; console.error('歸檔節點失敗', e); }
     }
     await this.removeAgent(id);
-    return out;
+    return memoirNote ? { ...out, note: [memoirNote, out.note].filter(Boolean).join(' ') } : out;
   }
+
+  /**
+   * 刪除節點前請它寫一章回憶錄,等它提交(或這個請求的回合結束、逾時)。回傳給使用者看的一句說明。流程在 memoir.ts 的 waitForMemoir:
+   * 已經有回憶錄請求在進行就等那一份;回合結束卻沒有提交就取消請求;逾時就取消請求、拿掉佇列裡的提示、中斷正在寫的回合。都不擋刪除。
+   */
+  private async askForMemoir(agent: AgentInfo): Promise<string> {
+    const hook = this.memoir;
+    if (!hook) return '';
+    const id = agent.id;
+    return waitForMemoir({
+      pending: () => hook.pending(id),
+      queuedId: () => this.memoirQueuedId(id),
+      running: () => this.memoirRunning(id),
+      endedSince: since => [...this.tasks.values()].some(t => t.agentId === id && t.endedAt !== null && t.endedAt >= since && isMemoirPrompt(t.title)),
+      request: () => hook.request(id),
+      cancel: () => hook.cancel(id),
+      cancelQueued: q => this.cancelQueued(id, q),
+      interrupt: () => { void Promise.resolve(this.interrupt(id)).catch(() => {}); },
+      now: () => Date.now(),
+      sleep: ms => new Promise(r => setTimeout(r, ms)),
+      timeoutMs: Number(process.env.NEXUS_ARCHIVE_TIMEOUT_MS) || 3 * 60 * 1000,
+    });
+  }
+
+  /** 佇列裡還沒送出的回憶錄提示的 id(依提示開頭辨識,不會和「儲存這段記憶」的草稿請求混淆);沒有是 null。 */
+  memoirQueuedId(id: string): string | null { return this.agents.get(id)?.queued.find(q => isMemoirPrompt(q.text))?.id ?? null; }
+  /** 這個節點有沒有正在進行的回憶錄回合。 */
+  memoirRunning(id: string): boolean { return [...this.tasks.values()].some(t => t.agentId === id && t.endedAt === null && isMemoirPrompt(t.title)); }
 
   /** 等這個節點交辦出去的歸檔提示結束,回傳它的最後一則回覆;逾時、失敗或沒有回覆就是 null。 */
   private async askForSummary(id: string, prompt: string, timeoutMs: number): Promise<string | null> {
@@ -1287,6 +1327,8 @@ ${text}
 
   /** 判例服務(長期記憶階段 3):任務完成時由它判斷要不要請節點寫判例。啟動時由 index.ts 接上。 */
   attachCases(svc: { onTaskEnded(task: TaskInfo): unknown }): void { this.cases = svc; }
+  /** 回憶錄服務:刪除節點前選擇寫回憶錄時用。啟動時由 index.ts 接上。 */
+  attachMemoir(hook: MemoirHook): void { this.memoir = hook; }
 
   taskById(id: string): TaskInfo | undefined { return this.tasks.get(id); }
 

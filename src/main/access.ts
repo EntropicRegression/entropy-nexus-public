@@ -62,6 +62,8 @@ const RPC: Record<string, Rule> = {
   // 儲存這段記憶:請節點整理對話草稿,等於對節點下指令;只看資訊的 draftInfo 是唯讀
   draftInfo: read('agent'),
   requestDraft: operate('agent'),
+  // 寫回憶錄:同樣等於對節點下指令
+  requestMemoir: operate('agent'),
   send: operate('agent'),
   enqueue: operate('agent'),
   cancelQueued: operate('agent'),
@@ -211,6 +213,7 @@ export function auditDetail(action: string, input: Record<string, any>): string 
     case 'commitTask': return cut(input.message);
     case 'markCase': return '記下解法(請節點撰寫判例)';
     case 'requestDraft': return '儲存這段記憶(請節點整理草稿)';
+    case 'requestMemoir': return '寫回憶錄(請節點寫一章回憶錄)';
     case 'taskVerdict': return input.verdict === 'accepted' ? '驗收' : input.verdict === 'rejected' ? '退回' : '清除驗收';
     case 'setDailyBudget': return cut(`${input.backend ?? ''} 每日預算 ${input.percent === null || input.percent === undefined ? '預設' : `${input.percent}%`}`);
     default: return '';

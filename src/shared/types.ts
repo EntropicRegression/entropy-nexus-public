@@ -214,7 +214,7 @@ export type TaskVerdict = 'accepted' | 'rejected' | null;
 export interface MemoryEntry {
   /** 相對於記憶庫資料夾的路徑,一律用 /。 */
   path: string;
-  kind: 'node' | 'case' | 'knowledge' | 'preference' | 'meeting';
+  kind: 'node' | 'case' | 'knowledge' | 'preference' | 'meeting' | 'memoir';
   scope: '全域' | '專案';
   projectId: string;
   nodeId: string;
@@ -730,10 +730,12 @@ export interface NexusApi {
   draftInfo(id: string): Promise<{ lastSeq: number; threshold: number }>;
   /** 「儲存這段記憶」:請這個節點把上次儲存之後的對話整理成草稿(狀態未確認),回傳給使用者看的說明。 */
   requestDraft(id: string): Promise<string>;
+  /** 「寫回憶錄」:請這個節點用第一人稱寫一章回憶錄(狀態未確認;每個節點每天最多 3 份),回傳給使用者看的說明。 */
+  requestMemoir(id: string): Promise<string>;
   /** 記憶庫資料夾的位置與目前的索引(階段 1 只讀,記憶管理在獨立的 app)。 */
   getMemoryVault(): Promise<{ dir: string; entries: MemoryEntry[] }>;
-  /** 刪除節點並先歸檔進記憶庫:summary 先請節點(不行就請總管)寫工作總結,stats 只存統計。歸檔失敗不擋刪除,note 說明結果。 */
-  removeAgentArchived(id: string, mode: 'summary' | 'stats'): Promise<{ archive: string | null; note: string }>;
+  /** 刪除節點並先歸檔進記憶庫:summary 先請節點(不行就請總管)寫工作總結,stats 只存統計;memoir 為 true 時先請節點寫一章回憶錄。歸檔失敗不擋刪除,note 說明結果。 */
+  removeAgentArchived(id: string, mode: 'summary' | 'stats', memoir?: boolean): Promise<{ archive: string | null; note: string }>;
   /** 找這些名稱(依序:節點名稱、角色)的最新封存;沒有就是 null。 */
   findMemoryArchive(names: string[]): Promise<{ path: string; date: string; name: string } | null>;
   /** 把封存的特長與解決問題的流程接回這個節點的側寫;封存裡沒有這兩段時回傳 null。 */

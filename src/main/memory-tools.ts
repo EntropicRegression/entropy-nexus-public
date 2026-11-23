@@ -185,11 +185,11 @@ const isSuperseded = (path: string, targets: Set<string>) => {
 const SUBTYPE_ALIAS: Record<string, string> = { 決策: '決策', decision: '決策', 決策卡: '決策', 書籤: '書籤', bookmark: '書籤', 未完書籤: '書籤' };
 export const BOOKMARK_OPEN = '未完';
 
-/** 這個狀態的記憶 agent 看不看得到:未確認(草稿)與退回都看不到;判例與會議紀錄要已確認才看得到。 */
+/** 這個狀態的記憶 agent 看不看得到:未確認(草稿)與退回都看不到;判例、會議紀錄與回憶錄要已確認才看得到。 */
 export function statusVisible(kind: MemoryEntry['kind'], status: string): boolean {
   const st = status.trim();
   if (st === '未確認' || st === '退回') return false;
-  if (kind === 'case' || kind === 'meeting') return st === CASE_VISIBLE;
+  if (kind === 'case' || kind === 'meeting' || kind === 'memoir') return st === CASE_VISIBLE;
   return true;
 }
 
@@ -207,9 +207,9 @@ async function scopeOf(deps: MemoryToolsDeps, caller: MemoryCaller, wantProjectR
 }
 
 export interface SearchArgs { query?: string; kind?: string; node?: string; project?: string; subtype?: string }
-const KINDS = ['node', 'case', 'knowledge', 'preference', 'meeting'] as const;
-const KIND_ALIAS: Record<string, MemoryEntry['kind']> = { node: 'node', 節點: 'node', 節點側寫: 'node', case: 'case', 判例: 'case', knowledge: 'knowledge', 知識: 'knowledge', 專案知識: 'knowledge', preference: 'preference', 偏好: 'preference', meeting: 'meeting', 會議: 'meeting', 會議紀錄: 'meeting' };
-const KIND_LABEL: Record<MemoryEntry['kind'], string> = { node: '節點側寫', case: '判例', knowledge: '專案知識', preference: '使用者偏好', meeting: '會議紀錄' };
+const KINDS = ['node', 'case', 'knowledge', 'preference', 'meeting', 'memoir'] as const;
+const KIND_ALIAS: Record<string, MemoryEntry['kind']> = { node: 'node', 節點: 'node', 節點側寫: 'node', case: 'case', 判例: 'case', knowledge: 'knowledge', 知識: 'knowledge', 專案知識: 'knowledge', preference: 'preference', 偏好: 'preference', meeting: 'meeting', 會議: 'meeting', 會議紀錄: 'meeting', memoir: 'memoir', 回憶錄: 'memoir' };
+const KIND_LABEL: Record<MemoryEntry['kind'], string> = { node: '節點側寫', case: '判例', knowledge: '專案知識', preference: '使用者偏好', meeting: '會議紀錄', memoir: '回憶錄' };
 /** 只有這些狀態的判例 agent 才看得到。 */
 export const CASE_VISIBLE = '已確認';
 
@@ -301,7 +301,7 @@ export async function memoryRead(deps: MemoryToolsDeps, caller: MemoryCaller, ar
   const rel = cleanVaultPath(deps.vaultDir, String(args.path ?? ''));
   const includeReview = args.include_review === true || String(args.include_review).toLowerCase() === 'true';
   const entry = deps.list().find(e => e.path.toLowerCase() === rel.toLowerCase());
-  const gone = `找不到這則記憶:${rel}。路徑請用 memory_search 回傳的那個;判例與會議紀錄要使用者確認後才看得到,草稿與退回的記憶也看不到。`;
+  const gone = `找不到這則記憶:${rel}。路徑請用 memory_search 回傳的那個;判例、會議紀錄與回憶錄要使用者確認後才看得到,草稿與退回的記憶也看不到。`;
   if (!entry) throw new Error(gone);
   let text = '';
   try { text = readFileSync(join(deps.vaultDir, ...entry.path.split('/')), 'utf8'); } catch { throw new Error(gone); }
@@ -320,7 +320,7 @@ const dateOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export async function memorySearch(deps: MemoryToolsDeps, caller: MemoryCaller, args: SearchArgs): Promise<string> {
   const hits = await searchMemory(deps, caller, args);
-  if (!hits.length) return '記憶庫裡沒有符合的內容。(搜尋範圍是全域加上你目前的專案;判例與會議紀錄只有使用者確認過的看得到。)可以換個關鍵字,或拿掉 kind、node 的限制再試。';
+  if (!hits.length) return '記憶庫裡沒有符合的內容。(搜尋範圍是全域加上你目前的專案;判例、會議紀錄與回憶錄只有使用者確認過的看得到。)可以換個關鍵字,或拿掉 kind、node 的限制再試。';
   const out: string[] = [];
   let used = 0, shown = 0;
   for (const h of hits.slice(0, MAX_RESULTS)) {
@@ -353,6 +353,7 @@ export async function memoryWrite(deps: MemoryToolsDeps, caller: MemoryCaller, a
   if (!caller.isChief) throw new Error('只有總管節點可以寫入記憶(節點特長、專案知識、使用者偏好);你不是總管。請把想記下來的重點回報給總管或使用者。要寫判例請用 case_submit。');
   const rawKind = String(args.kind ?? '').trim().toLowerCase();
   if (KIND_ALIAS[rawKind] === 'meeting') throw new Error('會議紀錄由主控台在散會時自動寫入,不能用 memory_write。');
+  if (KIND_ALIAS[rawKind] === 'memoir') throw new Error('回憶錄不能用 memory_write 寫:要由使用者在主控台按「寫回憶錄」發出請求,被請求的節點再用 memory_draft(kind: memoir)提交。');
   // memory_write 自己的白名單:只有 node、knowledge、preference(與別名);判例另外報錯
   const aliased = KIND_ALIAS[rawKind];
   const kind = aliased && (aliased === 'case' || WRITE_KINDS.includes(aliased)) ? aliased : undefined;

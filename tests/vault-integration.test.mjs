@@ -214,9 +214,12 @@ await test('說明檔:新版提到熱度檔與 .vault-awards.json;主控台寫�
   assert.equal(readmeUpdate(README.replace(/\n/g, '\r\n')), null, '換行不同也算新版');
   assert.equal(readmeUpdate(`${README}\n我自己加的筆記\n`), null, '使用者改過不動');
   assert.equal(readmeUpdate(''), null, '讀不到內容不動');
-  // 第三版(還沒有 meetings 那行)會換新,使用者改過的不動
-  const v3 = README.replace(/  meetings     [^\n]*\n/, '');
-  assert.notEqual(v3, README);
+  // 第四版(還沒有 memoirs 那行)與第三版(也還沒有 meetings 那行)會換新,使用者改過的不動
+  const v4 = README.replace(/  memoirs      [^\n]*\n/, '');
+  assert.notEqual(v4, README);
+  assert.equal(readmeUpdate(v4), README, '第四版會換新');
+  const v3 = v4.replace(/  meetings     [^\n]*\n/, '');
+  assert.notEqual(v3, v4);
   assert.equal(readmeUpdate(v3), README, '第三版會換新');
   assert.equal(readmeUpdate(`${v3}\n我的註記\n`), null, '第三版但使用者改過不動');
   // 實際資料夾:舊版說明檔(第二版,有 .nexus-stats.json 那行)啟動時換成新版;改過的保留

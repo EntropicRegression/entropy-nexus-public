@@ -19,7 +19,7 @@ import { meetingRecordOf } from './meeting-record';
  *   start_meeting 召開會議:主控台主持,參與的節點輪流發言幾輪,最後把完整紀錄交回召開者
  *   meeting_say 會議中輪到主持人時,主持人用它發言(交給所有參與者,接著進行下一輪)或結束會議
  *   case_submit 主控台請節點撰寫判例時,節點用它提交敘述的章節(只有任務自己的節點能提交;見 cases.ts)
- *   memory_draft 使用者按「儲存這段記憶」時,被請求的節點用它提交對話草稿(狀態未確認;見 memory-draft.ts)
+ *   memory_draft 使用者按「儲存這段記憶」時,被請求的節點用它提交對話草稿;按「寫回憶錄」時用它提交回憶錄(kind memoir)。狀態都是未確認(見 memory-draft.ts、memoir.ts)
  *   step_report 協作流程的節點做完一步時用它回報(只有承辦該交辦的節點能回報;見 flow/service.ts)
  *
  * 設計:
@@ -244,7 +244,7 @@ const TOOL_DEFS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: '關鍵字,空白分隔(中文直接寫詞即可,不分大小寫)。' },
-        kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference', 'meeting'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好、meeting 會議紀錄(使用者確認過的才查得到)。不填就全部查。' },
+        kind: { type: 'string', enum: ['node', 'case', 'knowledge', 'preference', 'meeting', 'memoir'], description: '只查這個種類:node 節點側寫、case 判例、knowledge 專案知識、preference 使用者偏好、meeting 會議紀錄、memoir 回憶錄(會議紀錄與回憶錄只有使用者確認過的才查得到)。不填就全部查。' },
         node: { type: 'string', description: '只看和這個節點(名稱或 id)有關的記憶。' },
         project: { type: 'string', description: '指定專案(名稱或路徑);不填就是你目前的專案。' },
         subtype: { type: 'string', enum: ['decision', 'bookmark'], description: '只查專案知識的子類:decision 決策、bookmark 書籤(未完成的書籤排在前面)。不填就不限。' },
@@ -268,13 +268,14 @@ const TOOL_DEFS = [
   },
   {
     name: 'memory_draft',
-    description: '只在主控台請你「整理記憶草稿」時使用(使用者按了「儲存這段記憶」):把你們剛才那段對話裡值得長期保留的內容,整理成一份草稿提交。寫進記憶庫但狀態是「未確認」,使用者確認前不會被任何節點查到。只有被請求的節點能提交,一次請求只能提交一份。誰說的要寫清楚(使用者要求…、我建議…),只寫對話裡實際出現的事,不要寫金鑰或密碼。',
+    description: '只在主控台請你「整理記憶草稿」或「寫回憶錄」時使用。記憶草稿(使用者按了「儲存這段記憶」):把你們剛才那段對話裡值得長期保留的內容,kind 填 preference 或 knowledge 整理成一份草稿提交;誰說的要寫清楚(使用者要求…、我建議…),只寫對話裡實際出現的事。回憶錄(使用者按了「寫回憶錄」):kind 填 memoir,用第一人稱寫一章你的經歷回顧,要填 period(涵蓋期間),正文一定要有「## 來源」與「## 不確定之處」兩個章節(沒有內容寫「無」),節點ID、節點名稱、後台由主控台填。都會寫進記憶庫但狀態是「未確認」,使用者確認前不會被任何節點查到。只有被請求的節點能提交,一次請求只能提交一份。不要寫金鑰或密碼。',
     inputSchema: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['preference', 'knowledge'], description: 'preference 使用者偏好(跨專案適用)、knowledge 專案知識(這個專案的決策、慣例、踩過的坑、書籤)。' },
-        title: { type: 'string', description: '一句話標題。' },
-        content: { type: 'string', description: '內容(Markdown),第一行寫最重要的一句話。' },
+        kind: { type: 'string', enum: ['preference', 'knowledge', 'memoir'], description: 'preference 使用者偏好(跨專案適用)、knowledge 專案知識(這個專案的決策、慣例、踩過的坑、書籤)、memoir 回憶錄(只在主控台請你寫回憶錄時)。' },
+        title: { type: 'string', description: '一句話標題(回憶錄是這一章的標題)。' },
+        content: { type: 'string', description: '內容(Markdown),第一行寫最重要的一句話。回憶錄的正文一定要有「## 來源」與「## 不確定之處」兩個章節。' },
+        period: { type: 'string', description: 'memoir 用:這一章涵蓋的期間,ISO 日期區間,例如 2026-11-16/2026-11-17;只有一天可只寫起日。' },
         subtype: { type: 'string', enum: ['decision', 'bookmark'], description: 'knowledge 用,可省略:decision 決策、bookmark 書籤(還沒做完的事)。' },
         supersedes: { type: 'string', description: '可省略:這則取代的舊記憶檔路徑。' },
       },

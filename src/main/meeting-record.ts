@@ -189,9 +189,9 @@ const oneLine = (s: string) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const visible = (s: string) => maskLocalPaths(s).text;
 
 /** 檔名用:safeName 之外再去掉 [ ] # ^ |(免得弄壞 [[...]] 連結)。 */
-const fileName = (s: string) => safeName(String(s ?? '').replace(/[[\]#^|]/g, ''));
+export const fileName = (s: string) => safeName(String(s ?? '').replace(/[[\]#^|]/g, ''));
 /** 資料夾名稱用:再去掉開頭的 _ 與 .(那種資料夾記憶庫不掃描)。 */
-const folderName = (s: string) => fileName(s).replace(/^[_.\s]+/, '') || '未命名';
+export const folderName = (s: string) => fileName(s).replace(/^[_.\s]+/, '') || '未命名';
 
 /** 每行加「> 」,空行寫成「>」,前後的空行去掉。 */
 function quoteBlock(text: string): string {

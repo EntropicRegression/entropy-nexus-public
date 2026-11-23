@@ -131,7 +131,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     create: (input: CreateAgentInput) => c.createAgent(input),
     remove: (id: string) => c.removeAgent(id),
     // 長期記憶階段 4:刪除節點時歸檔、新增節點時接回封存;沒有列在 access.ts 的方法表,所以只有完整角色呼叫得到
-    removeArchived: (id: string, mode: string) => c.removeWithArchive(String(id), mode === 'stats' ? 'stats' : 'summary'),
+    removeArchived: (id: string, mode: string, memoir?: boolean) => c.removeWithArchive(String(id), mode === 'stats' ? 'stats' : 'summary', memoir === true),
     findMemoryArchive: (names: string[]) => (Array.isArray(names) ? findArchive(vault?.list() ?? [], names.map(String)) : null),
     attachMemoryArchive: (agentId: string, archivePath: string) => {
       const a = c.snapshot().agents.find(x => x.id === agentId);
@@ -165,6 +165,7 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     markCase: async (taskId: string) => { if (!cases) throw new Error('判例功能沒有啟用'); return cases.mark(String(taskId)); },
     draftInfo: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.info(String(id)); },
     requestDraft: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.request(String(id)); },
+    requestMemoir: async (id: string) => { if (!drafts) throw new Error('記憶功能沒有啟用'); return drafts.requestMemoir(String(id)); },
     memoryVault: () => ({ dir: vault?.dir ?? '', entries: vault?.list() ?? [] }),
     taskChanges: (taskId: string) => c.taskChanges(taskId),
     oldSessions: () => c.listOldSessions(),
@@ -445,9 +446,13 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       write: writeMemory,
       safeName,
       backendLabel: b => BACKEND_LABEL[b],
+      // 回憶錄請求是否還在進行:提示還在佇列,或節點正在跑回憶錄的回合
+      memoirActive: id => c.memoirQueuedId(id) !== null || c.memoirRunning(id),
     });
     const draftSvc = drafts;
     interop.memoryDraft = (callerId, args) => draftSvc.submit(callerId, args);
+    // 回憶錄:刪除節點前選擇寫回憶錄時,核心透過這個介面請節點寫一章並等它提交
+    c.attachMemoir({ request: id => draftSvc.requestMemoir(id, { farewell: true }), pending: id => draftSvc.hasPendingMemoir(id), cancel: id => draftSvc.cancelMemoir(id) });
     // 協作流程:執行器在主行程,節點用 step_report 回報;流程更新只推給桌面畫面(不經 remotePush)
     flows = new FlowService({
       dataDir: dir,

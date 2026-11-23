@@ -7,8 +7,8 @@ import type { MemoryEntry } from '../shared/types';
  * 這個模組只負責讀取與索引(不依賴 Electron):掃描資料夾、解析屬性、把摘要寫進資料庫的索引表,檔案被外部改動後重新讀取。
  * 階段 1 沒有 agent 寫入;使用者(或之後的記憶庫管理 app)放進來的檔案也能被索引。
  */
-export const VAULT_DIRS = ['nodes', 'cases', 'knowledge', 'preferences', 'meetings'] as const;
-const KIND: Record<(typeof VAULT_DIRS)[number], MemoryEntry['kind']> = { nodes: 'node', cases: 'case', knowledge: 'knowledge', preferences: 'preference', meetings: 'meeting' };
+export const VAULT_DIRS = ['nodes', 'cases', 'knowledge', 'preferences', 'meetings', 'memoirs'] as const;
+const KIND: Record<(typeof VAULT_DIRS)[number], MemoryEntry['kind']> = { nodes: 'node', cases: 'case', knowledge: 'knowledge', preferences: 'preference', meetings: 'meeting', memoirs: 'memoir' };
 /** 只讀檔案開頭這麼多位元組來找屬性;一筆記憶不該大到哪裡去。 */
 const READ_MAX = 256 * 1024;
 
@@ -49,10 +49,12 @@ const README_V3 = README_V2
   .replace('主控台只負責讀取與建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n目前 agent 還不會寫入這裡(之後的版本才會),但放進來的檔案已經會被索引。\n',
     '主控台負責建立索引;檔案在外面被修改、新增、刪除後會自動重新讀取。\n'
     + '節點會透過記憶工具寫入(草稿與判例先標成「未確認」,在管理 app 確認後 agent 才查得到);你自己放進來的檔案也會被索引。\n');
-/** 目前的說明檔:子資料夾清單補上 meetings(會議紀錄)。 */
-export const README = README_V3.replace('  preferences  使用者偏好\n', '  preferences  使用者偏好\n  meetings     會議紀錄(每場會議結束後自動寫入,每個專案一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n');
+/** 第四版說明檔:子資料夾清單補上 meetings(會議紀錄)。 */
+const README_V4 = README_V3.replace('  preferences  使用者偏好\n', '  preferences  使用者偏好\n  meetings     會議紀錄(每場會議結束後自動寫入,每個專案一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n');
+/** 目前的說明檔:子資料夾清單再補上 memoirs(回憶錄)。 */
+export const README = README_V4.replace('\n\n以底線 _ 開頭的資料夾', '\n  memoirs      回憶錄(節點用第一人稱寫的經歷回顧,每個節點一個子資料夾;狀態是「未確認」,使用者確認後節點才查得到)\n\n以底線 _ 開頭的資料夾');
 /** 主控台寫過的舊版說明檔;內容和其中一版完全相同(使用者沒改過)才換成新版。 */
-const OLD_READMES = [README_V1, README_V2, README_V3];
+const OLD_READMES = [README_V1, README_V2, README_V3, README_V4];
 
 /** 說明檔要寫成什麼:沒有檔案就寫新版;內容是主控台寫過的舊版(使用者沒改過)就換成新版;改過或已是新版回傳 null(不動)。 */
 export function readmeUpdate(existing: string | null): string | null {
@@ -140,7 +142,7 @@ const pick = (meta: Map<string, FrontValue>, keys: string[]): string => {
 const KIND_WORDS: Record<string, MemoryEntry['kind']> = {
   node: 'node', 節點側寫: 'node', 節點: 'node', case: 'case', 判例: 'case', 解法紀錄: 'case', 解法: 'case',
   knowledge: 'knowledge', 專案知識: 'knowledge', 知識: 'knowledge', preference: 'preference', 偏好: 'preference', 使用者偏好: 'preference',
-  meeting: 'meeting', 會議: 'meeting', 會議紀錄: 'meeting',
+  meeting: 'meeting', 會議: 'meeting', 會議紀錄: 'meeting', memoir: 'memoir', 回憶錄: 'memoir',
 };
 
 /** 子類只特別處理 decision / bookmark 英文寫法(轉成 決策 / 書籤);其他寫法原樣保留(去頭尾空白),使用者自己的分類不會被吃掉。 */

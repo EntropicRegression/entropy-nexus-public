@@ -48,6 +48,9 @@
     // ---- 1. 節點自己寫總結(從畫面點「先請它寫工作總結再刪除」)
     await click(document.querySelector('.dialog button.danger'));
     await click(btn('.dlg-remove', '先請它寫工作總結再刪除'));
+    // 第二個問題:要不要也寫回憶錄(回憶錄的流程在 tests/memoir.e2e.js 測,這裡選不用)
+    ok(btn('.dlg-remove', '寫回憶錄再刪除') && btn('.dlg-remove', '不用寫回憶錄'), '選好總結方式後,再問一次要不要寫回憶錄', document.querySelector('.dlg-remove')?.textContent);
+    await click(btn('.dlg-remove', '不用寫回憶錄'));
     await until('AlphaA 已刪除', () => gone(A.id), 30000);
     const ea = await archiveOf('AlphaA');
     ok(ea.status === '封存' && ea.kind === 'node', '節點自己寫總結:封存進索引,狀態是封存', JSON.stringify(ea));
