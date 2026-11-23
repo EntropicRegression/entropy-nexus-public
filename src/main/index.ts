@@ -473,6 +473,10 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       broadcast: u => win?.webContents.send('nexus:update', u),
       builtin: builtinTemplates,
       projectOf: async cwd => { try { const p = await projectOf(cwd); return { id: p.id, name: p.name }; } catch { return null; } },
+      // 範圍合約(M3):自動拒絕命中禁止動作的授權請求、在對話留說明;記憶庫路徑給 real_vault 比對
+      respondApproval: (agentId, requestId, decision) => c.respondApproval(agentId, requestId, decision),
+      note: (agentId, text) => c.note(agentId, text),
+      vaultDir: () => vault?.dir ?? '',
       // 測試用:縮短「確認交辦結束」的逾時與排隊提示的時間
       ...(Number(process.env.NEXUS_FLOW_ENSURE_MS) > 0 ? { ensureTimeoutMs: Number(process.env.NEXUS_FLOW_ENSURE_MS) } : {}),
       ...(Number(process.env.NEXUS_FLOW_QUEUE_WARN_MS) > 0 ? { queueWarnMs: Number(process.env.NEXUS_FLOW_QUEUE_WARN_MS) } : {}),
@@ -534,8 +538,9 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     statsWriter?.stop();
     stopObserver();
     interopRef?.stop();
-    flows?.shutdown();
+    // 協作流程先關(之後節點停下來的事件不再推進流程):中止核實並等子程序結束(最多 10 秒)再寫回狀態、清掉核實的臨時資料夾
+    const flowsDone = flows?.shutdown();
     flushHeat();
-    void Promise.allSettled([stopVoice(), core.shutdown()]).finally(() => { store?.close(); app.quit(); });
+    void Promise.allSettled([stopVoice(), core.shutdown(), flowsDone]).finally(() => { store?.close(); app.quit(); });
   });
 }

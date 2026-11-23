@@ -398,6 +398,10 @@ class FakeSession implements AdapterSession {
    *   late:毫秒           回合照常結束,過這麼久才回報(不受中斷影響)
    *   wait:毫秒           停在回合裡這麼久             commit               在工作目錄 git commit(違規)
    *   none                不回報                       stubborn             這個回合不理會中斷(模擬停不下來的節點)
+   *   ask:指令            像 Claude Code 的詢問模式:送出 Bash 的工具啟動事件,再詢問授權,等使用者(或主控台自動)回應
+   *   tool:指令           像自動允許的模式:只送 Bash 的工具啟動事件,停 3 秒(不真的執行)
+   *   writedata:路徑:內容  寫到主控台資料夾(NEXUS_DATA_DIR)底下,例如 flows/x.yaml(模擬節點寫入流程定義資料夾)
+   *   scope:路徑:原因     之後的實作回報附上一筆 scope_exceptions
    * 每個動作的結果以 [flow] 開頭的 note 事件回報。
    */
   private async flowTurn(text: string): Promise<void> {
@@ -421,9 +425,10 @@ class FakeSession implements AdapterSession {
         return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
       } catch (e) { return `fetch-failed ${(e as Error).message}`; }
     };
+    const exceptions: { path: string; reason: string }[] = [];
     const base = (): Record<string, unknown> => review
       ? { assignment_id: aid, summary: `假資料審查:${step} 第 ${n} 次`, verdict: 'mergeable', commands_run: [{ command: 'node check.js', result: '通過' }] }
-      : { assignment_id: aid, summary: `假資料實作:${step} 第 ${n} 次`, commands_run: [{ command: 'node check.js', result: '通過' }], not_verified: ['假資料節點沒有真的驗證'] };
+      : { assignment_id: aid, summary: `假資料實作:${step} 第 ${n} 次`, commands_run: [{ command: 'node check.js', result: '通過' }], not_verified: ['假資料節點沒有真的驗證'], ...(exceptions.length ? { scope_exceptions: [...exceptions] } : {}) };
     for (const act of value.split(',').map(x => x.trim()).filter(Boolean)) {
       const [name, ...rest] = act.split(':');
       const arg = rest.join(':');
@@ -449,6 +454,32 @@ class FakeSession implements AdapterSession {
           execFileSync('git', ['-c', 'user.name=fake', '-c', 'user.email=fake@example.com', 'commit', '-q', '-m', 'fake commit'], { cwd: this.opts.cwd, windowsHide: true });
           out = '已 commit';
         } catch (e) { out = `commit 失敗 ${(e as Error).message.split('\n')[0]}`; }
+      } else if (name === 'ask' || name === 'tool') {
+        const detail = JSON.stringify({ command: arg, description: '測試流程' }, null, 2);
+        this.emit({ type: 'tool', phase: 'start', name: 'Bash', summary: arg.slice(0, 80), detail });
+        if (name === 'ask') {
+          const requestId = randomUUID();
+          this.emit({ type: 'approval_request', requestId, tool: 'Bash', summary: arg.slice(0, 80), detail });
+          this.emit({ type: 'state', state: 'awaiting', detail: `Bash · ${arg.slice(0, 60)}` });
+          const decision = await new Promise<ApprovalDecision>(resolve => {
+            this.waiting = { requestId, resume: d => { this.emit({ type: 'approval_resolved', requestId, decision: d }); resolve(d); } };
+          });
+          this.emit({ type: 'state', state: 'working', detail: '測試流程' });
+          out = `授權結果 ${decision}`;
+        } else {
+          await this.wait(3000);
+          this.emit({ type: 'tool', phase: 'end', name: 'Bash', summary: arg.slice(0, 80) });
+          out = '工具結束(沒有真的執行)';
+        }
+      } else if (name === 'scope') {
+        const j = arg.indexOf(':');
+        exceptions.push({ path: j < 0 ? arg : arg.slice(0, j), reason: j < 0 ? '範圍外' : arg.slice(j + 1) });
+        out = `之後的回報附上 scope_exceptions(${exceptions.length} 筆)`;
+      } else if (name === 'writedata') {
+        const j = arg.indexOf(':');
+        const rel = j < 0 ? arg : arg.slice(0, j), content = j < 0 ? '' : arg.slice(j + 1);
+        const root = process.env.NEXUS_DATA_DIR ?? '';
+        out = root && this.writeRel(root, rel, content) ? `寫入主控台資料夾 ${rel}` : `無法寫入主控台資料夾 ${rel}`;
       } else if (name === 'none') out = '不回報';
       else if (name === 'stubborn') { this.stubborn = true; out = '這個回合不理會中斷'; }
       else out = `不認得的動作 ${name}`;

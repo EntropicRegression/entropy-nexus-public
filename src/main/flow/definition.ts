@@ -246,6 +246,8 @@ export function parseFlow(text: string, source: FlowSource = 'user', file?: stri
   if (doc.finish !== undefined && doc.finish !== null) {
     if (!isObj(doc.finish)) ctx.errors.push('finish:必須是物件(offer)');
     else { unknownKeys(ctx, 'finish', doc.finish, ['offer']); offer = actions(ctx, 'finish.offer', doc.finish.offer, HIGH_RISK_ACTIONS, '高風險動作'); }
+    const unsupported = offer.filter(a => a !== 'commit');
+    if (unsupported.length) ctx.warnings.push(`finish.offer:第一版收尾只支援 commit 的授權卡,${unsupported.join('、')} 不會產生卡片(需要的話改用步驟的 requires_approval)`);
   }
 
   if (ctx.errors.length) return { flow: null, errors: ctx.errors, warnings: ctx.warnings };
@@ -274,7 +276,12 @@ export function applyProject(flow: FlowDefinition, cfg?: ProjectFlowConfig | nul
   return {
     flow: {
       ...flow,
-      scope: { ...flow.scope, allowedPaths: cfg.allowedPaths ? [...cfg.allowedPaths] : [...flow.scope.allowedPaths] },
+      scope: {
+        ...flow.scope,
+        allowedPaths: cfg.allowedPaths ? [...cfg.allowedPaths] : [...flow.scope.allowedPaths],
+        // 建置產出資料夾:專案有設定才覆寫(沒有欄位時 FlowService 用預設的 dist、release)
+        ...(cfg.artifactDirs ? { artifactDirs: [...cfg.artifactDirs] } : {}),
+      },
       verify: { commands: commands.map(c => ({ ...c, needs: [...c.needs] })), in: cfg.verifyIn ?? flow.verify.in },
     },
     errors: [],
@@ -299,7 +306,7 @@ export function loadUserTemplates(flowsDir: string): (FlowParseResult & { file: 
 }
 
 /**
- * projects.yaml 的格式:projects: { <專案 id>: { roles, verify: { mode, commands }, verify_in, allowed_paths, allow_desktop_verify } }
+ * projects.yaml 的格式:projects: { <專案 id>: { roles, verify: { mode, commands }, verify_in, allowed_paths, artifact_dirs, allow_desktop_verify } }
  * 一個專案寫錯不影響其他專案:寫錯的專案不放進 projects,改放進 invalid(附原始內容),
  * dumpProjectsFile 寫回時把它原樣保留,不會洗掉使用者的設定。
  */
@@ -332,7 +339,7 @@ export function parseProjectsFile(text: string): ProjectsFileResult {
 
 function parseProject(ctx: Ctx, at: string, projectId: string, raw: unknown): ProjectFlowConfig | null {
   if (!isObj(raw)) { ctx.errors.push(`${at}:必須是物件`); return null; }
-  unknownKeys(ctx, at, raw, ['roles', 'verify', 'verify_in', 'allowed_paths', 'allow_desktop_verify']);
+  unknownKeys(ctx, at, raw, ['roles', 'verify', 'verify_in', 'allowed_paths', 'allow_desktop_verify', 'artifact_dirs']);
   const roles: Record<string, string> = {};
   if (raw.roles !== undefined && raw.roles !== null) {
     if (!isObj(raw.roles)) ctx.errors.push(`${at}.roles:必須是「角色: 節點」的對照`);
@@ -340,6 +347,13 @@ function parseProject(ctx: Ctx, at: string, projectId: string, raw: unknown): Pr
   }
   const cfg: ProjectFlowConfig = { projectId, roles, allowDesktopVerify: bool(ctx, `${at}.allow_desktop_verify`, raw.allow_desktop_verify, false) };
   if (raw.allowed_paths !== undefined && raw.allowed_paths !== null) cfg.allowedPaths = strList(ctx, `${at}.allowed_paths`, raw.allowed_paths);
+  if (raw.artifact_dirs !== undefined && raw.artifact_dirs !== null) {
+    // 建置產出資料夾(L4):相對專案根目錄,不能是絕對路徑或用 .. 跳出
+    const dirs = strList(ctx, `${at}.artifact_dirs`, raw.artifact_dirs).map(d => d.replace(/\\/g, '/').replace(/^\.\/|\/+$/g, ''));
+    const bad = dirs.filter(d => !d || /^(?:[A-Za-z]:|\/)/.test(d) || d.split('/').includes('..'));
+    if (bad.length) ctx.errors.push(`${at}.artifact_dirs:只能是專案裡的相對資料夾(不能是絕對路徑或含 ..):${bad.join('、') || '(空字串)'}`);
+    else cfg.artifactDirs = dirs;
+  }
   if (raw.verify_in !== undefined && raw.verify_in !== null) {
     if (raw.verify_in === 'copy' || raw.verify_in === 'worktree') cfg.verifyIn = raw.verify_in;
     else ctx.errors.push(`${at}.verify_in:只能是 copy 或 worktree`);
@@ -381,6 +395,7 @@ export function dumpProjectsFile(projects: Record<string, ProjectFlowConfig>, in
     }
     if (p.verifyIn) o.verify_in = p.verifyIn;
     if (p.allowedPaths) o.allowed_paths = [...p.allowedPaths];
+    if (p.artifactDirs) o.artifact_dirs = [...p.artifactDirs];
     o.allow_desktop_verify = p.allowDesktopVerify;
     out[id] = o;
   }

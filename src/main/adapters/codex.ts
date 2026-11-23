@@ -108,7 +108,7 @@ class CodexSession implements AdapterSession {
   private nextId = 1;
   private waiting = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
   private approvals = new Map<string, PendingApproval>();
-  private items = new Map<string, { name: string; summary: string }>();
+  private items = new Map<string, { name: string; summary: string; paths?: string[] }>();
   private threadId: string | null = null;
   private turnId: string | null = null;
   private ready: Promise<void>;
@@ -327,8 +327,10 @@ class CodexSession implements AdapterSession {
       const summary = isCommand ? describeCommand(p) : known?.summary ?? p.reason ?? '修改檔案';
       const detail = isCommand
         ? [p.command, p.cwd ? `cwd: ${p.cwd}` : '', p.reason ? `原因: ${p.reason}` : ''].filter(Boolean).join('\n')
-        : [known?.summary, p.reason ? `原因: ${p.reason}` : '', p.grantRoot ? `要求寫入: ${p.grantRoot}` : ''].filter(Boolean).join('\n');
-      this.emit({ type: 'approval_request', requestId, tool, summary, detail, canAllowSession: true });
+        : [known?.paths?.length ? known.paths.join('\n') : known?.summary, p.reason ? `原因: ${p.reason}` : '', p.grantRoot ? `要求寫入: ${p.grantRoot}` : ''].filter(Boolean).join('\n');
+      // 檔案修改的授權:附上完整路徑(摘要只有檔名),協作流程的範圍合約用來判斷寫到哪裡
+      const paths = isCommand ? [] : [...(known?.paths ?? []), ...(p.grantRoot ? [String(p.grantRoot)] : [])];
+      this.emit({ type: 'approval_request', requestId, tool, summary, detail, canAllowSession: true, ...(paths.length ? { paths } : {}) });
       this.emit({ type: 'state', state: 'awaiting', detail: `${tool} · ${summary}` });
       return;
     }
@@ -410,7 +412,7 @@ class CodexSession implements AdapterSession {
         const tool = describeItem(it);
         if (tool) {
           this.items.set(it.id, tool);
-          emit({ type: 'tool', phase: 'start', name: tool.name, summary: tool.summary, detail: tool.detail });
+          emit({ type: 'tool', phase: 'start', name: tool.name, summary: tool.summary, detail: tool.detail, ...(tool.paths ? { paths: tool.paths } : {}) });
           if (sub || !this.approvals.size) emit({ type: 'state', state: 'working', detail: `${tool.name} · ${tool.summary}` });
         } else if (it.type === 'reasoning' && (sub || (!this.approvals.size && !this.interrupting))) {
           emit({ type: 'state', state: 'planning', detail: '思考中' });
@@ -539,14 +541,15 @@ function describeCommand(p: Json): string {
 }
 
 /** 把需要顯示成工具活動的 item 轉成名稱與摘要;其餘回傳 null。 */
-function describeItem(it: Json): { name: string; summary: string; detail: string } | null {
+function describeItem(it: Json): { name: string; summary: string; detail: string; paths?: string[] } | null {
   switch (it.type) {
     case 'commandExecution':
       return { name: 'Shell', summary: describeCommand(it), detail: String(it.command ?? '') };
     case 'fileChange': {
       const changes: Json[] = it.changes ?? [];
       const summary = changes.map(c => `${c.kind?.type ?? c.kind ?? '修改'} ${basename(String(c.path))}`).join(', ').slice(0, 100) || '修改檔案';
-      return { name: 'Patch', summary, detail: changes.map(c => `${c.path}\n${c.diff ?? ''}`).join('\n\n').slice(0, 4000) };
+      // paths:完整的檔案路徑(協作流程的範圍合約用;明細裡的 diff 內容不能拿來猜路徑)
+      return { name: 'Patch', summary, detail: changes.map(c => `${c.path}\n${c.diff ?? ''}`).join('\n\n').slice(0, 4000), paths: changes.map(c => String(c.path ?? '')).filter(Boolean) };
     }
     case 'mcpToolCall':
       return { name: 'MCP', summary: `${it.server ?? ''}/${it.tool ?? ''}`, detail: JSON.stringify(it.arguments ?? {}, null, 2) };

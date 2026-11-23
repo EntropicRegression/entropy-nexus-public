@@ -1,6 +1,6 @@
 import {
   DONE, HALT, TERMINAL_STATUSES,
-  type ApprovalCard, type AssignmentStatus, type Continuation, type DecisionChoice, type FlowAttemptView, type FlowDefinition, type FlowRunView,
+  type ApprovalCard, type AssignmentStatus, type HighRiskAction, type ScopeException, type Continuation, type DecisionChoice, type FlowAttemptView, type FlowDefinition, type FlowRunView,
   type FlowStepDef, type FlowStepView, type PendingDecision, type PendingKind, type RunPhase, type RunStatus, type ScopeViolation, type StepLamp,
   type StepReport, type VerifyResult,
 } from '../../shared/flow.ts';
@@ -25,6 +25,9 @@ import type { RefsState } from './version.ts';
  * - 交辦已經不是進行中時收到的回報寫進 late/,不推進流程;流程卡在未回報時只預填在手動補報欄位。
  * - 終止狀態(stopped、completed、halted)不復活:之後的事件只記稽核紀錄(completed 的授權卡結果例外)。
  * - 每一步前後比對 refs(HEAD、分支、遠端追蹤分支、標籤),發現 commit 或 push 就標違規並停機(使用者裁示第 1 點)。
+ *   打包產出(dist/、release/)新增或改動、受保護的資料夾(flows/、主控台設定資料夾)被寫入,同樣標違規並停機(M3)。
+ * - 步驟列了 requires_approval:交辦前先拍正本、開授權卡(綁定版本),都允許了才交辦,拒絕就停機;
+ *   允許的動作只開放給這一步的交辦(L1、L2 攔截與 refs 比對扣掉它)。收尾的授權卡第一版只支援 commit。
  * - 時間上限只計執行中(running)的時間,扣掉暫停與等待使用者(使用者裁示第 5 點)。
  */
 
@@ -66,6 +69,10 @@ export interface SnapResult {
   unexplained: string[];
   /** 審查副本被寫入的檔案(已丟棄)。 */
   copyWritten: string[];
+  /** 這一步新增或改動的被忽略打包產出(dist/、release/,L4)。 */
+  artifacts?: string[];
+  /** 這一步寫到的受保護資料夾(流程定義 flows/、主控台設定資料夾、沒授權的記憶庫)。 */
+  protectedWrites?: string[];
   /** 審查副本不在或無法比對(例如主控台重開時已清掉):不能當成副本被寫入。 */
   copyError?: string;
   error?: string;
@@ -97,6 +104,12 @@ export interface RunAssignment {
   reviewedVersion?: string;
   copyDir?: string;
   refsBefore?: RefsState;
+  /** 交辦時記下的資料夾指紋(flows/ 與打包產出資料夾,見 guard.ts 的 guardFingerprint)。 */
+  guardBefore?: Record<string, string>;
+  /** 這個交辦經授權卡允許、可以自己做的高風險動作(步驟的 requires_approval)。 */
+  approved?: HighRiskAction[];
+  /** 授權卡綁定的版本(交辦前再確認一次正本仍是這個版本)。 */
+  approvedVersion?: string;
   snap?: SnapResult;
   verify?: VerifyResult;
   /** 核實結束時正本的 tree(用來判斷核實期間版本有沒有變)。 */
@@ -156,7 +169,9 @@ export interface FlowRun {
   /** 準備好的審查副本(匯出後、交辦前)。 */
   copy?: { dir: string; version: string };
   /** 收尾的結果(授權卡的資料)。 */
-  finish?: { canonical: string | null; paths: string[]; outOfScope: string[]; error?: string };
+  finish?: FinishResult;
+  /** 交辦前的授權(步驟的 requires_approval):哪一步、卡片綁定的版本、是否都允許了。 */
+  gate?: { stepId: string; version?: string; ready: boolean };
   pending?: PendingDecision;
   approvals: ApprovalCard[];
   violations: ScopeViolation[];
@@ -182,6 +197,18 @@ export interface FlowRun {
   audit: { at: number; text: string }[];
 }
 
+export interface FinishResult {
+  canonical: string | null;
+  paths: string[];
+  outOfScope: string[];
+  /** 範圍外檔案的說明(各寫入步驟回報的 scope_exceptions)與沒寫原因的檔案。 */
+  scopeNotes?: ScopeException[];
+  unexplained?: string[];
+  /** 沒有檔案可提交時的說明(例如修改已經由節點經授權 commit 進 HEAD)。 */
+  note?: string;
+  error?: string;
+}
+
 export interface CreateRunInput {
   id: string;
   flow: FlowDefinition;
@@ -204,14 +231,16 @@ export type TurnOutcome = 'done' | 'interrupted' | 'failed';
 export type FlowEvent =
   | { type: 'start' }
   | { type: 'agents'; token: number; agents: AgentLite[] }
-  | { type: 'dispatched'; assignmentId: string; queuedId?: string; refsBefore?: RefsState; error?: string }
+  | { type: 'dispatched'; assignmentId: string; queuedId?: string; refsBefore?: RefsState; guardBefore?: Record<string, string>; error?: string }
   | { type: 'task_started'; assignmentId: string; taskId: string }
   | { type: 'turn_ended'; assignmentId: string; taskId: string; outcome: TurnOutcome; sessionId: string | null }
   | { type: 'report'; assignmentId: string; report: StepReport }
   | { type: 'snapshot_done'; token: number; snap: SnapResult }
   | { type: 'verify_done'; token: number; result?: VerifyResult; canonical: string | null; error?: string }
   | { type: 'copy_ready'; token: number; dir?: string; canonical: string | null; error?: string }
-  | { type: 'finish_done'; token: number; canonical: string | null; paths: string[]; outOfScope: string[]; error?: string }
+  | { type: 'finish_done'; token: number; canonical: string | null; paths: string[]; outOfScope: string[]; scopeNotes?: ScopeException[]; unexplained?: string[]; note?: string; error?: string }
+  | { type: 'gate_stale'; assignmentId: string; canonical: string | null }
+  | { type: 'gate_ready'; token: number; canonical: string | null; error?: string }
   | { type: 'ended'; token: number; ok?: boolean; stuck?: string[] }
   | { type: 'note'; text: string }
   | { type: 'tick' }
@@ -219,7 +248,7 @@ export type FlowEvent =
   | { type: 'resume' }
   | { type: 'stop'; reason?: string }
   | { type: 'decide'; decisionId: string; choice: DecisionChoice; agentId?: string; agentName?: string; note?: string; report?: StepReport }
-  | { type: 'approval_card'; cardId: string; status: 'approved' | 'denied' | 'expired'; result?: string }
+  | { type: 'approval_card'; cardId: string; status: 'approved' | 'denied' | 'expired'; result?: string; included?: string[] }
   | { type: 'violation'; violation: ScopeViolation; halt: boolean };
 
 export type FlowEffect =
@@ -230,6 +259,7 @@ export type FlowEffect =
   | { type: 'verify'; token: number; assignmentId: string; version: string }
   | { type: 'export_copy'; token: number; version: string }
   | { type: 'finish'; token: number }
+  | { type: 'gate'; token: number; stepId: string }
   | { type: 'ensure_ended'; token: number; assignmentIds: string[] }
   | { type: 'write_report'; assignmentId: string }
   | { type: 'write_late'; assignmentId: string; report: StepReport; reason: string }
@@ -362,6 +392,9 @@ function finalize(run: FlowRun, now: number, fx: FlowEffect[], final: 'stopped' 
   run.stopTarget = undefined;
   run.ensuring = undefined;
   for (const a of run.assignments) if (isActive(a)) { a.status = final === 'stopped' ? 'stopped' : 'interrupted'; a.endedAt ??= now; }
+  // 交辦前的授權卡只對進行中的流程有意義:流程結束就失效
+  for (const c of run.approvals) if (c.stepId && c.status === 'pending') { c.status = 'expired'; c.decidedAt = now; c.result = '流程已結束,授權卡失效'; }
+  run.gate = undefined;
   fx.push({ type: 'cleanup' });
   if (final === 'halted') fx.push({ type: 'notify', kind: 'halted', message: `協作流程「${run.flow.name}」停機:${run.reason ?? ''}` });
   else if (final === 'completed') fx.push({ type: 'notify', kind: 'completed', message: `協作流程「${run.flow.name}」已走完,等你確認授權卡。` });
@@ -472,6 +505,14 @@ function drive(run: FlowRun, now: number, fx: FlowEffect[]): void {
     const a = currentAssignment(run);
     switch (run.phase) {
       case 'dispatching': {
+        // 步驟列了 requires_approval:先拍正本、開授權卡,都允許了才交辦
+        const step = stepOf(run, run.stepId);
+        if (step?.requiresApproval.length && !(run.gate?.stepId === step.id && run.gate.ready)) {
+          const token = startEffect(run, 'gate');
+          run.gate = { stepId: step.id, ready: false };
+          fx.push({ type: 'gate', token, stepId: step.id });
+          return;
+        }
         const token = startEffect(run, 'pick');
         fx.push({ type: 'pick_agent', token, stepId: run.stepId });
         return;
@@ -550,13 +591,86 @@ function drive(run: FlowRun, now: number, fx: FlowEffect[]): void {
 
 function needsRulingOf(r: StepReport): string[] { return [...r.needsRuling, ...r.questions]; }
 
+/**
+ * 授權後預期中的 refs 改變:commit → HEAD 與交辦時所在的分支;push → 遠端追蹤分支(refs/remotes/…)。
+ * 其他(標籤、別的分支、stash…)仍算違規。
+ */
+export function allowedRefChanges(approved: readonly HighRiskAction[], branch: string): (ref: string) => boolean {
+  const commit = approved.includes('commit');
+  const push = approved.includes('push');
+  return ref => (commit && (ref === 'HEAD' || (!!branch && ref === branch))) || (push && ref.startsWith('refs/remotes/'));
+}
+
+const ACTION_LABEL: Record<HighRiskAction, string> = { commit: '本地 commit', push: 'push 到遠端', real_vault: '碰真實記憶庫', install: '安裝或覆蓋' };
+
+/** 交辦前授權卡寫明涵蓋什麼。 */
+function gateCovers(step: FlowStepDef, action: HighRiskAction, version: string): string[] {
+  const what: Record<HighRiskAction, string> = {
+    commit: '在自己的工作樹做本地 commit',
+    push: '把分支 push 到遠端(一般 push)',
+    real_vault: '寫入設定中的記憶庫資料夾',
+    install: '執行安裝檔(*Setup*.exe、.msi)或寫入 Program Files、%LOCALAPPDATA%\\Programs',
+  };
+  return [`步驟「${step.label}」的交辦可以${what[action]}`, `從版本 ${version.slice(0, 12)} 開始的這一步(重跑時版本沒變就沿用)`];
+}
+
+/** 交辦前授權卡寫明不涵蓋什麼。 */
+function gateExcludes(step: FlowStepDef, action: HighRiskAction): string[] {
+  const out = ['其他步驟(授權只給這一步)', '合併或核准 PR、force push、刪分支(永遠禁止)', '打包安裝檔(npm run dist、electron-builder)'];
+  const others = (['commit', 'push', 'real_vault', 'install'] as HighRiskAction[]).filter(a => a !== action && !step.requiresApproval.includes(a));
+  if (others.length) out.unshift(`沒有列出的高風險動作:${others.map(a => ACTION_LABEL[a]).join('、')}`);
+  if (action === 'real_vault') out.push('流程定義資料夾(flows/)與主控台設定資料夾仍然不能寫');
+  return out;
+}
+
+/**
+ * 交辦前的授權(步驟的 requires_approval):正本的版本拍好之後,每個動作要有一張這個版本、已允許的卡;
+ * 沒有就開新卡(同版本已有待決的就沿用),交給使用者。都允許了才往下交辦。舊版本的待決卡失效。
+ */
+function openGate(run: FlowRun, now: number, fx: FlowEffect[], step: FlowStepDef, version: string): void {
+  for (const c of run.approvals) if (c.stepId === step.id && c.status === 'pending' && c.version !== version) { c.status = 'expired'; c.decidedAt = now; c.result = '版本已改變,授權失效'; }
+  const missing: HighRiskAction[] = [];
+  for (const action of step.requiresApproval) {
+    const mine = run.approvals.filter(c => c.stepId === step.id && c.action === action && c.version === version);
+    if (mine.some(c => c.status === 'approved')) continue;
+    missing.push(action);
+    if (mine.some(c => c.status === 'pending')) continue;
+    run.seq += 1;
+    run.approvals.push({
+      id: `a${run.seq}`, action, stepId: step.id, version, covers: gateCovers(step, action, version), excludes: gateExcludes(step, action),
+      paths: [], outOfScope: [], status: 'pending', createdAt: now,
+    });
+  }
+  run.gate = { stepId: step.id, version, ready: !missing.length };
+  if (!missing.length) { audit(run, now, `步驟「${step.label}」的授權卡都已允許(版本 ${version.slice(0, 8)})`); return; }
+  pend(run, now, fx, 'step_approval', `步驟「${step.label}」要先在授權卡上允許:${missing.map(a => ACTION_LABEL[a]).join('、')}(版本 ${version.slice(0, 8)})。允許才交辦;拒絕就停機、不交辦。`, ['halt', 'stop']);
+}
+
 function evaluateSnapshot(run: FlowRun, now: number, fx: FlowEffect[], a: RunAssignment): void {
   const s = a.snap!;
   const step = stepOf(run, a.stepId);
   const mode = step?.mode ?? 'write';
-  if (s.refsChanged.length && !run.violations.some(v => v.kind === 'refs_changed' && v.assignmentId === a.id)) {
-    run.violations.push({ kind: 'refs_changed', stepId: a.stepId, assignmentId: a.id, detail: `「${a.agentName}」這一步期間 refs 改變了:可能是節點自己 commit 或 push,也可能是使用者手動 commit、切分支,或 IDE 自動 fetch 更新了遠端追蹤分支`, items: s.refsChanged, blocked: false, at: now });
-    terminate(run, now, fx, 'halted', `偵測到 commit 或 push(${s.refsChanged.slice(0, 4).join('、')});也可能是使用者手動 commit 或 IDE 自動 fetch。依範圍合約停機,交給使用者處理`);
+  const approved = a.approved ?? [];
+  // 這一步經授權卡允許 commit 或 push:預期中的 refs 改變只記稽核紀錄,其餘照樣算違規
+  const allowedRefs = allowedRefChanges(approved, a.refsBefore?.symbolic ?? '');
+  const okRefs = s.refsChanged.filter(allowedRefs);
+  const badRefs = s.refsChanged.filter(r => !allowedRefs(r));
+  if (okRefs.length && !a.result) audit(run, now, `refs 改變(這一步已授權 ${approved.filter(x => x === 'commit' || x === 'push').join('、')}):${okRefs.slice(0, 6).join('、')}`);
+  if (badRefs.length && !run.violations.some(v => v.kind === 'refs_changed' && v.assignmentId === a.id)) {
+    run.violations.push({ kind: 'refs_changed', stepId: a.stepId, assignmentId: a.id, detail: `「${a.agentName}」這一步期間 refs 改變了${okRefs.length ? '(超出這一步授權的範圍)' : ''}:可能是節點自己 commit 或 push,也可能是使用者手動 commit、切分支,或 IDE 自動 fetch 更新了遠端追蹤分支`, items: badRefs, blocked: false, at: now });
+    terminate(run, now, fx, 'halted', `偵測到 commit 或 push(${badRefs.slice(0, 4).join('、')});也可能是使用者手動 commit 或 IDE 自動 fetch。依範圍合約停機,交給使用者處理`);
+    return;
+  }
+  // L4:被忽略的打包產出(dist/、release/)新增或改動 → 可能是節點自己打包了,停機交給使用者
+  if (s.artifacts?.length && !run.violations.some(v => v.kind === 'artifact_changed' && v.assignmentId === a.id)) {
+    run.violations.push({ kind: 'artifact_changed', stepId: a.stepId, assignmentId: a.id, detail: `「${a.agentName}」這一步期間打包產出(dist/、release/)新增或改動了:可能是節點自己打包(npm run dist、electron-builder),也可能是使用者手動建置`, items: s.artifacts.slice(0, 50), actions: ['dist'], blocked: false, at: now });
+    terminate(run, now, fx, 'halted', `偵測到打包產出被新增或改動(${s.artifacts.slice(0, 4).join('、')})。依範圍合約停機,交給使用者處理`);
+    return;
+  }
+  // 受保護的資料夾(使用者裁示第 3、8 點):流程定義 flows/、主控台設定資料夾、沒授權的記憶庫
+  if (s.protectedWrites?.length && !run.violations.some(v => v.kind === 'protected_write' && v.assignmentId === a.id)) {
+    run.violations.push({ kind: 'protected_write', stepId: a.stepId, assignmentId: a.id, detail: `「${a.agentName}」這一步期間受保護的資料夾被寫入(流程定義資料夾、主控台設定資料夾或記憶庫);也可能來自其他進行中的流程或使用者手動修改`, items: s.protectedWrites.slice(0, 50), blocked: false, at: now });
+    terminate(run, now, fx, 'halted', `偵測到受保護的資料夾被寫入(${s.protectedWrites.slice(0, 4).join('、')});也可能來自其他進行中的流程或使用者手動修改。節點的寫入範圍不得包含流程定義與主控台設定資料夾,依範圍合約停機,交給使用者處理`);
     return;
   }
   if (s.error || !s.version) { terminate(run, now, fx, 'halted', `無法拍下正本的快照:${s.error ?? '不是 git 版本庫?'}`); return; }
@@ -630,16 +744,24 @@ function evaluateFinish(run: FlowRun, now: number, fx: FlowEffect[]): void {
   if (f.canonical !== expected) { run.finish = undefined; versionChanged(run, now, fx, '收尾', expected, f.canonical); return; }
   if (f.paths.length) {
     for (const action of run.flow.finish.offer) {
+      // 第一版收尾只支援 commit;其他動作明確不支援(定義檔解析時也會警告)
+      if (action !== 'commit') { audit(run, now, `收尾的「${ACTION_LABEL[action]}」授權卡第一版不支援(只支援 commit),請在流程結束後自行處理`); continue; }
       run.seq += 1;
       const outside = new Set(f.outOfScope);
+      const unexplained = f.unexplained ?? [];
       run.approvals.push({
         id: `a${run.seq}`, action, version: expected,
-        covers: action === 'commit' ? ['把這個版本的修改提交成一筆本地 commit(範圍內的檔案;範圍外的要勾選才納入)'] : [`${action}`],
-        excludes: action === 'commit' ? ['push', '合併或核准 PR', '刪分支', '打包安裝檔'] : ['其他高風險動作'],
-        paths: f.paths.filter(p => !outside.has(p)), outOfScope: [...f.outOfScope], status: 'pending', createdAt: now,
+        covers: [
+          `把版本 ${expected.slice(0, 12)} 的修改提交成一筆本地 commit`,
+          `範圍內的 ${f.paths.length - f.outOfScope.length} 個檔案${f.outOfScope.length ? `;範圍外的 ${f.outOfScope.length} 個要勾選才納入` : ''}`,
+        ],
+        excludes: ['push', '合併或核准 PR', '刪分支', '打包安裝檔', ...(f.outOfScope.length ? ['沒有勾選的範圍外檔案(留在工作區)'] : [])],
+        paths: f.paths.filter(p => !outside.has(p)), outOfScope: [...f.outOfScope],
+        ...(f.outOfScope.length ? { scopeNotes: (f.scopeNotes ?? []).filter(n => outside.has(n.path)), unexplained: unexplained.filter(p => outside.has(p)) } : {}),
+        status: 'pending', createdAt: now,
       });
     }
-  } else audit(run, now, '流程走完,但這次沒有任何檔案修改,不產生授權卡');
+  } else audit(run, now, f.note ?? '流程走完,但這次沒有任何檔案修改,不產生授權卡');
   audit(run, now, '流程走完');
   finalize(run, now, fx, 'completed');
 }
@@ -662,6 +784,9 @@ function newAssignment(run: FlowRun, now: number, step: FlowStepDef, agent: Agen
     baseVersion: run.version || run.baseVersion, version: '', context: ctx, files: [], startedAt: now,
   };
   if (step.mode === 'review') { a.reviewedVersion = run.copy?.version ?? run.version; a.copyDir = run.copy?.dir; run.copy = undefined; }
+  // 交辦前的授權:只有這一步的這個交辦可以做(L1、L2 攔截與 refs 比對會扣掉)
+  if (step.requiresApproval.length && run.gate?.stepId === step.id && run.gate.ready) { a.approved = [...step.requiresApproval]; a.approvedVersion = run.gate.version; }
+  run.gate = undefined;
   run.carry = {};
   return a;
 }
@@ -682,7 +807,7 @@ export function reduce(input: FlowRun, event: FlowEvent, now: number): ReduceRes
       fx.push({ type: 'write_late', assignmentId: event.assignmentId, report: event.report, reason: `流程已經${run.status === 'completed' ? '走完' : run.status === 'stopped' ? '停止' : '停機'}` });
       audit(run, now, `流程已結束,遲到的回報(${event.assignmentId})只寫進 late/`);
     } else if (event.type === 'approval_card' && run.status === 'completed') {
-      applyCard(run, now, event);
+      applyCard(run, now, fx, event);
     } else if (event.type === 'turn_ended' || event.type === 'task_started') {
       recordTask(run, now, event);
     } else if (event.type !== 'tick') audit(run, now, `流程已結束,忽略事件 ${event.type}`);
@@ -727,6 +852,32 @@ export function reduce(input: FlowRun, event: FlowEvent, now: number): ReduceRes
       }
       if (event.queuedId) a.queuedId = event.queuedId;
       if (event.refsBefore && !a.refsBefore) a.refsBefore = event.refsBefore;
+      if (event.guardBefore && !a.guardBefore) a.guardBefore = event.guardBefore;
+      break;
+    }
+
+    case 'gate_ready': {
+      if (run.inflight?.token !== event.token) { audit(run, now, '忽略過期的授權卡版本'); break; }
+      run.inflight = null;
+      const step = stepOf(run, run.stepId);
+      if (!step || run.phase !== 'dispatching' || run.gate?.stepId !== step.id) break;
+      if (!event.canonical) { terminate(run, now, fx, 'halted', `無法拍下正本的快照,不能產生步驟「${step.label}」的授權卡:${event.error ?? '不是 git 版本庫?'}`); break; }
+      if (run.status !== 'running') { run.gate = undefined; break; } // 暫停期間拿到的不用,繼續時重新拍
+      openGate(run, now, fx, step, event.canonical);
+      break;
+    }
+
+    case 'gate_stale': {
+      // 授權卡允許之後、真的交辦之前正本變了(例如改派、重開後繼續):這次交辦作廢,授權卡失效,重新拍版本開新卡
+      const a = find(event.assignmentId);
+      if (!a || a.id !== run.current || !isActive(a)) break;
+      a.status = 'superseded';
+      a.endedAt = now;
+      a.result = 'user';
+      for (const c of run.approvals) if (c.stepId === a.stepId && c.version === a.approvedVersion && c.status === 'approved') { c.status = 'expired'; c.result = `交辦前發現版本已改變(${(a.approvedVersion ?? '').slice(0, 8)} → ${event.canonical ? event.canonical.slice(0, 8) : '讀不到'}),授權失效`; }
+      run.gate = undefined;
+      run.phase = 'dispatching';
+      audit(run, now, `步驟「${stepOf(run, a.stepId)?.label ?? a.stepId}」交辦前版本已改變,授權卡失效,重新產生授權卡`);
       break;
     }
 
@@ -788,7 +939,10 @@ export function reduce(input: FlowRun, event: FlowEvent, now: number): ReduceRes
     case 'finish_done': {
       if (run.inflight?.token !== event.token) { audit(run, now, '忽略過期的收尾結果'); break; }
       run.inflight = null;
-      run.finish = { canonical: event.canonical, paths: event.paths, outOfScope: event.outOfScope, ...(event.error ? { error: event.error } : {}) };
+      run.finish = {
+        canonical: event.canonical, paths: event.paths, outOfScope: event.outOfScope,
+        ...(event.scopeNotes ? { scopeNotes: event.scopeNotes } : {}), ...(event.unexplained ? { unexplained: event.unexplained } : {}), ...(event.note ? { note: event.note } : {}), ...(event.error ? { error: event.error } : {}),
+      };
       break;
     }
 
@@ -834,7 +988,7 @@ export function reduce(input: FlowRun, event: FlowEvent, now: number): ReduceRes
       break;
 
     case 'approval_card':
-      applyCard(run, now, event);
+      applyCard(run, now, fx, event);
       break;
 
     case 'violation':
@@ -869,13 +1023,32 @@ function recordTask(run: FlowRun, now: number, e: Extract<FlowEvent, { type: 'ta
   audit(run, now, `「${a.agentName}」的回合結束(${e.outcome === 'done' ? '完成' : e.outcome === 'interrupted' ? '中斷' : '出錯'})`);
 }
 
-function applyCard(run: FlowRun, now: number, e: Extract<FlowEvent, { type: 'approval_card' }>): void {
+function applyCard(run: FlowRun, now: number, fx: FlowEffect[], e: Extract<FlowEvent, { type: 'approval_card' }>): void {
   const c = run.approvals.find(x => x.id === e.cardId);
   if (!c || c.status !== 'pending') return;
   c.status = e.status;
   c.decidedAt = now;
   if (e.result) c.result = e.result;
+  if (e.included) c.included = [...e.included];
   audit(run, now, `授權卡「${c.action}」:${e.status}${e.result ? `(${e.result})` : ''}`);
+  if (!c.stepId || isTerminal(run.status)) return;
+  // 交辦前的授權卡:拒絕 → 停機、不交辦;失效(允許時版本已變)→ 重新拍版本、開新卡;都允許了 → 交辦
+  const gate = run.gate;
+  if (!gate || gate.stepId !== c.stepId || gate.version !== c.version) return;
+  const step = stepOf(run, c.stepId);
+  const waiting = run.pending?.kind === 'step_approval';
+  if (e.status === 'denied') { terminate(run, now, fx, 'halted', `使用者拒絕「${ACTION_LABEL[c.action]}」的授權卡,步驟「${step?.label ?? c.stepId}」不交辦`); return; }
+  if (e.status === 'expired') {
+    run.gate = undefined;
+    if (waiting) { run.pending = undefined; run.status = 'running'; }
+    audit(run, now, '授權卡失效(版本已改變),重新產生授權卡');
+    return;
+  }
+  const all = (step?.requiresApproval ?? []).every(act => run.approvals.some(x => x.stepId === c.stepId && x.action === act && x.version === gate.version && x.status === 'approved'));
+  if (!all) return;
+  gate.ready = true;
+  if (waiting) { run.pending = undefined; run.status = 'running'; }
+  audit(run, now, `步驟「${step?.label ?? c.stepId}」的授權卡都已允許,交辦`);
 }
 
 function decide(run: FlowRun, now: number, fx: FlowEffect[], e: Extract<FlowEvent, { type: 'decide' }>): void {
@@ -1018,7 +1191,7 @@ function lampOf(run: FlowRun, step: FlowStepDef, attempts: RunAssignment[]): Ste
   const here = run.stepId === step.id;
   if (here) {
     if (run.status === 'halted') return 'halted';
-    if (run.status === 'awaiting_user') return run.pending?.kind === 'verify_blocked' ? 'blocked' : 'awaiting_user';
+    if (run.status === 'awaiting_user') return run.pending?.kind === 'verify_blocked' ? 'blocked' : run.pending?.kind === 'step_approval' ? 'awaiting_approval' : 'awaiting_user';
     if (run.status === 'running' || run.status === 'paused' || run.status === 'stopping') {
       const last = attempts.at(-1);
       if (last && last.result === 'rejected' && run.phase !== 'dispatching' && run.phase !== 'working' && run.phase !== 'reviewing') return 'rejected';

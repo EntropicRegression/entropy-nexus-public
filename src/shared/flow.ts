@@ -77,7 +77,15 @@ export interface FlowScope {
   allowedPaths: string[];
   /** 一定包含 ALWAYS_FORBIDDEN。 */
   forbiddenActions: ForbiddenAction[];
+  /**
+   * 被忽略的建置產出資料夾(L4 事後比對:節點這一步新增或改動就停機)。由專案設定的 artifact_dirs 決定,預設 dist、release。
+   * 舊的流程紀錄沒有這個欄位時當成預設值。
+   */
+  artifactDirs?: string[];
 }
+
+/** L4 預設的建置產出資料夾。 */
+export const DEFAULT_ARTIFACT_DIRS: readonly string[] = ['dist', 'release'];
 
 export interface FlowStepDef {
   id: string;
@@ -161,6 +169,8 @@ export interface ProjectFlowConfig {
   allowDesktopVerify: boolean;
   /** 核實指令在哪裡跑(YAML 的 verify_in);省略表示 copy。 */
   verifyIn?: VerifyLocation;
+  /** 被忽略的建置產出資料夾(YAML 的 artifact_dirs,相對專案根目錄);省略表示 dist、release,空陣列表示不比對。 */
+  artifactDirs?: string[];
 }
 
 export interface ProjectsFileResult {
@@ -300,7 +310,8 @@ export type PendingKind =
   | 'copy_written'      // 審查副本被寫入(已丟棄)
   | 'limit'             // 時間或交辦次數到上限
   | 'not_ended'         // 停止、重跑或改派前,節點一直沒停下來:再等、強制視為結束或停止流程
-  | 'copy_missing';     // 審查副本不在了(例如主控台重開),無法確認有沒有被寫入:重新審查或照用審查結果
+  | 'copy_missing'      // 審查副本不在了(例如主控台重開),無法確認有沒有被寫入:重新審查或照用審查結果
+  | 'step_approval';    // 步驟的 requires_approval:交辦前先在授權卡上允許(允許才交辦,拒絕就停機)
 
 /** wait:再等節點停下來;force_ended:使用者確認節點已經不會再寫檔,強制視為結束。 */
 export type DecisionChoice = 'manual_report' | 'rerun' | 'continue' | 'reassign' | 'halt' | 'stop' | 'wait' | 'force_ended';
@@ -322,9 +333,16 @@ export interface PendingDecision {
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
 
+/**
+ * 授權卡。兩種:
+ * - 收尾卡(沒有 stepId):流程走完後由主控台執行,第一版只支援 commit。
+ * - 交辦前的卡(有 stepId):步驟的 requires_approval 列出的高風險動作,允許後才交辦,而且只有這一步的交辦可以做這個動作。
+ */
 export interface ApprovalCard {
   id: string;
   action: HighRiskAction;
+  /** 交辦前的卡:屬於哪一步。 */
+  stepId?: string;
   /** 授權涵蓋的版本(tree ID);版本一變就失效(expired)。 */
   version: string;
   /** 這次授權涵蓋什麼,例如「本地 commit」。 */
@@ -335,6 +353,12 @@ export interface ApprovalCard {
   paths: string[];
   /** 範圍外的檔案,使用者勾選的才納入。 */
   outOfScope: string[];
+  /** 範圍外檔案的說明(節點在 step_report 的 scope_exceptions 寫的原因,同一個檔案取最後一次)。 */
+  scopeNotes?: ScopeException[];
+  /** 範圍外、節點沒有寫原因的檔案(畫面要特別標示)。 */
+  unexplained?: string[];
+  /** 允許時使用者勾選納入的範圍外檔案。 */
+  included?: string[];
   status: ApprovalStatus;
   createdAt: number;
   decidedAt?: number;
@@ -342,7 +366,13 @@ export interface ApprovalCard {
   result?: string;
 }
 
-export type ViolationKind = 'forbidden_action' | 'out_of_scope' | 'refs_changed' | 'copy_written' | 'verify_modified' | 'artifact_changed';
+/**
+ * 違規種類:
+ * - forbidden_action:禁止動作(L1 授權請求自動拒絕,blocked;L2 工具啟動時命中,中斷並停機)。
+ * - protected_write:寫入受保護的資料夾(流程定義 flows/、主控台設定資料夾、沒授權的記憶庫),停機。
+ * - artifact_changed:新增或改動被忽略的打包產出(dist/、release/),停機。
+ */
+export type ViolationKind = 'forbidden_action' | 'out_of_scope' | 'refs_changed' | 'copy_written' | 'verify_modified' | 'artifact_changed' | 'protected_write';
 
 export interface ScopeViolation {
   kind: ViolationKind;
@@ -351,6 +381,8 @@ export interface ScopeViolation {
   detail: string;
   /** 相關檔案或命中的指令。 */
   items: string[];
+  /** 命中的禁止動作(forbidden_action、protected_write)。 */
+  actions?: string[];
   /** 是否被擋下(forbidden_action 的 L1)或只是標示。 */
   blocked: boolean;
   at: number;

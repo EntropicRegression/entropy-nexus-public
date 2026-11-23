@@ -131,7 +131,30 @@ test('matchForbidden:install(Setup.exe、.msi、Program Files、%LOCALAPPDATA%\\
   for (const m of ['npm install left-pad', 'npm run typecheck', 'node tools/setup-env.js']) assert.deepEqual(matchForbidden(m, ALL), [], m);
 });
 
+test('matchForbidden:install 只是提到 Program Files、Setup.exe、.msi 不算(審查回歸)', () => {
+  for (const m of [
+    '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command \'git status\'',
+    'ls "/c/Program Files/nodejs"',
+    'rg "Program Files" src',
+    'cat src/foo.msi.json',
+    'cp "C:\\Program Files\\App\\a.dll" lib\\',
+    'type release\\Setup-notes.exe.txt',
+    'Get-ChildItem "$env:LOCALAPPDATA\\Programs"',
+  ]) assert.deepEqual(matchForbidden(m, ALL), [], m);
+  for (const h of ['echo x >> "C:\\Program Files\\App\\a.ini"', 'Move-Item a "C:\\Program Files (x86)\\App"', 'start "" "C:\\dl\\Tool Setup.exe"']) assert.deepEqual(matchForbidden(h, ALL), ['install'], h);
+});
+
+test('matchForbidden:引號裡的程式路徑在指令開頭時是程式(裡面的指令照樣比對);註解與 heredoc 內容不算', () => {
+  assert.deepEqual(matchForbidden('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -Command "git push origin main"', DEFAULT), ['push']);
+  assert.deepEqual(matchForbidden('& "C:\\Program Files\\Git\\cmd\\git.exe" commit -m x', DEFAULT), ['commit']);
+  assert.deepEqual(matchForbidden('npm test # git push', DEFAULT), []);
+  assert.deepEqual(matchForbidden("cat > a.md <<'EOF'\ngit push\nEOF", DEFAULT), []);
+  assert.deepEqual(matchForbidden('sh <<EOF\ngit push\nEOF', DEFAULT), ['push']);
+});
+
 test('matchForbidden:real_vault(真實 userData 與呼叫端傳入的記憶庫路徑)', () => {
+  assert.deepEqual(matchForbidden('dir %APPDATA%\\entropy-nexus-dev', ALL), [], '相鄰名稱不算');
+  assert.deepEqual(matchForbidden('echo x > D:\\Notes\\Vault2\\a.md', ALL, { protectedPaths: ['D:\\Notes\\Vault'] }), [], '相鄰名稱不算');
   assert.deepEqual(matchForbidden('del %APPDATA%\\entropy-nexus\\store.json', ALL), ['real_vault']);
   assert.deepEqual(matchForbidden('Remove-Item $env:APPDATA\\entropy-nexus\\x', ALL), ['real_vault']);
   assert.deepEqual(matchForbidden('echo x > "C:\\Users\\me\\AppData\\Roaming\\entropy-nexus\\a.txt"', ALL), ['real_vault']);

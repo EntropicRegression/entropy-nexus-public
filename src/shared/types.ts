@@ -237,10 +237,11 @@ export type AdapterEvent =
   /** outcome:回合是被中斷才回到待命的(包括後台自己取消),不是正常完成。 */
   | { type: 'state'; state: AgentState; detail?: string; outcome?: 'interrupted' }
   | { type: 'message'; role: 'user' | 'agent'; text: string }
-  | { type: 'tool'; phase: 'start' | 'end'; name: string; summary: string; detail?: string; failed?: boolean }
+  /** paths:轉接器取得的結構化檔案路徑(Codex 的檔案修改、ACP 的工具參數),協作流程的範圍合約用來判斷寫入。 */
+  | { type: 'tool'; phase: 'start' | 'end'; name: string; summary: string; detail?: string; failed?: boolean; paths?: string[] }
   /** 工具結果或 agent 產生的圖片。path 是本機檔案(工作目錄內或主控台的媒體資料夾),圖片內容不進事件紀錄。 */
   | { type: 'image'; path: string; caption?: string }
-  | { type: 'approval_request'; requestId: string; tool: string; summary: string; detail?: string; canAllowSession?: boolean }
+  | { type: 'approval_request'; requestId: string; tool: string; summary: string; detail?: string; canAllowSession?: boolean; paths?: string[] }
   | { type: 'approval_resolved'; requestId: string; decision: ApprovalDecision }
   | { type: 'session'; sessionId: string }
   | { type: 'subagent'; phase: 'start' | 'end'; subId: string; name: string; failed?: boolean }
