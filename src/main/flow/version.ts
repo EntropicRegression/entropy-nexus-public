@@ -347,17 +347,25 @@ async function checkDetachedTarget(repo: string, dest: string, commit: string): 
 
 /**
  * 移除桌面核實的 worktree:先確認對象(已登記、不是主工作樹、detached、HEAD 是建立時的那筆核實用提交)→
- * 解除指向外面的連結 → 確認沒有殘留 → worktree remove --force → prune。任何一項不符就拒絕、什麼都不動。
+ * 解除指向外面的連結 → 確認沒有殘留 → worktree remove --force <這個路徑>。任何一項不符就拒絕、什麼都不動。
+ * 只處理這一個 worktree:不跑全域的 git worktree prune(會連帶清掉使用者自己暫時不在的 worktree,例如外接碟上的)。
+ * 資料夾已經不在時:還登記著就只移除這一筆登記(worktree remove --force 對不存在的路徑也只動那一筆),沒登記就當成已移除。
  */
 export async function removeDetachedWorktree(repo: string, dest: string, commit: string): Promise<{ removed: boolean; unlinked: string[]; error?: string }> {
-  if (isAbsolute(dest) && !existsSync(dest)) { await git(repo, ['worktree', 'prune']); return { removed: true, unlinked: [] }; }
+  if (isAbsolute(dest) && !existsSync(dest)) {
+    const list = await git(repo, ['worktree', 'list', '--porcelain']);
+    if (!list.ok || !parseWorktreeList(list.out).some(e => samePath(e.path, dest))) return { removed: true, unlinked: [] };
+    const bad = await checkDetachedTarget(repo, dest, commit);
+    if (bad) return { removed: false, unlinked: [], error: `拒絕移除:${bad}` };
+    const rm = await git(repo, ['worktree', 'remove', '--force', resolve(dest)]);
+    return rm.ok ? { removed: true, unlinked: [] } : { removed: false, unlinked: [], error: `移除核實用 worktree 的登記失敗:${failText(rm)}` };
+  }
   const bad = await checkDetachedTarget(repo, dest, commit);
   if (bad) return { removed: false, unlinked: [], error: `拒絕移除:${bad}` };
   const abs = resolve(dest);
   let unlinked: string[];
   try { unlinked = unlinkEscaping(abs); } catch (e) { return { removed: false, unlinked: [], error: (e as Error).message }; }
   const rm = await git(repo, ['worktree', 'remove', '--force', abs], undefined, 600000);
-  await git(repo, ['worktree', 'prune']);
   if (!rm.ok) return { removed: false, unlinked, error: `移除核實用 worktree 失敗:${failText(rm)}` };
   return existsSync(abs) ? { removed: false, unlinked, error: `移除後資料夾仍在:${abs}` } : { removed: true, unlinked };
 }

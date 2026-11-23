@@ -864,12 +864,26 @@ ${text}
     this.sessions.get(id)?.interrupt();
   }
 
-  /** 把指令排到節點佇列的尾端。節點待命(或喚醒後待命)且有執行名額時依序自動送出。 */
-  enqueue(id: string, text: string, images: string[] = [], source: SpeechSource = 'desktop'): void {
+  /**
+   * 把指令排到節點佇列的尾端。節點待命(或喚醒後待命)且有執行名額時依序自動送出。回傳佇列項目的 id。
+   * from 是交辦者(協作流程的交辦用它標明 from.flow,任務才認得出是哪個流程交辦)。
+   */
+  enqueue(id: string, text: string, images: string[] = [], source: SpeechSource = 'desktop', from?: TaskFrom): string {
     const agent = this.agents.get(id);
     if (!agent || agent.parentId) throw new Error('找不到這個節點');
     if (!text.trim()) throw new Error('沒有內容');
-    this.pushQueue(agent, text, images, source);
+    return this.pushQueue(agent, text, images, source, from);
+  }
+
+  /**
+   * 協作流程停機或需裁示時通知總管(使用者裁示第 4 點):只在總管的對話裡留言,並在總管下一次回合時附上,不自動讓總管跑回合。
+   * 沒有指定總管時什麼都不做。
+   */
+  notifyChief(text: string): void {
+    const id = this.chiefId;
+    if (!id || !this.agents.has(id)) return;
+    this.note(id, text);
+    this.chiefNotes.push(text);
   }
 
   cancelQueued(id: string, queuedId: string): void {
@@ -1126,11 +1140,13 @@ ${text}
     this.broadcast({ agent: { ...agent, queued: agent.queued.map(q => ({ ...q })) } });
   }
 
-  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource, from?: TaskFrom): void {
+  private pushQueue(agent: AgentInfo, text: string, images: string[], source: SpeechSource, from?: TaskFrom): string {
     if (agent.queued.length >= MAX_QUEUED) throw new Error(`佇列已滿(最多 ${MAX_QUEUED} 筆)`);
-    agent.queued.push({ id: randomUUID(), text, images: [...images], createdAt: Date.now(), source, ...(from ? { from } : {}) });
+    const id = randomUUID();
+    agent.queued.push({ id, text, images: [...images], createdAt: Date.now(), source, ...(from ? { from } : {}) });
     this.saveQueue(agent);
     this.schedulePump();
+    return id;
   }
 
   /** 送不出去的佇列項目放回開頭,保留原本的排入時間。 */
@@ -1317,7 +1333,8 @@ ${text}
    */
   caseParticipants(task: TaskInfo): string[] {
     const ids = new Set<string>([task.agentId]);
-    if (task.from?.id) ids.add(task.from.id);
+    // 協作流程的交辦者是流程本身(flow:<流程 id>),不是節點
+    if (task.from?.id && !task.from.id.startsWith('flow:')) ids.add(task.from.id);
     if (task.from?.meeting) {
       const m = this.meetings().find(x => x.ids.includes(task.agentId) && x.ids.includes(task.from!.id) && task.startedAt >= x.startedAt - 1000 && task.startedAt <= x.endedAt + 1000);
       for (const id of m?.ids ?? []) ids.add(id);
@@ -1653,8 +1670,9 @@ ${section}
           // 後台自己取消的回合(Codex、ACP)也會回到待命,由轉接器以 outcome 標明
           const ended = this.finishTask(agent.id, this.interrupted.has(agent.id) || e.outcome === 'interrupted' ? 'interrupted' : 'done');
           this.speakEnd(agent, ended);
-          // 判例:正常完成的任務是不是困難任務,是的話請承辦節點把解法寫下來
-          if (ended?.status === 'done') this.cases?.onTaskEnded(ended);
+          // 判例:正常完成的任務是不是困難任務,是的話請承辦節點把解法寫下來。
+          // 協作流程的交辦不偵測:否則判例服務會在流程中途對節點排入「撰寫判例」的指令
+          if (ended?.status === 'done' && !ended.from?.flow) this.cases?.onTaskEnded(ended);
         } else if (e.state === 'error') {
           this.speakEnd(agent, this.finishTask(agent.id, 'failed', e.detail ?? ''), 'error');
         } else if (e.state === 'lost') {

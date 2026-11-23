@@ -1,6 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { attachmentKind, type AdapterEvent, type ApprovalDecision, type Backend, type Capability } from '../../shared/types';
 import { saveImage } from '../media';
@@ -76,6 +77,8 @@ class FakeSession implements AdapterSession {
   private stopped = false;
   private busy = false;
   private lazySession = false;
+  /** 測試用:這個回合不理會中斷(協作流程的 stubborn 動作,模擬中斷無效的節點)。 */
+  private stubborn = false;
   /** 測試用:會議腳本(見 runTurn 的「〔測試發言:…〕」)。 */
   private script = '';
   private waiting: { requestId: string; resume: (d: ApprovalDecision) => void } | null = null;
@@ -110,7 +113,7 @@ class FakeSession implements AdapterSession {
   }
 
   interrupt(): void {
-    if (!this.busy) return;
+    if (!this.busy || this.stubborn) return;
     // 清掉計時器後,進行中的回合會停在原地不再繼續
     this.clearTimers();
     if (this.asking) { this.emit({ type: 'question_resolved', requestId: this.asking.requestId, answers: null }); this.asking = null; }
@@ -142,6 +145,24 @@ class FakeSession implements AdapterSession {
 
   private async runTurn(_text: string): Promise<void> {
     this.emit({ type: 'state', state: 'planning', detail: '思考中' });
+    // 【只給驗收測試用】協作流程(tests/flow.sh):交辦或提醒裡含「〔測試流程:…〕」時照腳本做,見 flowTurn
+    if (_text.includes('〔測試流程:') && /^assignment_id:/m.test(_text)) { await this.flowTurn(_text); return; }
+    // 【只給驗收測試用】〔測試寫檔:路徑=內容;路徑2=內容2〕:在工作目錄寫檔後結束回合(模擬流程外的人改了正本)
+    const writeMark = /〔測試寫檔:([^〕]*)〕/.exec(_text);
+    if (writeMark) {
+      this.emit({ type: 'state', state: 'working', detail: '測試寫檔' });
+      await this.wait(200);
+      const done: string[] = [];
+      for (const pair of writeMark[1].split(';')) {
+        const i = pair.indexOf('=');
+        if (i <= 0) continue;
+        const rel = pair.slice(0, i).trim();
+        if (this.writeRel(this.opts.cwd, rel, pair.slice(i + 1))) done.push(rel);
+      }
+      this.emit({ type: 'message', role: 'agent', text: `已寫檔:${done.join('、') || '(無)'}` });
+      this.emit({ type: 'state', state: 'idle', detail: '' });
+      return;
+    }
     // 【只給驗收測試用】會議的指令開頭固定是主控台的說明,用不上「圖片測試」。
     // 指令裡含「〔測試發言:名稱=第1輪|第2輪;名稱2=…〕」時,輪到「名稱」發言就約 0.9 秒後直接回覆對應那一輪的內容
     // (輪數取自指令裡的「現在是第 N 輪」,超過的用最後一段;「\n」會換成換行)。
@@ -323,6 +344,87 @@ class FakeSession implements AdapterSession {
     FakeSession.used = Math.min(0.97, FakeSession.used + 0.07 + Math.random() * 0.06);
     this.context = Math.min(190000, this.context + 9000 + Math.round(Math.random() * 14000));
     this.emit({ type: 'usage', windows: [{ label: '5 小時', used: FakeSession.used, resetsAt: Math.round(Date.now() / 1000) + 3 * 3600 }, { label: '每週', used: FakeSession.used * 0.6, resetsAt: Math.round(Date.now() / 1000) + 4 * 86400 }], context: { used: this.context, max: 200000 }, spent: { tokens: 8000 + Math.round(Math.random() * 20000), usd: 0.004 + Math.random() * 0.02 } });
+    this.emit({ type: 'message', role: 'agent', text: '完成。' });
+    this.emit({ type: 'state', state: 'idle', detail: '' });
+  }
+
+  /** 在 root 底下寫一個相對路徑的檔案(拒絕絕對路徑與 ..)。 */
+  private writeRel(root: string, rel: string, content: string): boolean {
+    if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) return false;
+    const file = join(root, rel);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${content.replace(/\\n/g, '\n')}\n`);
+    return true;
+  }
+
+  /**
+   * 【只給驗收測試用】協作流程的假節點。腳本寫在主題裡:〔測試流程:規則;規則…〕,規則是「鍵=動作,動作…」。
+   * 鍵:<步驟>#<第幾次>(提醒的回合加 ~r,例如 implement#1~r),找不到再找 <步驟>、<步驟>~r、*、*~r。
+   * 沒有對應的規則時:實作步驟只回報、審查步驟回報可合併。動作:
+   *   write:路徑:內容      在工作目錄(正本)寫檔        writecopy:路徑:內容  在審查副本裡寫檔
+   *   report / ok         回報(審查步驟是 mergeable)  fix:項目             審查回報 changes_required,必修一項
+   *   ruling:項目         審查填 needs_ruling、實作填 questions
+   *   bad                 送一份驗證不過的回報(實作填 verdict、審查 mergeable 卻有必修)
+   *   late:毫秒           回合照常結束,過這麼久才回報(不受中斷影響)
+   *   wait:毫秒           停在回合裡這麼久             commit               在工作目錄 git commit(違規)
+   *   none                不回報                       stubborn             這個回合不理會中斷(模擬停不下來的節點)
+   * 每個動作的結果以 [flow] 開頭的 note 事件回報。
+   */
+  private async flowTurn(text: string): Promise<void> {
+    this.emit({ type: 'state', state: 'working', detail: '測試流程' });
+    const script = /〔測試流程:([^〕]*)〕/.exec(text)?.[1] ?? '';
+    const aid = /^assignment_id:(\S+)/m.exec(text)?.[1] ?? '';
+    const m = /^流程步驟:([\w-]+)\(第 (\d+) 次\)/m.exec(text);
+    const step = m?.[1] ?? '', n = m?.[2] ?? '1';
+    const remind = text.startsWith('(主控台:step_report 提醒。');
+    const review = /^審查副本:/m.test(text);
+    const copy = /^審查副本:(.+)$/m.exec(text)?.[1]?.trim() ?? '';
+    const rules = new Map(script.split(';').map(r => r.trim()).filter(Boolean).map(r => { const i = r.indexOf('='); return [r.slice(0, i).trim(), r.slice(i + 1).trim()] as [string, string]; }));
+    const r = remind ? '~r' : '';
+    const value = rules.get(`${step}#${n}${r}`) ?? rules.get(`${step}${r}`) ?? rules.get(`*${r}`) ?? (review ? 'ok' : 'report');
+    const url = this.opts.interop?.url;
+    const call = async (args: Record<string, unknown>): Promise<string> => {
+      if (!url) return 'no-interop-url';
+      try {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'step_report', arguments: args } }) });
+        const j = await res.json() as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+        return `${j.result?.isError ? 'ERROR ' : 'OK '}${j.result?.content?.[0]?.text ?? ''}`;
+      } catch (e) { return `fetch-failed ${(e as Error).message}`; }
+    };
+    const base = (): Record<string, unknown> => review
+      ? { assignment_id: aid, summary: `假資料審查:${step} 第 ${n} 次`, verdict: 'mergeable', commands_run: [{ command: 'node check.js', result: '通過' }] }
+      : { assignment_id: aid, summary: `假資料實作:${step} 第 ${n} 次`, commands_run: [{ command: 'node check.js', result: '通過' }], not_verified: ['假資料節點沒有真的驗證'] };
+    for (const act of value.split(',').map(x => x.trim()).filter(Boolean)) {
+      const [name, ...rest] = act.split(':');
+      const arg = rest.join(':');
+      let out = '';
+      if (name === 'write' || name === 'writecopy') {
+        const j = arg.indexOf(':');
+        const rel = j < 0 ? arg : arg.slice(0, j), content = j < 0 ? '' : arg.slice(j + 1);
+        const root = name === 'write' ? this.opts.cwd : copy;
+        out = root && this.writeRel(root, rel, content) ? `寫入 ${rel}` : `無法寫入 ${rel}`;
+      } else if (name === 'report' || name === 'ok') out = await call(base());
+      else if (name === 'fix') out = await call({ ...base(), verdict: 'changes_required', must_fix: [arg || '請修正'] });
+      else if (name === 'ruling') out = await call(review ? { ...base(), needs_ruling: [arg || '請裁示'] } : { ...base(), questions: [arg || '請裁示'] });
+      else if (name === 'bad') out = await call(review ? { ...base(), verdict: 'mergeable', must_fix: ['矛盾的必修'] } : { ...base(), verdict: 'mergeable' });
+      else if (name === 'late') {
+        const ms = Number(arg) || 3000;
+        // 不用 this.after:中斷時計時器會被清掉,遲到的回報要照樣送出
+        setTimeout(() => { void call(base()).then(t => { if (!this.stopped) this.emit({ type: 'note', text: `[flow] late → ${t}` }); }); }, ms).unref?.();
+        out = `${ms} 毫秒後回報`;
+      } else if (name === 'wait') { await this.wait(Number(arg) || 1000); out = '等待結束'; }
+      else if (name === 'commit') {
+        try {
+          execFileSync('git', ['add', '-A'], { cwd: this.opts.cwd, windowsHide: true });
+          execFileSync('git', ['-c', 'user.name=fake', '-c', 'user.email=fake@example.com', 'commit', '-q', '-m', 'fake commit'], { cwd: this.opts.cwd, windowsHide: true });
+          out = '已 commit';
+        } catch (e) { out = `commit 失敗 ${(e as Error).message.split('\n')[0]}`; }
+      } else if (name === 'none') out = '不回報';
+      else if (name === 'stubborn') { this.stubborn = true; out = '這個回合不理會中斷'; }
+      else out = `不認得的動作 ${name}`;
+      this.emit({ type: 'note', text: `[flow] ${act.slice(0, 60)} → ${out.slice(0, 300)}` });
+    }
+    this.stubborn = false;
     this.emit({ type: 'message', role: 'agent', text: '完成。' });
     this.emit({ type: 'state', state: 'idle', detail: '' });
   }

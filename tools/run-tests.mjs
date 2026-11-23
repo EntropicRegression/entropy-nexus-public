@@ -55,10 +55,13 @@ const SUITES = [
   { name: 'flow-scope', group: 'unit', min: 0.1, ...node('tests/flow-scope.test.mjs') },
   { name: 'flow-version', group: 'unit', min: 0.3, ...node('tests/flow-version.test.mjs') },
   { name: 'flow-verify', group: 'unit', min: 0.3, ...node('tests/flow-verify.test.mjs') },
+  { name: 'flow-machine', group: 'unit', min: 0.1, ...node('tests/flow-machine.test.mjs') },
+  { name: 'flow-report', group: 'unit', min: 0.1, ...node('tests/flow-report.test.mjs') },
   // ---- 假資料驗收腳本(core 是 e2e 的子集合,每次 PR 都跑)
   { name: 'interop', group: 'e2e', core: true, min: 1, ...bash('tests/interop.sh') },
   { name: 'meeting', group: 'e2e', core: true, min: 1, ...bash('tests/meeting.sh') },
   { name: 'meeting-room', group: 'e2e', core: true, min: 1, ...bash('tests/meeting-room.sh') },
+  { name: 'flow', group: 'e2e', core: true, min: 2.5, ...bash('tests/flow.sh') },
   { name: 'chief', group: 'e2e', core: true, min: 1, ...bash('tests/chief.sh') },
   { name: 'voice-speech', group: 'e2e', core: true, min: 1.5, ...bash('tests/voice-speech.sh') },
   { name: 'queue-fake', group: 'e2e', core: true, min: 1.5, ...bash('tests/queue-fake.sh') },

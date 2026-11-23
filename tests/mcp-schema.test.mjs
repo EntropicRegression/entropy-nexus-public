@@ -53,4 +53,20 @@ test('case_submit 用英文參數,而且和 cases.ts 的 CASE_ARGS 對得上', (
   for (const a of args) assert.ok(new RegExp(`^\\s*${a}:\\s*\\{\\s*type:`, 'm').test(cs.body), `case_submit 少了參數 ${a}`);
 });
 
+test('step_report:參數和 report.ts 的正式名稱一致,必填只有 assignment_id 與 summary,巢狀物件沒有 required', () => {
+  const sr = tools.find(t => t.name === 'step_report');
+  assert.ok(sr, '有 step_report');
+  const from = sr.body.indexOf('properties:');
+  const end = Math.min(...['required:', 'additionalProperties'].map(w => sr.body.indexOf(w, from)).filter(i => i > 0));
+  const props = sr.body.slice(from, end);
+  const want = ['assignment_id', 'summary', 'verdict', 'must_fix', 'suggestions', 'needs_ruling', 'commands_run', 'not_verified', 'questions', 'scope_exceptions'];
+  for (const k of want) assert.ok(new RegExp(`^\\s*${k}:\\s*\\{\\s*type:`, 'm').test(props), `step_report 少了參數 ${k}(或被截斷)`);
+  assert.deepEqual(/required:\s*\[([^\]]*)\]/.exec(sr.body)?.[1].match(/'([^']+)'/g)?.map(s => s.slice(1, -1)), ['assignment_id', 'summary']);
+  assert.equal((sr.body.match(/required:/g) ?? []).length, 1, '巢狀物件不寫 required');
+  assert.equal((sr.body.match(/additionalProperties/g) ?? []).length, 1, '巢狀物件不寫 additionalProperties');
+  assert.match(sr.body, /enum:\s*\['mergeable', 'changes_required'\]/);
+  const reportSrc = readFileSync(new URL('../src/main/flow/report.ts', import.meta.url), 'utf8');
+  for (const k of want) assert.ok(reportSrc.includes(`${k}: '${k}'`), `report.ts 的 REPORT_ALIASES 沒有正式名稱 ${k}`);
+});
+
 console.log(`通過 ${passed} 項`);

@@ -36,7 +36,8 @@ export function emptyStats(agentId: string): NodeStats {
 
 /** 依節點彙總任務;沒有任務的節點不會出現在結果裡(用 emptyStats 補)。 */
 /** 算進節點統計的任務:排除主控台自己發出的請求(刪除節點前請它寫工作總結、請它寫判例、請它整理記憶草稿),那些不是交辦的工作。 */
-export const isWorkTask = (t: Pick<TaskInfo, 'source'>): boolean => t.source !== 'archive' && t.source !== 'case' && t.source !== 'draft';
+// 協作流程的交辦(source 'flow')由流程自己驗收與記錄,不當成一般工作自動驗收、也不算進節點統計
+export const isWorkTask = (t: Pick<TaskInfo, 'source'>): boolean => t.source !== 'archive' && t.source !== 'case' && t.source !== 'draft' && t.source !== 'flow';
 
 export function computeNodeStats(tasks: TaskInfo[], filter?: (t: TaskInfo) => boolean): Map<string, NodeStats> {
   const out = new Map<string, NodeStats>();

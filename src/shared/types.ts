@@ -1,6 +1,7 @@
 // 主行程、preload 與畫面共用的型別。畫面只認這裡定義的狀態與事件。
 
 import type { DashboardData } from './dashboard';
+import type { DecisionChoice, FlowRunView, FlowStartInput, FlowTemplateInfo, ProjectFlowConfig } from './flow';
 
 export type Backend = 'claude' | 'codex' | 'antigravity';
 
@@ -104,7 +105,7 @@ export interface AgentInfo {
  * 指令是從哪裡送出的(語音播報用):desktop 是桌面畫面、remote 是手機或瀏覽器版、interop 是節點互相呼叫或會議、
  * autopilot 是假資料的自動運作。只有 desktop 發起的回合完成時會念出摘要。
  */
-export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive' | 'case' | 'draft';
+export type SpeechSource = 'desktop' | 'remote' | 'interop' | 'autopilot' | 'archive' | 'case' | 'draft' | 'flow';
 
 /** source 是後來才加的;舊佇列沒有這個欄位,當成 desktop。 */
 export interface QueuedPrompt { id: string; text: string; images: string[]; createdAt: number; source?: SpeechSource; from?: TaskFrom }
@@ -114,6 +115,8 @@ export interface TaskFrom {
   id: string; name: string; meeting?: boolean;
   /** 交辦者明確指定的專案(ask_node / start_meeting 的 project 參數);沒有就用接手節點的工作目錄所屬的專案。 */
   project?: { id: string; name: string; git?: boolean };
+  /** 協作流程的交辦(id 是 flow:<流程 id>):判例偵測不收、不算判例的參與節點。 */
+  flow?: { runId: string; assignmentId: string; stepId: string };
 }
 
 /** 一個額度視窗(例如 5 小時、每週)。used 是 0 到 1 的已用比例。 */
@@ -323,6 +326,8 @@ export interface Snapshot {
   meetings?: MeetingView[];
   /** 分派紀錄:最近的節點交辦(新的在前,最多 50 筆)。 */
   dispatches: DispatchEntry[];
+  /** 協作流程(新的在前);只有桌面畫面的快照才附上。 */
+  flows?: FlowRunView[];
 }
 
 /** 一條進行中的協作連線:ask 是 from 呼叫 to[0];meeting 是主持人 from 與每位參與者 to。 */
@@ -448,6 +453,8 @@ export interface Update {
   meetings?: MeetingView[];
   /** 分派紀錄(整份取代)。 */
   dispatches?: DispatchEntry[];
+  /** 單筆協作流程新增或更新。 */
+  flow?: FlowRunView;
 }
 
 export interface CreateAgentInput {
@@ -773,5 +780,23 @@ export interface NexusApi {
   /** 從節點或舊 session 分支出新節點;新節點有自己的 session,來源不受影響。 */
   forkAgent(input: ForkAgentInput): Promise<AgentInfo>;
   pickDirectory(): Promise<string | null>;
+  // ---- 協作流程(只有完整權限;畫面在 M4) ----
+  flowTemplates(): Promise<FlowTemplateInfo[]>;
+  flowList(): Promise<FlowRunView[]>;
+  /** 這個資料夾所屬專案的流程設定(projects.yaml);沒有設定時 config 為 null。 */
+  flowProjectConfig(cwd: string): Promise<{ projectId: string; projectName: string; config: ProjectFlowConfig | null; errors: string[] }>;
+  flowSetProjectConfig(cfg: ProjectFlowConfig): Promise<void>;
+  flowStart(input: FlowStartInput): Promise<FlowRunView>;
+  flowPause(runId: string): Promise<FlowRunView>;
+  flowResume(runId: string): Promise<FlowRunView>;
+  flowStop(runId: string): Promise<FlowRunView>;
+  /** 回應待決事項(pending.id);reassign 要給 agentId,needs_ruling 的 continue 可附 note(會轉給下一步)。 */
+  flowDecide(runId: string, decisionId: string, choice: DecisionChoice, payload?: { agentId?: string; note?: string }): Promise<FlowRunView>;
+  /** 未回報時手動補報;參數和 step_report 工具相同(assignment_id 可省略)。 */
+  flowManualReport(runId: string, args: Record<string, unknown>): Promise<FlowRunView>;
+  /** 授權卡:允許(include 是要納入的範圍外檔案)或拒絕(deny)。 */
+  flowApprove(runId: string, cardId: string, opts?: { deny?: boolean; include?: string[]; message?: string }): Promise<FlowRunView>;
+  /** 流程 late/ 底下的遲到回報檔案。 */
+  flowLateFiles(runId: string): Promise<string[]>;
   onUpdate(cb: (u: Update) => void): () => void;
 }

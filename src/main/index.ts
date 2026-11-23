@@ -25,6 +25,10 @@ import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTran
 import { atomicWriteJson, buildVaultStats, StatsWriter, STATS_FILE } from './vault-stats';
 import { findWakeUrl, parseWakeUrl, WAKE_PROTOCOL } from './wake';
 import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
+import { FlowService } from './flow/service';
+import { builtinTemplates } from './flow/builtin';
+import { projectOf } from './project';
+import type { DecisionChoice, FlowStartInput, ProjectFlowConfig } from '../shared/flow';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
 app.setPath('userData', process.env.NEXUS_DATA_DIR || join(app.getPath('appData'), 'entropy-nexus'));
@@ -46,6 +50,7 @@ let store: Store | null = null;
 let vault: MemoryVault | null = null;
 let cases: CaseService | null = null;
 let drafts: DraftService | null = null;
+let flows: FlowService | null = null;
 let quitting = false;
 let interopRef: Interop | null = null;
 let statsWriter: StatsWriter | null = null;
@@ -118,8 +123,10 @@ type Methods = Record<string, (...args: any[]) => unknown>;
 
 /** source:這份方法表給誰用(桌面畫面或遠端),送出的指令記下來源,語音播報只念桌面發起的回合。 */
 function apiMethods(c: Core, source: SpeechSource): Methods {
+  const flow = () => { if (!flows) throw new Error('協作流程功能沒有啟用'); return flows; };
   return {
-    snapshot: () => ({ ...c.snapshot(), observed: observedList() }),
+    // 協作流程只附在桌面畫面的快照(遠端的方法表不給,M4 再決定遠端要看到什麼)
+    snapshot: () => ({ ...c.snapshot(), observed: observedList(), ...(source === 'desktop' && flows ? { flows: flows.views() } : {}) }),
     history: (id: string) => c.history(id),
     create: (input: CreateAgentInput) => c.createAgent(input),
     remove: (id: string) => c.removeAgent(id),
@@ -191,6 +198,19 @@ function apiMethods(c: Core, source: SpeechSource): Methods {
     setAgyAllow: (rules: unknown) => c.setAgyAllow(rules).rules,
     setPersona: (character: string, text: string) => c.setPersona(String(character ?? ''), String(text ?? '')),
     setChief: (id: string | null) => c.setChief(typeof id === 'string' && id ? id : null),
+    // 協作流程:沒有列在 access.ts 的方法表,所以只有完整權限呼叫得到
+    flowTemplates: () => flow().templates(),
+    flowList: () => flow().views(),
+    flowProjectConfig: (cwd: string) => flow().projectConfig(String(cwd ?? '')),
+    flowSetProjectConfig: (cfg: ProjectFlowConfig) => flow().setProjectConfig(cfg),
+    flowStart: (input: FlowStartInput) => flow().start(input),
+    flowPause: (runId: string) => flow().pause(String(runId)),
+    flowResume: (runId: string) => flow().resume(String(runId)),
+    flowStop: (runId: string) => flow().stop(String(runId)),
+    flowDecide: (runId: string, decisionId: string, choice: DecisionChoice, payload?: { agentId?: string; note?: string }) => flow().decide(String(runId), String(decisionId), choice, payload && typeof payload === 'object' ? payload : {}),
+    flowManualReport: (runId: string, args: Record<string, unknown>) => flow().manualReport(String(runId), args && typeof args === 'object' ? args : {}),
+    flowApprove: (runId: string, cardId: string, opts?: { deny?: boolean; include?: string[]; message?: string }) => flow().approve(String(runId), String(cardId), opts && typeof opts === 'object' ? opts : {}),
+    flowLateFiles: (runId: string) => flow().lateFiles(String(runId)),
   };
 }
 
@@ -381,7 +401,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     // 節點互相呼叫:主控台提供給各家 CLI 的工具服務;要在節點的 session 啟動之前設定好
     const interop = new Interop(dir);
     interopRef = interop;
-    core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); if (u.agent || u.removedId || u.task || u.tasks || u.dispatches) statsWriter?.request(); });
+    core = new Core(store, (u: Update) => { if (u.agent) observerSawAgent(u.agent); win?.webContents.send('nexus:update', u); notify(u); remotePush(u); interop.onUpdate(u); flows?.onUpdate(u); if (u.agent || u.removedId || u.task || u.tasks || u.dispatches) statsWriter?.request(); });
     core.setMemoryVault(vault);
     core.setInterop(id => interop.optionsFor(id));
     interop.attach(core);
@@ -428,8 +448,36 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     });
     const draftSvc = drafts;
     interop.memoryDraft = (callerId, args) => draftSvc.submit(callerId, args);
+    // 協作流程:執行器在主行程,節點用 step_report 回報;流程更新只推給桌面畫面(不經 remotePush)
+    flows = new FlowService({
+      dataDir: dir,
+      agents: () => c.snapshot().agents.filter(a => !a.parentId),
+      agent: id => c.agentById(id),
+      task: id => c.taskById(id),
+      currentTaskId: id => c.currentTaskId(id),
+      enqueue: (agentId, text, from) => c.enqueue(agentId, text, [], 'flow', from),
+      cancelQueued: (agentId, queuedId) => c.cancelQueued(agentId, queuedId),
+      interrupt: id => c.interrupt(id),
+      wake: id => c.wake(id),
+      notifyChief: text => c.notifyChief(text),
+      notifyUser: (title, body) => {
+        if (!win || win.isFocused() || (testMode && process.env.NEXUS_TEST_NOTIFY !== '1')) return;
+        win.flashFrame(true);
+        if (Notification.isSupported()) new Notification({ title, body, silent: true }).show();
+      },
+      broadcast: u => win?.webContents.send('nexus:update', u),
+      builtin: builtinTemplates,
+      projectOf: async cwd => { try { const p = await projectOf(cwd); return { id: p.id, name: p.name }; } catch { return null; } },
+      // 測試用:縮短「確認交辦結束」的逾時與排隊提示的時間
+      ...(Number(process.env.NEXUS_FLOW_ENSURE_MS) > 0 ? { ensureTimeoutMs: Number(process.env.NEXUS_FLOW_ENSURE_MS) } : {}),
+      ...(Number(process.env.NEXUS_FLOW_QUEUE_WARN_MS) > 0 ? { queueWarnMs: Number(process.env.NEXUS_FLOW_QUEUE_WARN_MS) } : {}),
+    });
+    const flowSvc = flows;
+    interop.stepReport = (callerId, args) => flowSvc.submitReport(callerId, args);
     handleFileRequests(id => core?.agentCwd(id) ?? null);
     await core.init();
+    // 節點都載入之後才讀回流程(執行中的改成暫停,取消上次留在佇列裡的交辦)
+    flowSvc.init();
     // 記憶庫統計(.nexus-stats.json,給管理 app 讀):啟動時寫一次,之後有變動最多每 5 秒寫一次
     const statsFile = join(v.dir, STATS_FILE);
     statsWriter = new StatsWriter(() => { const i = c.statsInput(); return i ? buildVaultStats(i) : null; }, data => (data ? atomicWriteJson(statsFile, data) : Promise.resolve(true)));
@@ -481,6 +529,7 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     statsWriter?.stop();
     stopObserver();
     interopRef?.stop();
+    flows?.shutdown();
     flushHeat();
     void Promise.allSettled([stopVoice(), core.shutdown()]).finally(() => { store?.close(); app.quit(); });
   });

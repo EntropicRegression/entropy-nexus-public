@@ -260,6 +260,27 @@ try {
     try { unlinkSync(join(other, 'own-link')); } catch { rmdirSync(join(other, 'own-link')); }
     git(repo, 'worktree', 'remove', '--force', other);
     assert.equal(git(repo, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('worktree ')).length, 1);
+
+    // 資料夾已經不在:只移除這一筆登記,不跑全域 prune(使用者自己暫時不在的 worktree 登記要留著)
+    const tree2 = await snapshot(repo);
+    const gone = join(BASE, 'wt', 'gone-verify');
+    const w2 = await addDetachedWorktree(repo, tree2, gone);
+    const away = join(BASE, 'wt', 'user-away');
+    git(repo, 'worktree', 'add', '-q', '--detach', away);
+    for (const d of [gone, away]) {
+      const nm = join(d, 'node_modules');
+      if (isLink(nm)) { try { unlinkSync(nm); } catch { rmdirSync(nm); } }
+      rmSync(d, { recursive: true, force: true });
+    }
+    const listed = () => git(repo, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('worktree ')).length;
+    assert.equal(listed(), 3);
+    const rg = await removeDetachedWorktree(repo, gone, w2.commit);
+    assert.equal(rg.removed, true, rg.error);
+    assert.equal(listed(), 2, '只移除核實 worktree 的登記,使用者暫時不在的那一筆還在');
+    assert.equal((await removeDetachedWorktree(repo, gone, w2.commit)).removed, true, '沒登記就當成已移除');
+    assert.equal((await removeDetachedWorktree(repo, away, w2.commit)).removed, false, '不是自己建的就不動');
+    assert.equal(listed(), 2);
+    git(repo, 'worktree', 'remove', '--force', away);
   });
 
   await test('commitChanges 的路徑過濾:只提交選取的檔案,其他修改留在工作區', async () => {

@@ -34,7 +34,7 @@ export function notCandidateReason(task: CandidateInput['task']): string | null 
   if (task.caseId || task.casePending) return '已經有判例或正在撰寫';
   // 撰寫判例的請求本身、假資料的自動運作、會議的發言,都不是值得記下來的解法
   // (archive 是刪除節點前請節點寫工作總結的提示詞)
-  if (task.source === 'case' || task.source === 'autopilot' || task.source === 'archive' || task.source === 'draft') return '來源不列入判例候選';
+  if (task.source === 'case' || task.source === 'autopilot' || task.source === 'archive' || task.source === 'draft' || task.source === 'flow' || task.from?.flow) return '來源不列入判例候選';
   if (task.from?.meeting || MEETING_TURN.test(task.title)) return '會議的發言';
   return null;
 }

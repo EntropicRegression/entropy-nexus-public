@@ -153,11 +153,12 @@ export function decodeOutput(buf: Buffer, codepage: number | null): string {
 
 const lastLineOf = (text: string) => text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).pop()?.slice(0, 500) ?? '';
 
-interface RunOne { exitCode: number | null; output: string; timedOut: boolean; spawnError?: string; ms: number }
+interface RunOne { exitCode: number | null; output: string; timedOut: boolean; aborted?: boolean; spawnError?: string; ms: number }
 
-/** 跑一條指令,收最後 64KB 的輸出;逾時就終止整個程序樹。 */
-function runOne(run: string, cwd: string, timeoutSec: number, env: Record<string, string>, codepage: number | null): Promise<RunOne> {
+/** 跑一條指令,收最後 64KB 的輸出;逾時或中止(signal)就終止整個程序樹。 */
+function runOne(run: string, cwd: string, timeoutSec: number, env: Record<string, string>, codepage: number | null, signal?: AbortSignal): Promise<RunOne> {
   return new Promise(resolveRun => {
+    if (signal?.aborted) { resolveRun({ exitCode: null, output: '', timedOut: false, aborted: true, ms: 0 }); return; }
     const t0 = Date.now();
     let chunks: Buffer[] = [];
     let size = 0;
@@ -167,18 +168,28 @@ function runOne(run: string, cwd: string, timeoutSec: number, env: Record<string
     };
     let finished = false;
     let timedOut = false;
+    let aborted = false;
     let grace: NodeJS.Timeout | undefined;
     const finish = (exitCode: number | null, spawnError?: string) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       if (grace) clearTimeout(grace);
+      signal?.removeEventListener('abort', onAbort);
       let buf = Buffer.concat(chunks);
       if (buf.length > TAIL_BYTES) buf = buf.subarray(buf.length - TAIL_BYTES);
       chunks = [];
-      resolveRun({ exitCode: timedOut ? null : exitCode, output: decodeOutput(buf, codepage), timedOut, spawnError, ms: Date.now() - t0 });
+      resolveRun({ exitCode: timedOut || aborted ? null : exitCode, output: decodeOutput(buf, codepage), timedOut, ...(aborted ? { aborted } : {}), spawnError, ms: Date.now() - t0 });
     };
-    let child: ChildProcess;
+    // 停止流程或關閉主控台:終止整個程序樹,給一段寬限後收尾
+    const onAbort = () => {
+      if (finished || aborted) return;
+      aborted = true;
+      const pid = child?.pid;
+      if (pid) void killTree(pid);
+      grace = setTimeout(() => finish(null), KILL_GRACE_MS);
+    };
+    let child: ChildProcess | undefined;
     try {
       child = spawn(run, { cwd, env, shell: true, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
@@ -187,11 +198,12 @@ function runOne(run: string, cwd: string, timeoutSec: number, env: Record<string
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      const pid = child.pid;
+      const pid = child?.pid;
       if (pid) void killTree(pid);
       // 孫程序若還握著輸出管線,close 可能遲遲不來;給一段寬限後直接收尾
       grace = setTimeout(() => finish(null), KILL_GRACE_MS);
     }, timeoutSec * 1000);
+    signal?.addEventListener('abort', onAbort);
     child.stdout?.on('data', keep);
     child.stderr?.on('data', keep);
     child.on('error', err => finish(null, err.message));
@@ -213,6 +225,8 @@ export interface VerifyOptions {
   desktopCwd?: string;
   /** 每條指令的完整輸出寫在這裡(<id>.log,只保留最後 64KB);沒給就不寫檔。 */
   logDir?: string;
+  /** 中止(停止流程、關閉主控台):終止正在跑的指令的程序樹,其餘指令標成略過。 */
+  signal?: AbortSignal;
   /**
    * 隔離用的主控台資料夾(設成 NEXUS_DATA_DIR,被測的 Entropy Nexus 不會碰到真實的 %APPDATA%\entropy-nexus 與記憶庫設定)。
    * 沒給就在系統暫存區建一個,核實結束後刪除。
@@ -248,6 +262,11 @@ export async function runVerify(o: VerifyOptions): Promise<VerifyResult> {
     for (const cmd of orderCommands(o.commands)) {
       const location: VerifyLocation = cmd.desktop ? 'worktree' : (o.location ?? 'copy');
       const base: VerifyCommandResult = { id: cmd.id, run: cmd.run, outcome: 'skipped', exitCode: null, ms: 0, lastLine: '', logFile: '', modified: [], location };
+      if (o.signal?.aborted) {
+        results.push({ ...base, reason: '略過(核實已中止)' });
+        outcomes.set(cmd.id, 'skipped');
+        continue;
+      }
       const badNeed = cmd.needs.find(n => outcomes.get(n) !== 'pass');
       if (badNeed) {
         results.push({ ...base, reason: `略過(前置失敗):${badNeed}` });
@@ -264,14 +283,18 @@ export async function runVerify(o: VerifyOptions): Promise<VerifyResult> {
         }
         cwd = o.desktopCwd;
       }
-      const r = await runOne(cmd.run, cwd, cmd.timeout, env, codepage);
+      const r = await runOne(cmd.run, cwd, cmd.timeout, env, codepage, o.signal);
       let logFile = '';
       if (o.logDir) {
         logFile = join(o.logDir, `${cmd.id}.log`);
         try { writeFileSync(logFile, `$ ${cmd.run}\n(位置:${cwd})\n\n${r.output}${r.timedOut ? `\n[核實] 逾時 ${cmd.timeout} 秒,已終止\n` : ''}`); } catch { logFile = ''; }
       }
       const result: VerifyCommandResult = { ...base, exitCode: r.exitCode, ms: r.ms, lastLine: lastLineOf(r.output), logFile };
-      if (r.timedOut) {
+      if (r.aborted) {
+        result.outcome = 'skipped';
+        result.reason = '略過(核實已中止)';
+        notVerified.push(`核實已中止:${cmd.id}`);
+      } else if (r.timedOut) {
         result.outcome = 'timeout';
         result.reason = `逾時(${cmd.timeout} 秒),卡在:${result.lastLine || '(沒有輸出)'}`;
       } else {

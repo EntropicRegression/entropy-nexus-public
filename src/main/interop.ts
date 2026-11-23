@@ -20,6 +20,7 @@ import { meetingRecordOf } from './meeting-record';
  *   meeting_say 會議中輪到主持人時,主持人用它發言(交給所有參與者,接著進行下一輪)或結束會議
  *   case_submit 主控台請節點撰寫判例時,節點用它提交敘述的章節(只有任務自己的節點能提交;見 cases.ts)
  *   memory_draft 使用者按「儲存這段記憶」時,被請求的節點用它提交對話草稿(狀態未確認;見 memory-draft.ts)
+ *   step_report 協作流程的節點做完一步時用它回報(只有承辦該交辦的節點能回報;見 flow/service.ts)
  *
  * 設計:
  * - 每個節點有自己的網址(路徑裡帶一組亂數權杖),伺服器由權杖得知是誰在呼叫;只聽 127.0.0.1。
@@ -42,7 +43,7 @@ const MAX_DEPTH = 3;
 const MAX_PROMPT = 20000;
 const MAX_REPLY = 30000;
 export const INTEROP_SERVER = 'nexus';
-export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_read', 'memory_write', 'case_submit', 'memory_draft'];
+export const INTEROP_TOOLS = ['list_nodes', 'ask_node', 'wait_reply', 'start_meeting', 'meeting_say', 'memory_search', 'memory_read', 'memory_write', 'case_submit', 'memory_draft', 'step_report'];
 
 /** 轉接器啟動 CLI 時用來掛上工具的資訊。 */
 export interface InteropOptions {
@@ -215,6 +216,28 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: 'step_report',
+    description: '只在主控台交辦「協作流程」的步驟時使用:做完這一步後呼叫一次回報結果(主控台不讀你的文字回覆,沒有回報就不算完成)。assignment_id 是交辦裡給的交辦編號;只有承辦該交辦的節點能回報,同一個交辦以第一份有效回報為準,驗證不過的回報不算數、可以修正後重送。實作步驟不要填 verdict、must_fix、suggestions、needs_ruling(要請使用者裁示的事寫在 questions);審查步驟一定要填 verdict:mergeable 時不能有 must_fix,changes_required 時 must_fix 至少一項。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignment_id: { type: 'string', description: '交辦編號(主控台交辦裡給的)。' },
+        summary: { type: 'string', description: '這一步做了什麼、結果如何(4000 字內)。' },
+        verdict: { type: 'string', enum: ['mergeable', 'changes_required'], description: '審查步驟必填:mergeable 可合併、changes_required 需修正。實作步驟不要填。' },
+        must_fix: { type: 'array', items: { type: 'string' }, description: '審查步驟:必修(會退回實作者)。' },
+        suggestions: { type: 'array', items: { type: 'string' }, description: '審查步驟:建議(實作者自行判斷)。' },
+        needs_ruling: { type: 'array', items: { type: 'string' }, description: '審查步驟:需要使用者裁示的事(直接交給使用者,不計入退回輪數)。' },
+        // 巢狀物件不寫必填清單與額外欄位限制(mcp-schema 測試以第一個出現的那兩個字當 properties 的結尾)
+        commands_run: { type: 'array', items: { type: 'object', properties: { command: { type: 'string' }, result: { type: 'string' } } }, description: '實際跑過的指令與結果。' },
+        not_verified: { type: 'array', items: { type: 'string' }, description: '明確列出沒驗證到的事。' },
+        questions: { type: 'array', items: { type: 'string' }, description: '要請使用者裁示的問題。' },
+        scope_exceptions: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, reason: { type: 'string' } } }, description: '每改一個範圍外的檔案寫一筆:path(相對專案根目錄)與 reason(原因)。' },
+      },
+      required: ['assignment_id', 'summary'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'memory_search',
     description: '搜尋主控台的長期記憶:節點側寫(各節點的特長與解決問題的流程)、使用者已確認的判例(以前遇過的問題與解法)、專案知識、使用者偏好。開始一件不熟的工作、要決定交給哪個節點、或想知道「這個專案有什麼要注意的」「使用者偏好什麼」之前先查。範圍是全域加上你目前的專案(可用 project 指定別的專案);你自己的側寫與判例排在最前面。回傳每筆的路徑、種類、標題、狀態、更新日期與一小段摘要(只是摘要,要看全文請用 memory_read);已被新記憶取代的、使用者還沒確認的草稿都不會出現;標「可能過時」的(很久沒更新,或專案之後已改了很多)請先對照現況再採用。',
     inputSchema: {
@@ -292,6 +315,8 @@ export class Interop {
   caseSubmit: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
   /** 記憶草稿提交(memory_draft);由 index.ts 接上草稿服務,只有被請求的節點能提交。 */
   memoryDraft: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
+  /** 協作流程的步驟回報(step_report);由 index.ts 接上 FlowService,只有承辦該交辦的節點能回報。 */
+  stepReport: ((callerId: string, args: Record<string, unknown>) => Promise<string>) | null = null;
 
   constructor(dataDir: string) {
     this.dir = join(dataDir, 'interop');
@@ -492,6 +517,10 @@ export class Interop {
         if (params?.name === 'memory_draft') {
           if (!this.memoryDraft) throw new Error('記憶草稿功能沒有啟用。');
           return text(await this.memoryDraft(callerId, args));
+        }
+        if (params?.name === 'step_report') {
+          if (!this.stepReport) throw new Error('協作流程功能沒有啟用。');
+          return text(await this.stepReport(callerId, args));
         }
         if (params?.name === 'memory_search' || params?.name === 'memory_read' || params?.name === 'memory_write') {
           const deps = this.core?.memoryDeps();

@@ -147,6 +147,31 @@ try {
     assert.equal(alive(grand), false, `孫程序 ${grand} 仍在`);
   });
 
+  await test('中止(停止流程或關閉主控台):子程序與孫程序都被終止,其餘指令略過,臨時資料夾刪掉', async () => {
+    const pids = join(BASE, 'pids-abort.json');
+    const run = script('hang2.js', `
+      const { spawn } = require('node:child_process');
+      const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      require('node:fs').writeFileSync(${JSON.stringify(pids)}, JSON.stringify({ child: process.pid, grand: g.pid, data: process.env.NEXUS_DATA_DIR }));
+      setInterval(() => {}, 1000);
+    `);
+    const ac = new AbortController();
+    const t0 = Date.now();
+    const p = runVerify({ cwd: BASE, version: 'v', allowDesktop: false, signal: ac.signal, commands: [cmd('hang', run, { timeout: 120 }), cmd('next', 'node -e "process.exit(0)"')] });
+    for (let i = 0; i < 50 && !existsSync(pids); i++) await sleep(100);
+    ac.abort();
+    const r = await p;
+    assert.ok(Date.now() - t0 < 20000, '中止後應該很快收尾');
+    assert.deepEqual(r.commands.map(c => c.outcome), ['skipped', 'skipped']);
+    assert.match(r.commands[0].reason, /中止/);
+    assert.ok(r.notVerified.some(x => x.includes('核實已中止')));
+    const { child, grand, data } = JSON.parse(readFileSync(pids, 'utf8'));
+    for (let i = 0; i < 30 && (alive(child) || alive(grand)); i++) await sleep(200);
+    assert.equal(alive(child), false, `子程序 ${child} 仍在`);
+    assert.equal(alive(grand), false, `孫程序 ${grand} 仍在`);
+    assert.ok(data && !existsSync(data), '隔離用的臨時資料夾已刪除');
+  });
+
   await test('桌面核實:沒勾「允許桌面核實」就不跑,寫進 not_verified;勾了但沒有 worktree 也不跑;都給了才跑', async () => {
     const marker = join(BASE, 'desktop-ran.txt');
     const desk = cmd('smoke', script('desk.js', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, process.cwd());`), { desktop: true });

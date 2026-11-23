@@ -298,9 +298,12 @@ export type PendingKind =
   | 'need_agent'        // 找不到可以接手的節點,請使用者指定
   | 'agent_error'       // 節點出錯或交辦失敗
   | 'copy_written'      // 審查副本被寫入(已丟棄)
-  | 'limit';            // 時間或交辦次數到上限
+  | 'limit'             // 時間或交辦次數到上限
+  | 'not_ended'         // 停止、重跑或改派前,節點一直沒停下來:再等、強制視為結束或停止流程
+  | 'copy_missing';     // 審查副本不在了(例如主控台重開),無法確認有沒有被寫入:重新審查或照用審查結果
 
-export type DecisionChoice = 'manual_report' | 'rerun' | 'continue' | 'reassign' | 'halt' | 'stop';
+/** wait:再等節點停下來;force_ended:使用者確認節點已經不會再寫檔,強制視為結束。 */
+export type DecisionChoice = 'manual_report' | 'rerun' | 'continue' | 'reassign' | 'halt' | 'stop' | 'wait' | 'force_ended';
 
 export interface PendingDecision {
   id: string;
