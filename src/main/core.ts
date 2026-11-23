@@ -29,7 +29,8 @@ import { parseChiefTerms, updateChiefTerms, type ChiefTerm } from './chief-tenur
 import { chiefStatsSection, computeNodeStats, isWorkTask, type StatsNode } from '../shared/node-stats';
 import { normalizeAgyAllow } from '../shared/agy-allow';
 import { caseNumber, chiefSummaryPrompt, decideSummarizer, extractSection, SELF_SUMMARY_PROMPT, splitReview, writeArchive, type SummarySource } from './memory-archive';
-import { nodeProfilePath } from './memory-write';
+import { addFrontMatterField, nodeProfilePath } from './memory-write';
+import { cleanStaleSavepointTemps, createSavepoint, defaultSessionRoots, savepointNote, type SavepointResult, type SessionRoots } from './session-savepoint';
 import { writeMeetingRecord, type MeetingRecordInput } from './meeting-record';
 import { isDraftRequest, isMemoirRequest, waitForMemoir, type PromptOrigin } from './memoir';
 import type { Store } from './store';
@@ -107,8 +108,12 @@ export class Core {
   private memoir: MemoirHook | null = null;
   /** 正在刪除流程中的節點(等回憶錄、工作總結)。 */
   private removing = new Set<string>();
+  /** 正在終止的節點(停 session 到從面板移除之間);這段期間不重開 session。 */
+  private terminating = new Set<string>();
   /** 記憶庫(長期記憶);沒有設定時記憶工具不可用。 */
   private vault: MemoryVault | null = null;
+  /** 各家工具存放 session 的資料夾(建立存點用);測試用 NEXUS_SESSION_HOME 指向假資料夾。 */
+  private sessionRoots: SessionRoots = defaultSessionRoots();
   /** 要在下一則指令前告訴總管的記憶相關通知(例如專案知識超過上限)。 */
   /** Antigravity 的工具白名單(見 shared/agy-allow.ts)。 */
   private agyAllow: string[] = [];
@@ -603,8 +608,15 @@ export class Core {
         try { out = await this.archiveNode(agent, mode === 'stats' ? 'stats' : 'summary'); }
         catch (e) { out = { archive: null, note: `歸檔失敗,節點仍已刪除:${String((e as Error)?.message ?? e)}` }; console.error('歸檔節點失敗', e); }
       }
-      await this.removeAgent(id);
-      return memoirNote ? { ...out, note: [memoirNote, out.note].filter(Boolean).join(' ') } : out;
+      const sp = await this.removeAndSave(id);
+      // 存點在 session 停下之後才建立(封存檔已經先寫好了),建好後把路徑補進封存檔的屬性
+      let fieldNote = '';
+      if (sp?.ok && out.archive && this.vault) {
+        if (addFrontMatterField(this.vault.dir, out.archive, '存點', sp.path)) this.vault.rescan();
+        else fieldNote = '封存檔已經被修改過,沒有補上存點欄位(存點本身已建立)。';
+      }
+      const notes = [memoirNote, out.note, sp ? savepointNote(sp) : '', fieldNote].filter(Boolean);
+      return notes.length ? { ...out, note: notes.join(' ') } : out;
     } finally {
       this.removing.delete(id);
     }
@@ -708,7 +720,20 @@ export class Core {
   }
 
   async removeAgent(id: string): Promise<void> {
-    if (this.agents.get(id)?.parentId) { this.dropSub(id); return; }
+    await this.removeAndSave(id);
+  }
+
+  /** 終止節點;最上層、有 session、有記憶庫的真實節點在 session 停下後建立對話存點(回傳結果;沒有嘗試時是 null)。 */
+  private async removeAndSave(id: string): Promise<SavepointResult | null> {
+    if (this.agents.get(id)?.parentId) { this.dropSub(id); return null; }
+    // 終止中(停 session、建立存點可能要好幾秒):重複的終止直接返回,喚醒與重開 session 一律擋下(見 startSession),
+    // 否則 CLI 會在複製途中又續接同一個 session 寫檔,節點刪掉後留下孤兒行程
+    if (this.terminating.has(id)) return null;
+    this.terminating.add(id);
+    try { return await this.terminate(id); } finally { this.terminating.delete(id); }
+  }
+
+  private async terminate(id: string): Promise<SavepointResult | null> {
     // 終止節點時排隊的指令一併丟棄;先清掉,停止 session 的期間才不會又被送出
     const doomed = this.agents.get(id);
     if (doomed && (doomed.queued.length || doomed.queuePaused)) { doomed.queued = []; doomed.queuePaused = null; this.store.updateQueue(doomed); }
@@ -718,6 +743,14 @@ export class Core {
     try { this.memoir?.forget(id); } catch (e) { console.error('清除記憶請求失敗', e); }
     this.leaveTerminal(id);
     await this.stopSession(id);
+    // 對話存點:session 已停下,工具的檔案都寫完了。失敗不擋刪除,原因寫在結果裡
+    const target = this.agents.get(id);
+    let savepoint: SavepointResult | null = null;
+    if (target && this.vault && target.sessionId && !target.simulated) {
+      savepoint = await createSavepoint(this.vault.dir, { id: target.id, name: target.name, backend: target.backend, backendLabel: BACKEND_LABEL[target.backend], sessionId: target.sessionId, cwd: target.cwd }, this.sessionRoots)
+        .catch(e => ({ ok: false as const, reason: String((e as Error)?.message ?? e) }));
+      if (!savepoint.ok) console.error('建立對話存點失敗', savepoint.reason);
+    }
     const wt = this.agents.get(id)?.worktree;
     if (wt) {
       // 工作區乾淨且已合併才自動移除;否則保留,之後可從「開啟舊 session」接回來
@@ -734,6 +767,7 @@ export class Core {
     if (this.chiefId === id) { this.chiefId = null; this.store.setSetting('chief', ''); this.recordChief(); this.broadcast({ chiefId: null }); }
     this.broadcast({ removedId: id });
     this.schedulePump();
+    return savepoint;
   }
 
   /** origin 是佇列項目時表示由佇列自動送出:送不出去就放回佇列開頭,不會丟掉。 */
@@ -989,7 +1023,7 @@ ${text}
 
   async wake(id: string): Promise<void> {
     const agent = this.agents.get(id);
-    if (!agent || agent.parentId) return;
+    if (!agent || agent.parentId || this.terminating.has(id)) return;
     if (this.sessions.has(id)) {
       // 行程還在就不必喚醒;失聯的先清掉舊 session 再重新啟動
       if (agent.state !== 'lost') return;
@@ -1121,6 +1155,7 @@ ${text}
   }
 
   private startSession(agent: AgentInfo): void {
+    if (this.terminating.has(agent.id)) return;
     const session = this.adapters[agent.backend].start(
       { agentId: agent.id, cwd: agent.cwd, permissionMode: agent.permissionMode, model: agent.model, sessionId: agent.sessionId, forkFrom: agent.sessionId ? null : this.forks.get(agent.id) ?? null, interop: agent.parentId ? null : this.interop?.(agent.id) ?? null, persona: this.persona(agent), ...(agent.backend === 'antigravity' ? { agyAllow: [...this.agyAllow] } : {}) },
       (e, subId) => this.onAdapterEvent(agent.id, e, subId),
@@ -1497,7 +1532,11 @@ ${text}
     this.pushTask(task);
   }
 
-  setMemoryVault(v: MemoryVault): void { this.vault = v; }
+  setMemoryVault(v: MemoryVault): void {
+    this.vault = v;
+    // 當機或強制關閉時留下的存點暫存資料夾(超過 1 小時)在啟動時清掉
+    void cleanStaleSavepointTemps(v.dir).catch(e => console.error('清除存點暫存資料夾失敗', e));
+  }
 
   /** 記憶工具用:呼叫者的身分(是不是總管、名稱、工作目錄);找不到節點回傳 null。 */
   memoryCaller(agentId: string): MemoryCaller | null {

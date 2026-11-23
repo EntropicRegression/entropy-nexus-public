@@ -215,8 +215,12 @@ await test('說明檔:新版提到熱度檔與 .vault-awards.json;主控台寫�
   assert.equal(readmeUpdate(`${README}\n我自己加的筆記\n`), null, '使用者改過不動');
   assert.equal(readmeUpdate(''), null, '讀不到內容不動');
   // 第四版(還沒有 memoirs 那行)與第三版(也還沒有 meetings 那行)會換新,使用者改過的不動
-  const v4 = README.replace(/  memoirs      [^\n]*\n/, '');
-  assert.notEqual(v4, README);
+  // 第五版(還沒有 _存點 那行)也會換新
+  const v5 = README.replace(/nodes\/封存\/_存點\/ [^\n]*\n/, '');
+  assert.notEqual(v5, README);
+  assert.equal(readmeUpdate(v5), README, '第五版會換新');
+  const v4 = v5.replace(/  memoirs      [^\n]*\n/, '');
+  assert.notEqual(v4, v5);
   assert.equal(readmeUpdate(v4), README, '第四版會換新');
   const v3 = v4.replace(/  meetings     [^\n]*\n/, '');
   assert.notEqual(v3, v4);

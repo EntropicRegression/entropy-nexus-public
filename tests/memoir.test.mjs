@@ -651,7 +651,7 @@ test('記憶庫:memoirs 是記憶庫的子資料夾;說明檔列出 memoirs,舊�
   assert.ok(VAULT_DIRS.includes('memoirs'));
   assert.ok(README.includes('  memoirs      回憶錄'));
   assert.ok(README.indexOf('  meetings') < README.indexOf('  memoirs'));
-  const v4 = README.replace(/\n {2}memoirs {6}[^\n]*/, '');
+  const v4 = README.replace(/nodes\/封存\/_存點\/ [^\n]*\n/, '').replace(/\n {2}memoirs {6}[^\n]*/, '');
   assert.notEqual(v4, README);
   assert.equal(readmeUpdate(v4), README, '上一版(只有 meetings)換成新版');
   assert.equal(readmeUpdate(README), null);
