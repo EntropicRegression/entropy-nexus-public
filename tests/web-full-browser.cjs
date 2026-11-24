@@ -50,6 +50,12 @@ app.whenReady().then(async () => {
     check('載入桌面介面', ui.topbar && ui.canvas && ui.web === 'function', JSON.stringify(ui));
     const snap = await js(`window.nexus.getSnapshot().then(s => ({ agents: s.agents.length, caps: s.capabilities.length, observed: Array.isArray(s.observed) }))`);
     check('節點數與桌面相同', snap.agents === Number(agentCount) && snap.observed, JSON.stringify(snap));
+    // 畫面會直接呼叫的方法瀏覽器版都要有(少了會在 effect 裡丟例外讓畫面變空白);協作流程只在桌面畫面
+    const api = await js(`({ move: typeof window.nexus.moveWorkspace, vault: typeof window.nexus.getMemoryVault, flow: typeof window.nexus.flowStart, flowBtn: !!document.querySelector('.flow-apply-btn') })`);
+    check('瀏覽器版有轉移工作區與記憶庫索引的方法', api.move === 'function' && api.vault === 'function', JSON.stringify(api));
+    check('瀏覽器版不顯示協作流程', api.flow === 'undefined' && !api.flowBtn, JSON.stringify(api));
+    const vault = await js(`window.nexus.getMemoryVault().then(v => ({ ok: Array.isArray(v.entries) }), e => ({ err: String(e.message || e) }))`);
+    check('完整角色讀得到記憶庫索引', vault.ok === true, JSON.stringify(vault));
     await wait(1500);
     await shot('web-1-board');
 

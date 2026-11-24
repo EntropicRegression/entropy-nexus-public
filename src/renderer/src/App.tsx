@@ -25,6 +25,8 @@ const ATTENTION: Record<AgentState, number> = { awaiting: 0, error: 1, lost: 1, 
 
 /** 瀏覽器版的遠端裝置可能不是完整權限(操作或唯讀);桌面視窗一律是完整。 */
 const fullAccess = !window.nexus.access || window.nexus.access.role === 'full';
+/** 協作流程只在桌面畫面提供:瀏覽器版的 window.nexus 沒有流程的方法(完整角色的遠端裝置仍會收到流程更新,不能因此顯示流程介面)。 */
+const flowsAvailable = typeof window.nexus.flowStart === 'function';
 
 /** 畫面保留的流程:未結束的全部留著,已結束的只留最近 50 筆(主行程仍有完整紀錄)。 */
 function capFlows(list: FlowRunView[]): FlowRunView[] {
@@ -311,8 +313,8 @@ ${c.note}` : ''}`}>
         </div>
       </header>
 
-      {flowApply && flows && fullAccess && <FlowApply agents={list} onClose={() => setFlowApply(false)} onStarted={id => { setFlowApply(false); setFlowOpen(id); }} />}
-      {!flowApply && flowOpen && flows && fullAccess && (() => { const r = flows.find(x => x.id === flowOpen); return r ? <FlowDetail key={r.id} run={r} agents={list} onClose={() => setFlowOpen(null)} /> : null; })()}
+      {flowApply && flows && fullAccess && flowsAvailable && <FlowApply agents={list} onClose={() => setFlowApply(false)} onStarted={id => { setFlowApply(false); setFlowOpen(id); }} />}
+      {!flowApply && flowOpen && flows && fullAccess && flowsAvailable && (() => { const r = flows.find(x => x.id === flowOpen); return r ? <FlowDetail key={r.id} run={r} agents={list} onClose={() => setFlowOpen(null)} /> : null; })()}
       {showDash && <DashboardFull dispatches={dispatches} tasks={tasks} agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} onClose={() => setShowDash(false)} onSelect={setSelectedId} />}
       {showRemote && <RemoteHub onClose={() => setShowRemote(false)} />}
       {showVoice && <VoicePanel onClose={() => setShowVoice(false)} />}
@@ -380,7 +382,7 @@ ${c.note}` : ''}`}>
       <aside className="sidebar">
         <Dashboard agents={list} caps={caps} usage={usage} data={dash} quotaStop={quotaStop} observed={observedList} selectedId={selectedId} open={showDash} onToggle={() => { setShowDash(v => !v); setFlowOpen(null); setFlowApply(false); }} onSelect={setSelectedId} />
         {!adding && <TaskPanel tasks={tasks} chiefId={chiefId} agents={agents} selectedId={selectedId} onSelect={setSelectedId} onReview={setReviewId}
-          flows={fullAccess ? flows : null} onOpenFlow={id => { setSelectedId(null); setShowDash(false); setFlowApply(false); setFlowOpen(id); }} onApplyFlow={() => { setSelectedId(null); setShowDash(false); setFlowOpen(null); setFlowApply(true); }} />}
+          flows={fullAccess && flowsAvailable ? flows : null} onOpenFlow={id => { setSelectedId(null); setShowDash(false); setFlowApply(false); setFlowOpen(id); }} onApplyFlow={() => { setSelectedId(null); setShowDash(false); setFlowOpen(null); setFlowApply(true); }} />}
         {adding ? <AddNode key={addingChief ? 'chief' : 'node'} caps={caps} agents={list} chief={addingChief} onDone={() => { setAdding(false); setAddingChief(false); }} /> : (
           <div className="add-row">
             <button className="add need-full" onClick={() => setAdding(true)}>+ 新增節點</button>

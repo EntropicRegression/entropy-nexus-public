@@ -159,6 +159,9 @@
     setQuotaStop: 'quotaStop', setDailyBudget: 'setDailyBudget', remoteStatus: 'remoteStatus', remoteSet: 'remoteSet', remoteNewCode: 'remoteNewCode', remoteRevoke: 'remoteRevoke', remotePairAccess: 'remotePairAccess', remoteSetDevice: 'remoteSetDevice', remoteAudit: 'remoteAudit',
     observeStatus: 'observeStatus', observeInstall: 'observeInstall', observeUninstall: 'observeUninstall', observeNewToken: 'observeNewToken', observeTakeover: 'observeTakeover',
     openOldSession: 'openOldSession', forkAgent: 'forkAgent', setChief: 'setChief',
+    // 轉移工作區(只有完整角色呼叫得到);判例狀態要讀記憶庫索引(其他角色伺服器端會拒絕,畫面當作未確認)
+    moveWorkspace: 'moveWorkspace', getMemoryVault: 'memoryVault',
+    // 協作流程刻意不在這裡:流程介面只在主控台那台電腦的桌面畫面提供(App.tsx 依有沒有 flowStart 決定顯示)
     // 長期記憶階段 4(只有完整角色呼叫得到,其他角色伺服器端會拒絕)
     removeAgentArchived: 'removeArchived', findMemoryArchive: 'findMemoryArchive', attachMemoryArchive: 'attachMemoryArchive',
   };
