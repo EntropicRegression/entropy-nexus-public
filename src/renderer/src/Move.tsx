@@ -13,9 +13,8 @@ export function MovePanel({ agent: a, busy, onDone }: { agent: AgentInfo; busy: 
   const [sure, setSure] = useState(false);
   const [working, setWorking] = useState(false);
   const [err, setErr] = useState('');
-  if (a.backend === 'antigravity') {
-    return <div className="dlg-settings dlg-move need-full"><span className="muted">轉移工作區:Antigravity 換資料夾續接後仍以原本的資料夾為主要工作目錄,暫時不支援。</span></div>;
-  }
+  // Antigravity 換到別的資料夾後 shell 仍在原本的資料夾執行,只能換成指向同一個資料夾的路徑(例如資料夾改名後留下的 junction)
+  const agy = a.backend === 'antigravity';
   const pick = async () => { const p = await window.nexus.pickDirectory(); if (p) { setPath(p); setSure(false); } };
   const go = async () => {
     if (!sure) { setSure(true); return; }
@@ -33,7 +32,7 @@ export function MovePanel({ agent: a, busy, onDone }: { agent: AgentInfo; busy: 
       <label>轉移工作區
         <select value={kind} onChange={e => { setKind(e.target.value as MoveTarget['kind']); setSure(false); }}>
           <option value="folder">換到既有的資料夾</option>
-          <option value="worktree">在 git 版本庫開新的獨立工作區</option>
+          {!agy && <option value="worktree">在 git 版本庫開新的獨立工作區</option>}
         </select>
       </label>
       <label>{kind === 'folder' ? '目的資料夾' : '版本庫資料夾'}
@@ -43,6 +42,7 @@ export function MovePanel({ agent: a, busy, onDone }: { agent: AgentInfo; busy: 
       <span className="muted">
         目前:{a.cwd}{a.worktree ? `(獨立工作區,分支 ${a.worktree.branch})` : ''}。會停下 session,用同一個 session 在新資料夾續接,對話內容保留。
         {a.worktree ? '原本的獨立工作區乾淨且已合併才會移除,否則保留。' : ''}
+        {agy ? 'Antigravity 只能換成指向同一個資料夾的路徑(例如資料夾改名後,改用新名稱);換到別的資料夾時它的指令仍會在原本的資料夾執行,所以不支援。' : ''}
       </span>
       {sure && <span className="note warn">確定要把「{a.name}」轉移到這裡嗎?再按一次「轉移」執行。</span>}
       {err && <span className="note err">{err}</span>}

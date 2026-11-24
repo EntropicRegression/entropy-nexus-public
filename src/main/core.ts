@@ -609,7 +609,8 @@ export class Core {
   async moveWorkspace(id: string, target: MoveTarget): Promise<MoveResult> {
     const a = this.agents.get(id);
     if (!a || a.parentId) throw new Error('找不到這個節點(子代理不能轉移工作區)。');
-    if (a.backend === 'antigravity') throw new Error('Antigravity 換資料夾續接後仍以原本的資料夾為主要工作目錄,暫時不支援轉移工作區。');
+    // Antigravity 換到別的資料夾後 shell 仍在原本的資料夾執行(W3 實測),只允許「同一個實際資料夾換個路徑」(例如資料夾改名後留 junction)
+    if (a.backend === 'antigravity' && target?.kind === 'worktree') throw new Error('Antigravity 換資料夾續接後仍以原本的資料夾為主要工作目錄,不支援轉移到新的獨立工作區。');
     if (a.terminal) throw new Error('節點在終端機模式,請先回到主控台模式。');
     if (BUSY.has(a.state) || this.starting.has(id) || a.pendingApproval || a.pendingQuestion) throw new Error('節點正在執行或等待回應,請等它停下來再轉移。');
     if (this.moving.has(id) || this.terminating.has(id) || this.removing.has(id)) throw new Error('這個節點正在轉移或終止中。');
@@ -647,7 +648,13 @@ export class Core {
         worktree = made.info;
         setup = made.setup;
       } else throw new Error('目的地不正確。');
-      if (normalizePath(cwd) === normalizePath(from) && !worktree) throw new Error('目的地和目前的工作目錄相同。');
+      // 路徑寫法相同才算「相同」;寫法不同但實際是同一個資料夾(改名後經 junction、大小寫不同的路徑)時,只更新登記的路徑
+      const literal = (p: string) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
+      if (literal(cwd) === literal(from) && !worktree) throw new Error('目的地和目前的工作目錄相同。');
+      const samePlace = !worktree && normalizePath(cwd) === normalizePath(from);
+      if (a.backend === 'antigravity' && !samePlace) throw new Error('Antigravity 換資料夾續接後仍以原本的資料夾為主要工作目錄,只能換成指向同一個資料夾的路徑(例如資料夾改名後留下的 junction)。');
+      // 同一個資料夾:獨立工作區的資訊照舊保留(合併、開 PR 仍可用),舊工作區當然也不移除
+      if (samePlace) worktree = oldWt;
 
       // 建立工作區可能要好幾秒:這段期間節點被終止、開始執行或有了排隊指令,就放棄這次轉移(剛建的工作區會清掉)
       if (this.agents.get(id) !== a || this.terminating.has(id) || this.removing.has(id)) throw new Error('節點在轉移途中被終止了,已取消轉移。');
@@ -662,7 +669,9 @@ export class Core {
       this.cwdNotices.set(id, { from, to: cwd });
       placed = true;
 
-      const notes = [`工作目錄已從「${from}」換到「${cwd}」,用同一個 session 續接,對話內容保留。下一則指令會先通知節點以新的資料夾為準。`];
+      const notes = [samePlace
+        ? `工作目錄的路徑從「${from}」改成「${cwd}」(實際是同一個資料夾),用同一個 session 續接,對話內容保留。`
+        : `工作目錄已從「${from}」換到「${cwd}」,用同一個 session 續接,對話內容保留。下一則指令會先通知節點以新的資料夾為準。`];
       if (setup) notes.push(setup);
       // 舊的獨立工作區照終止時的規則處理;新的工作目錄在舊工作區裡面時一律保留(前面已擋下,這裡再保險一次)
       if (oldWt && oldWt.path !== worktree?.path && !inside(cwd, oldWt.path)) {
