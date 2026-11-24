@@ -20,4 +20,4 @@ assert.ok(preNames.length > 50, `preload 的方法讀不到(${preNames.length})`
 const missing = preNames.filter(n => !have.has(n) && !DESKTOP_ONLY.test(n));
 assert.deepEqual(missing, [], `瀏覽器版缺少這些方法:${missing.join(', ')}`);
 assert.ok(!mapped.some(n => DESKTOP_ONLY.test(n)), '協作流程的方法不應出現在瀏覽器版');
-console.log(`remote-shim-api:桌面版 ${preNames.length} 個方法,瀏覽器版都有(協作流程除外)`);
+console.log(`remote-shim-api:桌面版 ${preNames.length} 個方法,瀏覽器版都有(協作流程除外)。全部通過`);

@@ -129,7 +129,9 @@ function makeRepo(name, files, ignore) {
   const f = makeRepo('repo-f', {}, '');
   const f1 = await wt.createWorktree(f, 'First', 'aaaa11112222');
   const f2 = await wt.createWorktree(f1.info.path, 'Second', 'bbbb33334444');
-  check('F repoRoot 是主版本庫,不是被選的工作區', path.resolve(f2.info.repoRoot) === path.resolve(f), `${f2.info.repoRoot}`);
+  // 比對實際路徑:CI 的暫存資料夾是 8.3 短名稱(RUNNER~1),git 回報的是長名稱
+  const real = p => fs.realpathSync.native(p).toLowerCase();
+  check('F repoRoot 是主版本庫,不是被選的工作區', real(f2.info.repoRoot) === real(f), `${f2.info.repoRoot}`);
   check('F 基準是被選工作區的分支', f2.info.base === f1.info.branch, f2.info.base);
   check('F 工作區資料夾都在主控台的工作區資料夾底下', wt.insideWorktreeHome(f1.info.path) && wt.insideWorktreeHome(f2.info.path) && !wt.insideWorktreeHome(f));
   await wt.removeWorktree(f2.info, true);
