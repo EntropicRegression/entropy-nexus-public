@@ -106,6 +106,7 @@ const SUITES = [
   { name: 'bg-subagent', group: 'real', min: 5, ...bash('tests/bg-subagent.sh') },
   { name: 'agy-attach', group: 'real', min: 5, ...bash('tests/agy-attach.sh') },
   { name: 'savepoint-real', group: 'real', min: 4, timeout: 30, cmd: 'bash', args: ['tests/savepoint-real.sh', 'claude', 'haiku'] },
+  { name: 'workspace-move-real', group: 'real', min: 4, timeout: 30, cmd: 'bash', args: ['tests/workspace-move-real.sh', 'move', 'claude', 'haiku'] },
   { name: 'stage7', group: 'real', min: 5, ...bash('tests/stage7.sh') },
   { name: 'kill-test', group: 'real', min: 3, ...bash('tests/kill-test.sh') },
 ];
