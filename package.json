@@ -1,6 +1,6 @@
 {
   "name": "entropy-nexus",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "description": "多家 AI CLI 的科技風主控台",
   "main": "./out/main/index.js",

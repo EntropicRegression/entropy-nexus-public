@@ -539,16 +539,17 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
     return () => { alive = false; clearTimeout(t); };
   }, [cwd]);
   const [error, setError] = useState('');
-  // 名稱或角色對得上封存的記憶時問要不要接回(刪除節點時歸檔的工作履歷)
+  // 名稱對得上封存的記憶時問要不要接回(刪除節點時歸檔的工作履歷)。只比對節點名稱:角色可以被好幾個節點共用,
+  // 舊節點剛好以角色命名時會把不相干的新節點配上(2026-11-24 新開的「可用的CLAUDE」因為角色是 claude 被接上舊 claude 的封存)
   const [archive, setArchive] = useState<{ path: string; date: string; name: string } | null>(null);
   const [attach, setAttach] = useState(true);
   useEffect(() => {
     let alive = true;
-    const names = [name.trim(), character.trim()].filter(Boolean);
+    const names = [name.trim()].filter(Boolean);
     if (!names.length) { setArchive(null); return; }
     const t = setTimeout(() => { void window.nexus.findMemoryArchive(names).then(r => { if (alive) setArchive(r); }).catch(() => { if (alive) setArchive(null); }); }, 250);
     return () => { alive = false; clearTimeout(t); };
-  }, [name, character]);
+  }, [name]);
   const cap = caps.find(c => c.backend === backend);
   // 同一個資料夾已有節點時提醒:它們會互相覆寫,變更檢視也分不出是誰改的
   const norm = (p: string) => p.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
@@ -594,8 +595,8 @@ function AddNode({ caps, agents, chief = false, onDone }: { caps: Capability[]; 
       </label>
       {character && <PersonaEditor character={character} />}
       {archive && <label className="check addform-archive" title="封存是刪除節點時存進記憶庫的工作履歷">
-        <span><input type="checkbox" checked={attach} onChange={e => setAttach(e.target.checked)} /> 找到 {archive.name} 的封存記憶({archive.date}),要接回嗎?</span>
-        <span className="note">接回後,封存裡的特長與解決問題的流程會複製進新節點的側寫。</span>
+        <span><input type="checkbox" checked={attach} onChange={e => setAttach(e.target.checked)} /> 找到之前也叫「{archive.name}」的節點的封存記憶({archive.date}),要接回嗎?</span>
+        <span className="note">接回後,那個舊節點封存裡的特長與解決問題的流程會複製進新節點的側寫。不是同一個節點延續下來的話,請取消勾選。</span>
       </label>}
       <label>後台 CLI
         <select value={backend} onChange={e => { setBackend(e.target.value as Backend); setModel(''); }}>
