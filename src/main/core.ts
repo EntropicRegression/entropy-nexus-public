@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { BACKEND_LABEL, NEEDS_RESTORE, usageWindowsFor, type MeetingView, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { BACKEND_LABEL, NEEDS_RELOCATE, NEEDS_RESTORE, usageWindowsFor, type MeetingView, type MemoryEntry, type SpeechNotice, type SpeechSource, type UsageWindow } from '../shared/types';
 import { summarizeForSpeech } from '../shared/speech-summary';
 import { budgetStatus, budgetWindow, countTasks, FAULT_WARN_MS, localDate, nextBaseline, normalizeBudget, shiftDate, weekStart, type DashboardData } from '../shared/dashboard';
 import { sameLinks, trimDispatches, DISPATCH_KEEP_MS, DISPATCH_MAX } from '../shared/collab';
 import type {
   DispatchEntry, LinkInfo, TaskFrom,
-  AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
+  AdapterEvent, AgentInfo, AgentState, ApprovalDecision, Backend, BackendUsage, Capability, ChangeSet, CreateAgentInput, ForkAgentInput, MoveResult, MoveTarget, NexusEvent, OldSession, OpenOldSessionInput, PermissionMode, QueuedPrompt, RevertResult, ReviewComment, Snapshot, TaskInfo, TaskStatus, TaskVerdict, Update, WorktreeInfo, WorktreeStatus,
 } from '../shared/types';
 import type { Adapter, AdapterSession, StartOptions } from './adapters/adapter';
 import { AntigravityAdapter } from './adapters/antigravity';
@@ -16,13 +16,13 @@ import { CodexAdapter } from './adapters/codex';
 import { FakeAdapter } from './adapters/fake';
 import { changesFromEvents, commitChanges, diffTrees, revertChanges, snapshotTree, summarizeTrees } from './changes';
 import { closeAllTerminals, closeTerminal, hasTerminal, openTerminal, resizeTerminal, terminalBuffer, writeTerminal } from './terminal';
-import { createWorktree, mergeBack, openPullRequest, removeWorktree, worktreeStatus } from './worktree';
+import { canRebuildWorktree, createWorktree, insideWorktreeHome, mergeBack, openPullRequest, rebuildWorktree, removeWorktree, worktreeStatus } from './worktree';
 import { formatCommentsPrompt, formatReviewPrompt } from '../shared/review';
 import { listCharacters, PERSONA_MAX, portraitsDir, readPersona, writePersona } from './portraits';
 import { characterImages } from './vault-images';
 import { readArchives, type MeetingRecord, type SavepointSummary, type StatsInput } from './vault-stats';
 import { removeMedia } from './media';
-import { projectKindFromPath, projectOf } from './project';
+import { normalizePath, projectKindFromPath, projectOf } from './project';
 import { wakeTargetOf, type WakeTarget } from './wake';
 import { uniqueProjects, type KnownProject } from './project-choice';
 import { parseChiefTerms, updateChiefTerms, type ChiefTerm } from './chief-tenure';
@@ -488,22 +488,59 @@ export class Core {
     try { return await this.openOldSessionInner(input); } finally { this.opening.delete(lock); }
   }
   private opening = new Set<string>();
+  /** 接回時重建工作區、換資料夾的說明,等節點回到面板上再寫進對話。 */
+  private placeNotes = new Map<string, string[]>();
+  private addPlaceNote(id: string, text: string): void { this.placeNotes.set(id, [...(this.placeNotes.get(id) ?? []), text]); }
 
   private async openOldSessionInner(input: OpenOldSessionInput): Promise<AgentInfo> {
-    if (!existsSync(input.cwd)) throw new Error('原本的工作目錄已經不存在,無法接回這個 session。');
     if ([...this.agents.values()].some(a => a.backend === input.backend && a.sessionId === input.sessionId)) throw new Error('這個 session 已經在面板上。');
     const cap = this.capabilities.get(input.backend);
     if (!cap?.available) throw new Error(cap?.note ?? '這個後台目前無法使用');
     const removed = input.agentId ? this.store.loadRemovedAgents().find(r => r.agent.id === input.agentId && r.agent.sessionId === input.sessionId) : undefined;
+    if (!removed && !existsSync(input.cwd)) throw new Error('原本的工作目錄已經不存在,無法接回這個 session。');
     if (removed) {
       const a = removed.agent;
-      // 對話檔已被工具清掉:有這段對話的存點就先問再還原(第一次回 NEEDS_RESTORE,使用者同意後帶 restoreFromSavepoint 重試)
+      // 先判斷對話檔:已被工具清掉時,有這段對話的存點就先問再還原(第一次回 NEEDS_RESTORE,使用者同意後帶 restoreFromSavepoint 重試);
+      // 沒有存點就直接說明接不回。都放在改變工作目錄之前,接不回或使用者取消時不會留下重建的工作區或改過的工作目錄
+      let restoreFrom: string | null = null;
       if (!cap.simulated && !sessionMainExists(a.backend, input.sessionId, this.sessionRoots)) {
         const vault = this.vault;
         const sp = vault ? savepointSummaries(vault.dir, a.id).find(s => s.sessionId === input.sessionId && s.backend === a.backend) : undefined;
         if (!vault || !sp) throw new Error(`這段對話已經被 ${BACKEND_LABEL[a.backend]} 清除了,也沒有可以還原的存點,無法接回。`);
         if (!input.restoreFromSavepoint) throw new Error(`${NEEDS_RESTORE}${JSON.stringify({ 時間: sp.time, 大小: sp.size, 後台: BACKEND_LABEL[a.backend] })}`);
-        const r = await restoreSavepoint(vault.dir, sp.path, this.sessionRoots);
+        restoreFrom = sp.path;
+      }
+      // 工作目錄已不在(docs/工作區轉移規劃.md W2):先問再做。獨立工作區在原位置重建;其他節點改在使用者選的新資料夾接回
+      // (實驗證明 Claude Code、Codex 換資料夾續接都保留記憶;Antigravity 會以舊資料夾為主,不提供換資料夾)
+      if (!existsSync(a.cwd)) {
+        if (a.worktree && canRebuildWorktree(a.worktree)) {
+          if (!input.rebuildWorktree) throw new Error(`${NEEDS_RELOCATE}${JSON.stringify({ kind: 'worktree', branch: a.worktree.branch, path: a.worktree.path })}`);
+          const r = await rebuildWorktree(a.worktree);
+          a.worktree = r.info;
+          const notes = [r.note, r.setup];
+          // 原本選的是工作區裡的子資料夾、重建後沒有這個子資料夾時,改用工作區根目錄
+          if (!existsSync(a.cwd)) { const from = a.cwd; a.cwd = r.info.path; this.cwdNotices.set(a.id, { from, to: a.cwd }); notes.push(`原本的子資料夾不在了,改以工作區根目錄為工作目錄。`); }
+          this.store.updateAgentPlace(a);
+          this.addPlaceNote(a.id, notes.filter(Boolean).join('\n'));
+        } else if (a.backend !== 'antigravity' && input.newCwd) {
+          const p = String(input.newCwd).trim();
+          let st;
+          try { st = isAbsolute(p) ? statSync(p) : null; } catch { st = null; }
+          if (!st?.isDirectory()) throw new Error('選的新資料夾不存在。');
+          if (insideWorktreeHome(p)) throw new Error('選的資料夾在主控台的獨立工作區裡(那裡的工作區之後可能被移除),請選別的資料夾。');
+          const from = a.cwd;
+          a.cwd = resolve(p);
+          a.worktree = null;
+          this.store.updateAgentPlace(a);
+          this.cwdNotices.set(a.id, { from, to: a.cwd });
+          this.addPlaceNote(a.id, `原本的工作目錄「${from}」已經不在,改在「${a.cwd}」接回;用同一個 session 續接,對話內容保留。`);
+        } else if (a.backend === 'antigravity') {
+          throw new Error('原本的工作目錄已經不存在;Antigravity 換資料夾續接後仍以原本的資料夾為主,暫時不支援改在別的資料夾接回。');
+        } else throw new Error(`${NEEDS_RELOCATE}${JSON.stringify({ kind: 'folder', path: a.cwd })}`);
+      }
+      // 還原放在換位置之後(還原只寫工具資料夾,和工作目錄無關),但要不要還原已在前面問過
+      if (restoreFrom && this.vault) {
+        const r = await restoreSavepoint(this.vault.dir, restoreFrom, this.sessionRoots);
         this.sessionIdx.delete(a.backend);
         if (!r.ok) throw new Error(`從存點還原失敗:${r.reason}`);
       }
@@ -511,6 +548,9 @@ export class Core {
       a.simulated = this.isSimulated(a.backend);
       this.store.restoreAgent(a.id, a.name);
       this.agents.set(a.id, a);
+      // 重建工作區或換資料夾的說明:節點回到面板上才寫得進對話(中間若又被要求確認還原,說明留到真正接回時)
+      for (const text of this.placeNotes.get(a.id) ?? []) this.onAdapterEvent(a.id, { type: 'note', text });
+      this.placeNotes.delete(a.id);
       this.broadcast({ agent: { ...a } });
       await this.wake(a.id);
       return a;
@@ -551,6 +591,101 @@ export class Core {
       name: input.name.trim() || '未命名', character: input.character ?? from.character, model: input.model ?? from.model,
       backend: from.backend, cwd: from.cwd, permissionMode: from.permissionMode, isolate: input.isolate,
     }, null, { from: from.sessionId, copyFrom: from.copyFrom, note });
+  }
+
+  /** 協作流程正在用這個節點時回傳流程名稱(由 index.ts 接上 FlowService);轉移工作區時用來擋下。 */
+  flowHolding: ((agentId: string) => string | null) | null = null;
+  /** 正在轉移工作區的節點:這段期間不重開 session、不重複轉移。 */
+  private moving = new Set<string>();
+  /** 轉移工作區後,下一則指令前面要加的通知(舊、新工作目錄)。 */
+  private cwdNotices = new Map<string, { from: string; to: string }>();
+
+  /**
+   * 轉移工作區(docs/工作區轉移規劃.md W1):停下 session、換工作目錄(與獨立工作區資訊),用同一個 session 在新資料夾續接。
+   * 各家工具的對話檔不搬、不改:實驗證明 Claude Code 的 --resume、Codex 的 thread/resume 換資料夾續接都會保留記憶並在新資料夾工作。
+   * Antigravity 續接後仍以舊資料夾為主要工作目錄,工具行為還沒驗證,暫不開放(使用者裁示,W3 再做)。
+   * 移出獨立工作區時,舊的 worktree 照終止時的規則:乾淨且已合併才移除,否則保留並說明。
+   */
+  async moveWorkspace(id: string, target: MoveTarget): Promise<MoveResult> {
+    const a = this.agents.get(id);
+    if (!a || a.parentId) throw new Error('找不到這個節點(子代理不能轉移工作區)。');
+    if (a.backend === 'antigravity') throw new Error('Antigravity 換資料夾續接後仍以原本的資料夾為主要工作目錄,暫時不支援轉移工作區。');
+    if (a.terminal) throw new Error('節點在終端機模式,請先回到主控台模式。');
+    if (BUSY.has(a.state) || this.starting.has(id) || a.pendingApproval || a.pendingQuestion) throw new Error('節點正在執行或等待回應,請等它停下來再轉移。');
+    if (this.moving.has(id) || this.terminating.has(id) || this.removing.has(id)) throw new Error('這個節點正在轉移或終止中。');
+    const flow = this.flowHolding?.(id);
+    if (flow) throw new Error(`協作流程「${flow}」正在使用這個節點,流程結束後才能轉移。`);
+    if (this.meetingViews.some(m => m.hostId === id || m.participants.some(p => p.id === id))) throw new Error('節點正在開會,會議結束後才能轉移。');
+    if (a.queued.length) throw new Error('節點還有排隊中的指令,請先清掉或等它們送出。');
+
+    this.moving.add(id);
+    let made: { info: WorktreeInfo; cwd: string; setup: string } | null = null;
+    let placed = false;
+    try {
+      const from = a.cwd;
+      const oldWt = a.worktree;
+      let cwd: string;
+      let worktree: WorktreeInfo | null = null;
+      let setup = '';
+      const inside = (p: string, root: string) => { const r = relative(resolve(root).toLowerCase(), resolve(p).toLowerCase()); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
+      if (target?.kind === 'folder') {
+        const p = String(target.path ?? '').trim();
+        if (!p || !isAbsolute(p)) throw new Error('請選擇一個資料夾(絕對路徑)。');
+        let st;
+        try { st = statSync(p); } catch { throw new Error('這個資料夾不存在。'); }
+        if (!st.isDirectory()) throw new Error('目的地不是資料夾。');
+        cwd = resolve(p);
+        // 主控台的獨立工作區(包括這個節點自己原本的)之後可能被移除,不能當成一般資料夾的目的地
+        if (insideWorktreeHome(cwd) || (oldWt && inside(cwd, oldWt.path))) throw new Error('目的地在主控台的獨立工作區裡(那裡的工作區之後可能被移除)。要用獨立工作區請選「在 git 版本庫開新的獨立工作區」。');
+      } else if (target?.kind === 'worktree') {
+        const repo = String(target.repo ?? '').trim();
+        if (!repo || !isAbsolute(repo) || !existsSync(repo)) throw new Error('請選擇一個 git 版本庫的資料夾。');
+        // 主控台的獨立工作區之後可能被移除(連分支),拿它當版本庫會讓新工作區的基準分支跟著消失
+        if (insideWorktreeHome(repo)) throw new Error('請選原本的 git 版本庫,不要選主控台的獨立工作區(那裡的工作區與分支之後可能被移除)。');
+        made = await createWorktree(repo, a.name, a.id);
+        cwd = made.cwd;
+        worktree = made.info;
+        setup = made.setup;
+      } else throw new Error('目的地不正確。');
+      if (normalizePath(cwd) === normalizePath(from) && !worktree) throw new Error('目的地和目前的工作目錄相同。');
+
+      // 建立工作區可能要好幾秒:這段期間節點被終止、開始執行或有了排隊指令,就放棄這次轉移(剛建的工作區會清掉)
+      if (this.agents.get(id) !== a || this.terminating.has(id) || this.removing.has(id)) throw new Error('節點在轉移途中被終止了,已取消轉移。');
+      if (BUSY.has(a.state) || this.starting.has(id) || a.pendingApproval || a.pendingQuestion || a.queued.length) throw new Error('節點在轉移途中開始執行或有了排隊指令,已取消轉移,請等它停下來再試。');
+
+      // 停下 session(休眠中的節點本來就沒有 session),換工作目錄;原本醒著的才用同一個 session 在新資料夾續接
+      const wasAwake = this.sessions.has(id);
+      if (wasAwake) await this.stopSession(id);
+      a.cwd = cwd;
+      a.worktree = worktree;
+      this.store.updateAgentPlace(a);
+      this.cwdNotices.set(id, { from, to: cwd });
+      placed = true;
+
+      const notes = [`工作目錄已從「${from}」換到「${cwd}」,用同一個 session 續接,對話內容保留。下一則指令會先通知節點以新的資料夾為準。`];
+      if (setup) notes.push(setup);
+      // 舊的獨立工作區照終止時的規則處理;新的工作目錄在舊工作區裡面時一律保留(前面已擋下,這裡再保險一次)
+      if (oldWt && oldWt.path !== worktree?.path && !inside(cwd, oldWt.path)) {
+        const removed = await removeWorktree(oldWt, false).catch(() => false);
+        notes.push(removed ? `原本的獨立工作區(分支 ${oldWt.branch})乾淨且已合併,已移除。` : `原本的獨立工作區還有未提交或未合併的修改,已保留在 ${oldWt.path}(分支 ${oldWt.branch})。`);
+      }
+      const note = notes.join('\n');
+      this.onAdapterEvent(id, { type: 'note', text: note });
+      this.broadcast({ agent: { ...a } });
+      this.onStatsDirty?.();
+      this.moving.delete(id);
+      if (wasAwake && this.agents.get(id) === a) {
+        this.onAdapterEvent(id, { type: 'state', state: 'planning', detail: '續接中' });
+        this.startSession(a);
+      }
+      return { agent: { ...a }, note };
+    } catch (e) {
+      // 還沒換過去就失敗:剛建立的工作區沒有任何修改,整個移除
+      if (made && !placed) await removeWorktree(made.info, true).catch(() => false);
+      throw e;
+    } finally {
+      this.moving.delete(id);
+    }
   }
 
   async createAgent(input: CreateAgentInput, resumeSessionId: string | null = null, fork: { from: string; copyFrom: string | null; note: string } | null = null): Promise<AgentInfo> {
@@ -619,6 +754,7 @@ export class Core {
     let out: { archive: string | null; note: string } = { archive: null, note: '' };
     // 已經在刪除流程中(例如連點兩次):不重跑一次
     if (this.removing.has(id)) return { archive: null, note: '這個節點已經在刪除中。' };
+    if (this.moving.has(id)) throw new Error('這個節點正在轉移工作區,轉移完成後再終止。');
     this.removing.add(id);
     try {
       // 先寫回憶錄(使用者選了才寫),再寫工作總結:兩份都要節點本人有空才寫得出來,回憶錄等完節點才會回到待命
@@ -748,6 +884,7 @@ export class Core {
     // 終止中(停 session、建立存點可能要好幾秒):重複的終止直接返回,喚醒與重開 session 一律擋下(見 startSession),
     // 否則 CLI 會在複製途中又續接同一個 session 寫檔,節點刪掉後留下孤兒行程
     if (this.terminating.has(id)) return null;
+    if (this.moving.has(id)) throw new Error('這個節點正在轉移工作區,轉移完成後再終止。');
     this.terminating.add(id);
     try { return await this.terminate(id); } finally { this.terminating.delete(id); }
   }
@@ -799,6 +936,11 @@ export class Core {
     const fromQueue = typeof origin === 'object' ? origin : null;
     if (fromQueue) { source = fromQueue.source ?? 'desktop'; from = fromQueue.from; }
     else if (origin === 'autopilot') source = 'autopilot';
+    // 轉移工作區途中:佇列送出的放回佇列,其他直接說明(不會在舊資料夾開一個馬上被中斷的回合,也不會默默丟掉)
+    if (this.moving.has(id)) {
+      if (fromQueue && agent) { this.requeue(agent, fromQueue); return; }
+      throw new Error('這個節點正在轉移工作區,請稍候再送。');
+    }
     if (!agent || !session) { if (fromQueue && agent) this.requeue(agent, fromQueue); return; }
     // 額度上限:這家後台的額度用到設定的百分比就不再送出新指令
     if (!BUSY.has(agent.state) && this.quotaStop > 0) {
@@ -892,10 +1034,13 @@ ${text}
 
   /** 取出並清掉這個節點待通知的變更,組成指令前面的「主控台通知」。 */
   private takeNotice(agent: AgentInfo): string {
-    const kinds = this.notices.get(agent.id);
-    if (!kinds?.size) return '';
+    const kinds = this.notices.get(agent.id) ?? new Set<'name' | 'persona'>();
+    const moved = this.cwdNotices.get(agent.id);
+    if (!kinds.size && !moved) return '';
     this.notices.delete(agent.id);
+    this.cwdNotices.delete(agent.id);
     const parts: string[] = [];
+    if (moved) parts.push(`(主控台通知:你的工作目錄已從「${moved.from}」換到「${moved.to}」。之後讀寫檔案、執行指令都以新的資料夾為準;先前對話裡提到的舊路徑不再是你的工作目錄。)`);
     if (kinds.has('name')) parts.push(`(主控台通知:你的名字已改為「${agent.name}」。)`);
     if (kinds.has('persona')) {
       const card = this.personaCard(agent);
@@ -1044,7 +1189,7 @@ ${text}
 
   async wake(id: string): Promise<void> {
     const agent = this.agents.get(id);
-    if (!agent || agent.parentId || this.terminating.has(id)) return;
+    if (!agent || agent.parentId || this.terminating.has(id) || this.moving.has(id)) return;
     if (this.sessions.has(id)) {
       // 行程還在就不必喚醒;失聯的先清掉舊 session 再重新啟動
       if (agent.state !== 'lost') return;
@@ -1176,7 +1321,7 @@ ${text}
   }
 
   private startSession(agent: AgentInfo): void {
-    if (this.terminating.has(agent.id)) return;
+    if (this.terminating.has(agent.id) || this.moving.has(agent.id)) return;
     const session = this.adapters[agent.backend].start(
       { agentId: agent.id, cwd: agent.cwd, permissionMode: agent.permissionMode, model: agent.model, sessionId: agent.sessionId, forkFrom: agent.sessionId ? null : this.forks.get(agent.id) ?? null, interop: agent.parentId ? null : this.interop?.(agent.id) ?? null, persona: this.persona(agent), ...(agent.backend === 'antigravity' ? { agyAllow: [...this.agyAllow] } : {}) },
       (e, subId) => this.onAdapterEvent(agent.id, e, subId),
@@ -1498,10 +1643,11 @@ ${text}
     const lite = (a: AgentInfo) => ({ id: a.id, name: a.name, character: a.character, backend: a.backend, sessionId: a.sessionId, cwd: a.cwd });
     const live = [...this.agents.values()].filter(a => !a.parentId);
     const liveIds = new Set(live.map(a => a.id));
+    const removedAgents = this.store.loadRemovedAgents().map(r => r.agent);
     return {
       now: Date.now(), portraitsDir: portraitsDir(),
       live: live.map(a => ({ ...lite(a), state: a.state })),
-      removed: this.store.loadRemovedAgents().map(r => r.agent).filter(a => !liveIds.has(a.id)).map(lite),
+      removed: removedAgents.filter(a => !liveIds.has(a.id)).map(lite),
       archives: readArchives(vault.dir, entries),
       tasks: this.store.loadTasksForStats(0, 100000),
       cases: entries.filter(e => e.kind === 'case'),
@@ -1515,6 +1661,7 @@ ${text}
       projectKind: id => projectKindOf(id),
       savepoints: id => this.savepointList(vault.dir, id),
       sessionFileExists: (b, sid) => this.sessionFileOk(b, sid),
+      rebuildable: id => canRebuildWorktree(removedAgents.find(a => a.id === id)?.worktree),
     };
   }
 
@@ -1553,7 +1700,8 @@ ${text}
       nodeId => {
         const removed = this.store.loadRemovedAgents().find(r => r.agent.id === nodeId)?.agent;
         return !!vault && !!removed?.sessionId && this.savepointList(vault.dir, nodeId).some(s => s.sessionId === removed.sessionId);
-      });
+      },
+      nodeId => canRebuildWorktree(this.store.loadRemovedAgents().find(r => r.agent.id === nodeId)?.agent.worktree));
   }
   agentById(id: string): AgentInfo | undefined { return this.agents.get(id); }
 

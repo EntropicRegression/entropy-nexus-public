@@ -44,9 +44,11 @@ export const SAVEPOINT_RESTORE_SUPPORTED = true;
 /**
  * 點喚醒會有結果(統計檔的「可接回」與喚醒網址共用):canResume 成立,而且工具資料夾裡還有這段對話的主檔
  * (sessionOk 為 undefined 或 null 表示沒檢查,視為還在),或有可還原的存點(還原支援之後才算)。
+ * rebuildable:工作目錄是已被刪掉、但能在原位置重建的獨立工作區(接回時先問再重建,docs/工作區轉移規劃.md W2),也算工作目錄還在。
  */
-export function canWake(node: { sessionId: string | null; cwd: string }, inRemovedList: boolean, dirExists: (p: string) => boolean, sessionOk?: boolean | null, restorable = false): boolean {
-  return canResume(node, inRemovedList, dirExists) && (sessionOk !== false || (SAVEPOINT_RESTORE_SUPPORTED && restorable));
+export function canWake(node: { sessionId: string | null; cwd: string }, inRemovedList: boolean, dirExists: (p: string) => boolean, sessionOk?: boolean | null, restorable = false, rebuildable = false): boolean {
+  const dirOk = (p: string) => dirExists(p) || rebuildable;
+  return canResume(node, inRemovedList, dirOk) && (sessionOk !== false || (SAVEPOINT_RESTORE_SUPPORTED && restorable));
 }
 
 export type WakeTarget =
@@ -62,14 +64,17 @@ export function wakeTargetOf(
   sessionOk?: (backend: Backend, sessionId: string) => boolean,
   /** 這個節點有沒有可還原的存點(還原支援之後才用得到)。 */
   restorable?: (nodeId: string) => boolean,
+  /** 這個節點的獨立工作區能不能在原位置重建(工作目錄不在時接回前先問再重建)。 */
+  rebuildable?: (nodeId: string) => boolean,
 ): WakeTarget {
   const on = live.find(a => a.id === id && !a.parentId);
   if (on) return { kind: 'board', name: on.name };
   const a = removed.find(x => x.id === id);
   if (!a) return null;
-  if (!canResume(a, true, dirExists)) return { kind: 'unavailable', name: a.name, reason: !a.sessionId ? '沒有可以接回的對話' : '原本的工作目錄已經不存在' };
+  const rebuild = rebuildable?.(a.id) ?? false;
+  if (!canResume(a, true, p => dirExists(p) || rebuild)) return { kind: 'unavailable', name: a.name, reason: !a.sessionId ? '沒有可以接回的對話' : '原本的工作目錄已經不存在;可以到主控台的「開啟舊 session」選一個新的資料夾接回' };
   const ok = a.sessionId && sessionOk ? sessionOk(a.backend, a.sessionId) : undefined;
-  if (!canWake(a, true, dirExists, ok, restorable?.(a.id) ?? false)) return { kind: 'unavailable', name: a.name, reason: '這段對話已經被工具清除了,沒有辦法接回' };
+  if (!canWake(a, true, dirExists, ok, restorable?.(a.id) ?? false, rebuild)) return { kind: 'unavailable', name: a.name, reason: '這段對話已經被工具清除了,沒有辦法接回' };
   return { kind: 'removed', name: a.name, input: { backend: a.backend, sessionId: a.sessionId!, cwd: a.cwd, agentId: a.id, name: a.name, character: a.character, model: a.model } };
 }
 

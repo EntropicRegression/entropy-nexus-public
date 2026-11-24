@@ -58,6 +58,8 @@ export interface StatsInput {
   savepoints?(nodeId: string): SavepointSummary[];
   /** 工具資料夾裡還有沒有這段對話的主檔(Claude、Codex 的 jsonl,Antigravity 的 .db);沒提供時不檢查(舊行為)。 */
   sessionFileExists?(backend: Backend, sessionId: string): boolean;
+  /** 已終止節點的獨立工作區被刪掉、但能在原位置重建(接回時先問再重建);沒提供時不算。 */
+  rebuildable?(nodeId: string): boolean;
 }
 
 /** 統計檔用的存點摘要(來自存點.json)。path 相對記憶庫根目錄。 */
@@ -115,7 +117,8 @@ export function buildVaultStats(i: StatsInput) {
     const dirOk = !!n.cwd && i.dirExists(n.cwd);
     const cli = !sessionId || !backend ? false : i.cliSessions ? i.cliSessions.has(`${backend}:${sessionId}`) : null;
     // 存點:可還原 = 已終止(在資料庫的已終止清單、不在面板上)、工作目錄還在、存點是這個節點目前那段對話的
-    const resumable = !onBoard && canResume({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists);
+    const rebuild = !onBoard && known && (i.rebuildable?.(n.id) ?? false);
+    const resumable = !onBoard && canResume({ sessionId: n.sessionId, cwd: n.cwd }, known, p => i.dirExists(p) || rebuild);
     // 原檔還在:只對節點目前那段對話的存點有意義(喚醒接回的一定是目前那段);舊 session 的存點是 null,只列出
     const fileOk = !i.sessionFileExists || !n.sessionId || !n.backend ? null : i.sessionFileExists(n.backend, n.sessionId);
     const sps = (i.savepoints?.(n.id) ?? []).map(sp => {
@@ -123,7 +126,7 @@ export function buildVaultStats(i: StatsInput) {
       return { 路徑: sp.path, 時間: sp.time, 後台ID: sp.backend, 大小: sp.size, 原檔還在: current ? fileOk : null, 可還原: resumable && current };
     });
     // 可接回 = 點喚醒會有結果,和喚醒網址共用 canWake(還原支援之前只看原檔)
-    const wakeable = !onBoard && canWake({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists, fileOk, sps.some(s => s.可還原));
+    const wakeable = !onBoard && canWake({ sessionId: n.sessionId, cwd: n.cwd }, known, i.dirExists, fileOk, sps.some(s => s.可還原), rebuild);
     nodes[n.id] = {
       名稱: n.name, 角色: n.character || null, 狀態: status,
       任務數: fromTasks ? s!.tasks : a?.tasks ?? 0,

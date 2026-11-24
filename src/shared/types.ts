@@ -505,6 +505,20 @@ export interface OpenOldSessionInput {
   model: string;
   /** 原本的對話檔已被工具清掉時,使用者同意從存點還原(先問再還原:第一次不帶,收到 NEEDS_RESTORE 的錯誤再帶 true 重試)。 */
   restoreFromSavepoint?: boolean;
+  /** 原本的獨立工作區已被刪掉時,使用者同意在原位置重建(先問再做:收到 NEEDS_RELOCATE 再帶 true 重試)。 */
+  rebuildWorktree?: boolean;
+  /** 原本的工作目錄已不在(不是獨立工作區)時,使用者選的新資料夾(絕對路徑)。 */
+  newCwd?: string;
+}
+
+/** openOldSession 的工作目錄已不在、需要使用者決定時,錯誤訊息的開頭;後面接 JSON。 */
+export const NEEDS_RELOCATE = 'NEXUS_NEEDS_RELOCATE:';
+export type RelocateNeed = { kind: 'worktree'; branch: string; path: string } | { kind: 'folder'; path: string };
+/** 從錯誤訊息取出「工作目錄不在、需要決定」的資料;不是這種錯誤時是 null。 */
+export function needsRelocateOf(message: string): RelocateNeed | null {
+  const i = message.indexOf(NEEDS_RELOCATE);
+  if (i < 0) return null;
+  try { return JSON.parse(message.slice(i + NEEDS_RELOCATE.length)); } catch { return null; }
 }
 
 /** openOldSession 需要使用者同意從存點還原時,錯誤訊息的開頭;後面接 JSON {時間, 大小, 後台}。 */
@@ -520,6 +534,14 @@ export function needsRestoreOf(message: string): { 時間: string; 大小: numbe
  * 分支對話:從既有的 session 分支出一個新節點,新節點有自己的 session,不會佔用來源。
  * 來源可以是面板上的節點,或「開啟舊 session」清單上的一列。
  */
+/**
+ * 轉移工作區的目的地(docs/工作區轉移規劃.md):既有的資料夾,或在某個 git 版本庫開一個新的獨立工作區。
+ * 節點用同一個 session 在新資料夾續接,對話內容保留。
+ */
+export type MoveTarget = { kind: 'folder'; path: string } | { kind: 'worktree'; repo: string };
+/** 轉移工作區的結果:節點,以及寫進對話的說明。 */
+export interface MoveResult { agent: AgentInfo; note: string }
+
 export interface ForkAgentInput {
   source: { kind: 'agent'; agentId: string } | { kind: 'session'; backend: Backend; sessionId: string; cwd: string; agentId: string | null };
   name: string;
@@ -794,6 +816,8 @@ export interface NexusApi {
   openOldSession(input: OpenOldSessionInput): Promise<AgentInfo>;
   /** 從節點或舊 session 分支出新節點;新節點有自己的 session,來源不受影響。 */
   forkAgent(input: ForkAgentInput): Promise<AgentInfo>;
+  /** 轉移節點的工作區:停下 session、換工作目錄、用同一個 session 在新資料夾續接(Antigravity 暫不支援)。 */
+  moveWorkspace(id: string, target: MoveTarget): Promise<MoveResult>;
   pickDirectory(): Promise<string | null>;
   // ---- 協作流程(只有完整權限;畫面在 M4) ----
   flowTemplates(): Promise<FlowTemplateInfo[]>;

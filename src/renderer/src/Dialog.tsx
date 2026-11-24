@@ -7,6 +7,7 @@ import { TerminalView } from './Terminal';
 import { QuestionPanel } from './Question';
 import { AgyAllowEditor } from './AgyAllow';
 import { ForkPanel } from './Fork';
+import { MovePanel } from './Move';
 import { MicButton } from './Voice';
 import { accumulatedChars, shouldOfferDraft } from '../../shared/memory-draft';
 
@@ -343,7 +344,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
               </label>
             )}
             {form.permissionMode === 'auto' && a.permissionMode !== 'auto' && <span className="note warn">{isChief ? '總管會在不問你的情況下,把工作交給其他節點執行。建議維持「每次詢問」,分派前先由你確認。' : '修改檔案與一般指令不會再詢問,只有判斷為有風險或超出工作目錄的動作才會擋下或詢問。'}</span>}
-            <span className="muted">換模型或權限模式會重新啟動 session,對話內容保留(節點要先停下來)。工作目錄不能更換,請另外新增節點。</span>
+            <span className="muted">換模型或權限模式會重新啟動 session,對話內容保留(節點要先停下來)。要換工作目錄請用下方的「轉移工作區」。</span>
             <span className="spacer" />
             <button onClick={() => setEditing(false)}>取消</button>
             <button className="primary" disabled={!form.name.trim()} onClick={() => void save()}>儲存</button>
@@ -354,6 +355,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             warn={busy ? '節點正在執行:分支點是目前已寫入紀錄的對話,進行中的這一回合可能不完整或沒有包含在內。' : undefined}
             onCancel={() => setForking(false)} onDone={n => { setForking(false); onOpen?.(n.id); }} />
         )}
+        {editing && <MovePanel agent={a} busy={busy} onDone={n => { setEditing(false); setNote(''); void n; }} />}
         {editing && a.backend === 'antigravity' && <AgyAllowEditor />}
         {editing && form.character && <PersonaEditor character={form.character} />}
         {note && <div className="line err">{note}</div>}

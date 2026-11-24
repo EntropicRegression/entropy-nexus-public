@@ -381,7 +381,9 @@ await test('可接回與喚醒用同一個判斷:統計檔標可接回的一定�
     assert.equal(t?.kind === 'removed', can(id), id);
   }
   assert.equal(wakeTargetOf('on1', live, removed, exists).kind, 'board');
-  assert.deepEqual(wakeTargetOf('r-gone', live, removed, exists), { kind: 'unavailable', name: '目錄沒了', reason: '原本的工作目錄已經不存在' });
+  const gone = wakeTargetOf('r-gone', live, removed, exists);
+  assert.deepEqual({ ...gone, reason: '' }, { kind: 'unavailable', name: '目錄沒了', reason: '' });
+  assert.match(gone.reason, /^原本的工作目錄已經不存在/, '說明指向「開啟舊 session」選新資料夾');
   assert.equal(wakeTargetOf('a-only', live, removed, exists), null, '只有封存檔:找不到(不會用新的節點 ID 接回)');
   assert.deepEqual(wakeTargetOf('r-ok', live, removed, exists).input, { backend: 'claude', sessionId: 's-ok', cwd: 'C:/w', agentId: 'r-ok', name: '可接回', character: '', model: '' });
   assert.equal(canResume({ sessionId: null, cwd: 'C:/w' }, true, exists), false);

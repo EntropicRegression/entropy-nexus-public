@@ -232,26 +232,86 @@ export async function setupWorktree(repoRoot: string, path: string): Promise<str
   return `獨立工作區環境初始化${hasInclude ? '(依 .worktreeinclude)' : ''}:${parts.join(';')}。`;
 }
 
+/** 版本庫的主工作區(git-common-dir 的上一層);取不到時用傳入的資料夾。 */
+async function mainWorktree(top: string): Promise<string> {
+  const common = await git(top, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (!common.ok || !common.out) return top;
+  const dir = resolve(top, common.out);
+  return basename(dir) === '.git' ? dirname(dir).replace(/\\/g, '/') : top;
+}
+
+/** 路徑在主控台的獨立工作區資料夾(資料目錄的 worktrees)底下:那裡的工作區之後可能被移除。 */
+export function insideWorktreeHome(p: string): boolean {
+  if (!home) return false;
+  const rel = relative(resolve(home).toLowerCase(), resolve(p).toLowerCase());
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 export async function createWorktree(cwd: string, name: string, id: string): Promise<{ info: WorktreeInfo; cwd: string; setup: string }> {
   const top = await git(cwd, ['rev-parse', '--show-toplevel']);
   if (!top.ok) throw new Error('這個資料夾不是 git 版本庫,無法建立獨立工作區。');
-  const repoRoot = top.out;
-  if (!(await git(repoRoot, ['rev-parse', '--verify', '-q', 'HEAD'])).ok) throw new Error('版本庫還沒有任何提交,無法建立獨立工作區。請先提交一次。');
-  const abbrev = await git(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const base = abbrev.ok && abbrev.out !== 'HEAD' ? abbrev.out : (await git(repoRoot, ['rev-parse', 'HEAD'])).out;
+  if (!(await git(top.out, ['rev-parse', '--verify', '-q', 'HEAD'])).ok) throw new Error('版本庫還沒有任何提交,無法建立獨立工作區。請先提交一次。');
+  // 選的資料夾本身是另一個 worktree(例如某個節點的獨立工作區)時,以主版本庫為 repoRoot:
+  // 那個 worktree 之後可能被移除,repoRoot 指向它會讓合併、移除、重建都失效。基準仍是選的資料夾目前所在的分支
+  const repoRoot = await mainWorktree(top.out);
+  const abbrev = await git(top.out, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const base = abbrev.ok && abbrev.out !== 'HEAD' ? abbrev.out : (await git(top.out, ['rev-parse', 'HEAD'])).out;
   const slug = name.replace(/[^\w-]+/g, '').slice(0, 20) || 'node';
   const short = id.slice(0, 6);
-  const branch = `nexus/${slug}-${short}`;
   mkdirSync(home, { recursive: true });
-  const path = join(home, `${basename(repoRoot).replace(/[^\w.-]+/g, '_')}-${slug}-${short}`);
-  const add = await git(repoRoot, ['worktree', 'add', '-b', branch, path, 'HEAD']);
+  // 同一個節點可能再開一個工作區(轉移工作區):分支或資料夾已存在就加 -2、-3
+  let branch = '', path = '';
+  for (let k = 1; k < 100; k++) {
+    const tail = k === 1 ? '' : `-${k}`;
+    branch = `nexus/${slug}-${short}${tail}`;
+    path = join(home, `${basename(repoRoot).replace(/[^\w.-]+/g, '_')}-${slug}-${short}${tail}`);
+    if (!existsSync(path) && !(await git(repoRoot, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`])).ok) break;
+  }
+  const add = await git(repoRoot, ['worktree', 'add', '-b', branch, path, base]);
   if (!add.ok) throw fail('建立獨立工作區失敗', add);
   // 節點原本選的若是版本庫裡的子資料夾,在工作區裡也進到同一個子資料夾
-  const sub = relative(repoRoot.replace(/\//g, '\\'), cwd.replace(/\//g, '\\'));
+  const sub = relative(top.out.replace(/\//g, '\\'), cwd.replace(/\//g, '\\'));
   const inner = sub && !sub.startsWith('..') ? join(path, sub) : path;
   const setup = await setupWorktree(repoRoot, path).catch(e => `獨立工作區環境初始化失敗:${(e as Error).message}`);
   return { info: { repoRoot, path, branch, base }, cwd: existsSync(inner) ? inner : path, setup };
 }
+
+/**
+ * 在**原本的路徑**重建已被刪掉的獨立工作區(接回終止過的節點用,docs/工作區轉移規劃.md W2):
+ * 原分支還在就用它;已被刪掉就從 base 重開同名分支(base 也不在時用目前的 HEAD)。
+ * 路徑已被佔用、版本庫不在時丟出說明。重建後一樣初始化環境(複製環境檔、連結 node_modules)。
+ */
+export async function rebuildWorktree(w: WorktreeInfo): Promise<{ info: WorktreeInfo; setup: string; note: string }> {
+  if (!existsSync(w.repoRoot)) throw new Error('原本的 git 版本庫已經不在,無法重建獨立工作區。');
+  if (existsSync(w.path)) throw new Error('原本的工作區路徑已經有東西,無法在同一個位置重建。');
+  await git(w.repoRoot, ['worktree', 'prune']);
+  const hasBranch = (await git(w.repoRoot, ['rev-parse', '--verify', '-q', `refs/heads/${w.branch}`])).ok;
+  let note: string;
+  let info = w;
+  if (hasBranch) {
+    const add = await git(w.repoRoot, ['worktree', 'add', w.path, w.branch]);
+    if (!add.ok) {
+      if (/already (?:checked out|used by worktree)/i.test(add.err)) throw new Error(`原本的分支 ${w.branch} 已經在另一個工作區簽出,無法在原位置重建;請先在那個工作區切換到別的分支。`);
+      throw fail('重建獨立工作區失敗', add);
+    }
+    note = `在原本的位置重建了獨立工作區,沿用原分支 ${w.branch}。`;
+  } else {
+    const baseOk = (await git(w.repoRoot, ['rev-parse', '--verify', '-q', `${w.base}^{commit}`])).ok;
+    const from = baseOk ? w.base : 'HEAD';
+    const add = await git(w.repoRoot, ['worktree', 'add', '-b', w.branch, w.path, from]);
+    if (!add.ok) throw fail('重建獨立工作區失敗', add);
+    if (!baseOk) {
+      const abbrev = await git(w.repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
+      info = { ...w, base: abbrev.ok && abbrev.out !== 'HEAD' ? abbrev.out : (await git(w.repoRoot, ['rev-parse', 'HEAD'])).out };
+    }
+    note = `在原本的位置重建了獨立工作區:原分支已被刪掉,從 ${baseOk ? w.base : `目前的 ${info.base}`} 重開分支 ${w.branch}(先前已合併的成果在 ${baseOk ? w.base : info.base} 裡)。`;
+  }
+  const setup = await setupWorktree(w.repoRoot, w.path).catch(e => `獨立工作區環境初始化失敗:${(e as Error).message}`);
+  return { info, setup, note };
+}
+
+/** 已終止節點的獨立工作區能不能在原位置重建:有工作區資訊、版本庫還在、原路徑是空的。 */
+export const canRebuildWorktree = (w: WorktreeInfo | null | undefined): boolean => !!w && existsSync(w.repoRoot) && !existsSync(w.path);
 
 export async function worktreeStatus(w: WorktreeInfo): Promise<WorktreeStatus> {
   if (!existsSync(w.path)) return { exists: false, dirty: false, ahead: 0, branch: w.branch, base: w.base };

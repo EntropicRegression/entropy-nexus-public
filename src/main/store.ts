@@ -202,6 +202,11 @@ export class Store {
     this.db.prepare('UPDATE agents SET session_id = ?, state = ?, detail = ?, spent = ? WHERE id = ?').run(a.sessionId, a.state, a.detail, JSON.stringify(a.spent), a.id);
   }
 
+  /** 轉移工作區:更新節點的工作目錄與獨立工作區資訊。 */
+  updateAgentPlace(a: AgentInfo): void {
+    this.db.prepare('UPDATE agents SET cwd = ?, worktree = ? WHERE id = ?').run(a.cwd, a.worktree ? JSON.stringify(a.worktree) : null, a.id);
+  }
+
   updateQueue(a: AgentInfo): void {
     this.db.prepare('UPDATE agents SET queue = ?, queue_paused = ? WHERE id = ?').run(a.queued.length ? JSON.stringify(a.queued) : null, a.queuePaused, a.id);
   }
