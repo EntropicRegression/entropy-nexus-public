@@ -28,6 +28,7 @@ import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings 
 import { FlowService } from './flow/service';
 import { builtinTemplates } from './flow/builtin';
 import { projectOf } from './project';
+import { externalUrl } from '../shared/external-url';
 import type { DecisionChoice, FlowStartInput, ProjectFlowConfig } from '../shared/flow';
 
 // 資料固定放在 %APPDATA%\entropy-nexus,開發模式與安裝版共用同一份;測試時可用 NEXUS_DATA_DIR 指到別處
@@ -138,8 +139,12 @@ function createWindow(): void {
       backgroundThrottling: !testMode,
     },
   });
-  // 不允許畫面開新視窗或離開本機頁面
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // 不允許畫面開新視窗或離開本機頁面;對話裡的 http(s) 連結(target=_blank)改交給預設瀏覽器開啟
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    const web = externalUrl(url);
+    if (web) void shell.openExternal(web).catch(e => console.error('開啟網址失敗', e));
+    return { action: 'deny' };
+  });
   win.webContents.on('will-navigate', e => e.preventDefault());
   win.on('closed', () => { win = null; });
   if (devUrl) void win.loadURL(devUrl);

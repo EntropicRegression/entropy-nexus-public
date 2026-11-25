@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { parseBlocks, parseInline, type Block, type Inline } from './markdown-parse';
+import { externalUrl } from '../../shared/external-url';
 import './markdown.css';
 
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
@@ -104,7 +105,7 @@ function InlineCode({ text, agentId }: { text: string; agentId?: string }) {
 
 /**
  * Markdown 連結。目標是這台電腦上存在的檔案或資料夾時(Antigravity 習慣把檔名寫成 [檔名](file:///路徑)),
- * 點一下在檔案總管中顯示;其他連結只顯示文字與網址,不會開啟。
+ * 點一下在檔案總管中顯示;http(s) 網址點一下用預設瀏覽器開啟;其他連結只顯示文字與網址,不會開啟。
  */
 function MdLink({ children, href, agentId }: { children: ReactNode; href: string; agentId?: string }) {
   const local = !!agentId && href.length <= 1000 && !/^(https?|mailto|data|javascript):/i.test(href);
@@ -118,6 +119,9 @@ function MdLink({ children, href, agentId }: { children: ReactNode; href: string
     return () => { alive = false; };
   }, [agentId, href]);
   const label = children;
+  // http(s) 網址:點一下用預設瀏覽器開啟(桌面由主行程的 setWindowOpenHandler 交給系統,瀏覽器版開新分頁);提示顯示實際網址,避免被連結文字誤導
+  const web = local ? null : externalUrl(href);
+  if (web) return <a className="md-link md-web" href={web} target="_blank" rel="noopener noreferrer" title={`用瀏覽器開啟:${web}`}>{label}</a>;
   if (!ok) return <span className="md-link" title={href}>{label}</span>;
   const open = () => {
     if (window.getSelection()?.toString()) return;
@@ -144,7 +148,7 @@ function renderInline(nodes: Inline[], agentId?: string, inLink = false): ReactN
   });
 }
 
-/** 行內語法:`程式碼`、**粗體**、*斜體*、~~刪除線~~、[文字](連結)、![說明](圖片)、網址。圖片路徑有空白時可寫成 ![說明](<路徑>)。連結的目標是本機存在的檔案或資料夾時可以點開檔案總管,其他連結只顯示文字與網址,不會開啟。 */
+/** 行內語法:`程式碼`、**粗體**、*斜體*、~~刪除線~~、[文字](連結)、![說明](圖片)、網址。圖片路徑有空白時可寫成 ![說明](<路徑>)。連結的目標是本機存在的檔案或資料夾時可以點開檔案總管,http(s) 網址用預設瀏覽器開啟,其他連結只顯示文字與網址,不會開啟。 */
 function inline(text: string, agentId?: string): ReactNode[] {
   return renderInline(parseInline(text), agentId);
 }
