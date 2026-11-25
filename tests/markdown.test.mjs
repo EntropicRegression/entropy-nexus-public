@@ -2,6 +2,7 @@
 // 用法:在 app 資料夾執行 node tests/markdown.test.mjs(Node 22.18 以上可直接載入 .ts)
 import assert from 'node:assert/strict';
 import { parseBlocks, parseInline, splitRow } from '../src/renderer/src/markdown-parse.ts';
+import { externalUrl } from '../src/shared/external-url.ts';
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log('[ok]', name); };
@@ -90,6 +91,15 @@ test('連結、圖片、網址、換行', () => {
 test('段落:純文字原樣保留', () => {
   const b = parseBlocks('第一行\n第二行\n\n    縮排的文字');
   assert.equal(b[0].text, '第一行\n第二行'); assert.equal(b.length, 2);
+});
+
+test('網址連結:只有 http(s)、不帶帳號密碼的才交給瀏覽器', () => {
+  assert.equal(externalUrl('https://example.com/a?b=1#c'), 'https://example.com/a?b=1#c');
+  assert.equal(externalUrl('  http://example.com '), 'http://example.com/');
+  for (const bad of ['javascript:alert(1)', 'file:///C:/x.txt', 'mailto:a@b.c', 'data:text/html,x', 'https://good.com@evil.com/', 'https://u:p@x.com', 'C:\\x\\y', 'notaurl', '', 'http://']) assert.equal(externalUrl(bad), null, bad);
+  // 裸網址解析出來的連結也會通過檢查
+  const [a] = parseInline('https://example.com/docs').filter(n => typeof n !== 'string');
+  assert.equal(externalUrl(a.href), 'https://example.com/docs');
 });
 
 console.log(`\n${passed} 項通過`);
