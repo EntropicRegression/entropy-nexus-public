@@ -71,6 +71,8 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 from mt_opus import OpusMt  # noqa: E402
 
 mt = OpusMt()
+if mt.status == "idle":
+    threading.Thread(target=mt.warm, daemon=True).start()
 lock = threading.Lock()  # 一次只跑一段辨識,避免同時佔用顯示卡
 
 try:  # 選用:pip install opencc-python-reimplemented

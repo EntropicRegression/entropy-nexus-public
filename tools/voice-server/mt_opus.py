@@ -21,7 +21,7 @@ class OpusMt:
         self.translator = None
         self.src = None
         self.tgt = None
-        # status:off 沒有模型資料夾、ready 可以用、error 載入失敗;第一次翻譯時才載入
+        # status:off 沒有模型資料夾、idle 還沒載入(語音服務啟動時在背景載入,見 warm)、ready 可以用、error 載入失敗
         self.status = "off" if not os.path.isfile(os.path.join(MT_DIR, "model.bin")) else "idle"
         self.error = ""
 
@@ -33,6 +33,15 @@ class OpusMt:
         self.src = spm.SentencePieceProcessor(model_file=os.path.join(MT_DIR, "source.spm"))
         self.tgt = spm.SentencePieceProcessor(model_file=os.path.join(MT_DIR, "target.spm"))
         self.status = "ready"
+
+    def warm(self) -> None:
+        """語音服務啟動時在背景先載入並翻一句:第一次載入約 2 秒,會超過主控台 1.5 秒的上限。失敗只記下狀態。"""
+        if self.status != "idle":
+            return
+        try:
+            self.translate("測試")
+        except Exception:  # noqa: BLE001 狀態與錯誤已在 translate 裡記下
+            pass
 
     def translate(self, text: str) -> str:
         if self.status == "off":
