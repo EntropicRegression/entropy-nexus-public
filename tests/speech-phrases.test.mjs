@@ -15,18 +15,21 @@ test('中文台詞與原本相同', () => {
   assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'lost', queuePaused: true }), '小銀龍 失去連線,排隊的指令已暫停。');
 });
 
-test('英文台詞:每種通知都是英文,摘要不能用時念固定句', () => {
-  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: null }, 'en'), `小銀龍: ${EN_DONE_FALLBACK}`);
-  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: 'Fixed the login page.' }, 'en'), '小銀龍: Fixed the login page.');
-  assert.equal(speechPhrase({ ...base, kind: 'approval', requestId: 'r' }, 'en'), '小銀龍 is waiting for your approval. Please check the screen.');
-  assert.equal(speechPhrase({ ...base, kind: 'question', requestId: 'r' }, 'en'), '小銀龍 has a question for you. Please answer on screen.');
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'error', queuePaused: true }, 'en'), '小銀龍 ran into an error, and queued prompts are paused.');
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'lost', queuePaused: false }, 'en'), '小銀龍 lost its connection.');
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'quota', queuePaused: true }, 'en'), '小銀龍 reached its usage limit. Queued prompts are paused.');
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'budget', queuePaused: false }, 'en'), "小銀龍 has gone over today's budget.");
-  // 英文台詞除了節點名稱以外沒有中文
-  for (const n of [{ kind: 'approval', requestId: 'r' }, { kind: 'question', requestId: 'r' }, { kind: 'failed', reason: 'error', queuePaused: true }]) {
-    assert.ok(!hasHan(speechPhrase({ ...base, agentName: 'Node', ...n }, 'en')), JSON.stringify(n));
+test('英文台詞:第一人稱、開頭不念節點名稱,摘要不能用時念固定句', () => {
+  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: null }, 'en'), EN_DONE_FALLBACK);
+  assert.equal(EN_DONE_FALLBACK, "I'm done. Please review the details on screen.");
+  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: 'Fixed the login page.' }, 'en'), "I'm done. Fixed the login page.");
+  assert.equal(speechPhrase({ ...base, kind: 'approval', requestId: 'r' }, 'en'), "I'm waiting for your approval. Please check the screen.");
+  assert.equal(speechPhrase({ ...base, kind: 'question', requestId: 'r' }, 'en'), "I'm waiting for your answer. I have a question for you on screen.");
+  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'error', queuePaused: true }, 'en'), "I'm sorry, I ran into an error, and the queued prompts are paused.");
+  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'lost', queuePaused: false }, 'en'), "I'm offline. I lost my connection.");
+  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'quota', queuePaused: true }, 'en'), "I'm out of usage quota, so the queued prompts are paused.");
+  // 每日預算不屬於任何節點:保留後台名稱
+  assert.equal(speechPhrase({ ...base, agentName: 'Codex', kind: 'failed', reason: 'budget', queuePaused: false }, 'en'), "I'm letting you know that Codex has gone over today's budget.");
+  // 節點的通知不念節點名稱,也沒有中文
+  for (const n of [{ kind: 'done', taskId: 't', summary: null }, { kind: 'approval', requestId: 'r' }, { kind: 'question', requestId: 'r' }, { kind: 'failed', reason: 'error', queuePaused: true }, { kind: 'failed', reason: 'lost', queuePaused: true }, { kind: 'failed', reason: 'quota', queuePaused: true }]) {
+    const said = speechPhrase({ ...base, ...n }, 'en');
+    assert.ok(!said.includes('小銀龍') && !hasHan(said) && said.startsWith("I'm"), said);
   }
 });
 
@@ -35,12 +38,10 @@ test('播報語言只接受 zh、en', () => {
   for (const v of ['zh', 'EN', 'fr', undefined, null, 1]) assert.equal(normalizeSpeechLang(v), 'zh');
 });
 
-test('高風險的極性詞一律不翻', () => {
-  for (const s of ['請勿部署到正式環境', '測試未通過', '不要合併', '沒有找到問題', '禁止推送', '無法連線', '已取消這次合併', '建置失敗', '還沒完成',
-    '測試出錯三次', '設定檔遺失', '缺少一個檔案', '已停止服務', '跳過這一步', '已回滾到上一版', '除非先備份', '出現異常', '被防火牆擋下', '可以合併但要先測']) assert.ok(riskyForTranslation(s), s);
-  for (const s of ['已修好登入頁的排版', '新增三個單元測試', '整理了 README']) assert.ok(!riskyForTranslation(s), s);
-  // 刻意偏保守:「修好錯字」這種正面的句子也因為有「錯」而不翻(改念固定句),換來「出錯」不會被翻成沒事
-  assert.ok(riskyForTranslation('已修好登入頁的錯字'));
+test('原文只擋容易被漏翻的否定與禁止詞', () => {
+  for (const s of ['請勿部署到正式環境', '測試未通過', '不要合併', '不能推送', '測試不通過', '沒有找到問題', '禁止推送', '無法連線', '還沒完成', '除非先備份', '別刪掉', '非必要']) assert.ok(riskyForTranslation(s), s);
+  // 放寬:聊天語氣的「不對」「不錯」、本身就是負面結果的詞(交給譯文檢查)、「非常」都可以翻
+  for (const s of ['已修好登入頁的排版', '新增三個單元測試', '整理了 README', '聽完覺得哪裡不對再告訴我', '效果不錯', '已修好登入頁的錯字', '建置失敗', '已取消這次合併', '可以合併但要先測', '非常順利']) assert.ok(!riskyForTranslation(s), s);
 });
 
 test('翻譯結果的防呆:中文、特殊記號、數字對不上、重複、太長都擋下', () => {
@@ -54,8 +55,14 @@ test('翻譯結果的防呆:中文、特殊記號、數字對不上、重複、�
   assert.ok(!translationLooksOk('新增測試', 'test test test test test'), '重複');
   assert.ok(!translationLooksOk('新增測試', 'a'.repeat(401)), '太長');
   assert.ok(translationLooksOk('版本 1.3.0 已發布,時間 3:30', 'Version 1.3.0 was released at 3:30.'));
-  // 原文沒有極性詞,譯文卻出現否定或失敗:模型自己加的,不能念
+  // 原文沒有否定,譯文卻出現否定或負面結果:模型自己加的,不能念
   for (const bad of ['The tests did not pass.', "Don't deploy.", 'The build failed.', 'Deploy without review.', 'No changes were made.', 'The merge was cancelled.']) assert.ok(!translationLooksOk('已部署到正式環境', bad), bad);
+  // 原文是負面結果:譯文帶 error、fail、cancel 一律不念
+  assert.ok(!translationLooksOk('建置失敗', 'The build failed.'));
+  assert.ok(!translationLooksOk('已修好錯誤', 'Fixed the error.'));
+  // 原文有放行的「不」:譯文要有否定,漏掉就是翻反
+  assert.ok(translationLooksOk('聽完覺得哪裡不對再告訴我', "Tell me if anything is wrong after you listen."));
+  assert.ok(!translationLooksOk('聽完覺得哪裡不對再告訴我', 'Tell me after you listen.'), '漏翻否定');
   assert.ok(!translationLooksOk('新增 ３ 個測試', 'Added tests.'), '全形數字也要比對');
   assert.ok(translationLooksOk('新增 ３ 個測試', 'Added 3 tests.'));
   assert.ok(!translationLooksOk('新增三個測試', 'Added three tests.'), '中文數字寫的數量不翻');

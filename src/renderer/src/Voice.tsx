@@ -278,7 +278,7 @@ function SpeechEngines() {
           <option value="en">英文(English)</option>
         </select>
       </label>
-      <p className="remote-note">只換播報的語言,介面與節點的回覆不變。英文時:固定語音讀角色資料夾的 clips/en/,語音合成用 voice.en.wav(逐字稿 voice.en.txt、語氣 style.en.txt),節點沒有英文聲音就借總管的,都沒有時用系統的英文語音。完成摘要是中文時經本機翻譯;有否定、禁止這類容易翻反的字,或沒有翻譯模型、翻譯太慢時,改念「Task complete. Review the details on screen.」</p>
+      <p className="remote-note">只換播報的語言,介面與節點的回覆不變。英文時:固定語音讀角色資料夾的 clips/en/,語音合成用 voice.en.wav(逐字稿 voice.en.txt、語氣 style.en.txt),節點沒有英文聲音就借總管的,都沒有時用系統的英文語音。英文用節點自己的第一人稱念(I'm…),開頭不念節點名稱。完成摘要是中文時經本機翻譯;有「不要、不能、未、沒、勿、禁」這類容易被漏翻的否定,譯文帶失敗、錯誤或否定和原文對不上,或沒有翻譯模型、翻譯太慢時,改念「I'm done. Please review the details on screen.」</p>
       <div className="remote-sub">播報的聲音來源</div>
       <p className="remote-note">依序嘗試勾選的來源,第一個有聲音的就用它;都沒有時用系統語音。沒有角色的節點用總管的角色聲音(沒有總管、或總管也沒有角色時用系統語音)。</p>
       {order.map(id => {

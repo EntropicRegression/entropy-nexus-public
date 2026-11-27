@@ -13,22 +13,25 @@ export const SPEECH_LANGS: readonly SpeechLang[] = ['zh', 'en'];
 export const normalizeSpeechLang = (v: unknown): SpeechLang => (v === 'en' ? 'en' : 'zh');
 
 /** 英文模式下摘要不能用時改念的固定句。 */
-export const EN_DONE_FALLBACK = 'Task complete. Review the details on screen.';
+export const EN_DONE_FALLBACK = "I'm done. Please review the details on screen.";
 /** 翻譯的時間上限;超過就改念固定句。 */
 export const TRANSLATE_TIMEOUT_MS = 1500;
 
-/** 一則通知要念的整句。 */
+/**
+ * 一則通知要念的整句。英文用節點自己的第一人稱,開頭不念節點名稱(聽聲音就知道是誰);
+ * 每日預算的通知不屬於任何節點(agentName 是後台名稱,聲音借總管的),所以保留後台名稱。
+ */
 export function speechPhrase(n: SpeechNotice, lang: SpeechLang = 'zh'): string {
   if (lang === 'en') {
     switch (n.kind) {
-      case 'done': return `${n.agentName}: ${n.summary || EN_DONE_FALLBACK}`;
-      case 'approval': return `${n.agentName} is waiting for your approval. Please check the screen.`;
-      case 'question': return `${n.agentName} has a question for you. Please answer on screen.`;
+      case 'done': return n.summary ? `I'm done. ${n.summary}` : EN_DONE_FALLBACK;
+      case 'approval': return "I'm waiting for your approval. Please check the screen.";
+      case 'question': return "I'm waiting for your answer. I have a question for you on screen.";
       case 'failed': {
-        if (n.reason === 'quota') return `${n.agentName} reached its usage limit. Queued prompts are paused.`;
-        if (n.reason === 'budget') return `${n.agentName} has gone over today's budget.`;
-        const paused = n.queuePaused ? ', and queued prompts are paused' : '';
-        return n.reason === 'lost' ? `${n.agentName} lost its connection${paused}.` : `${n.agentName} ran into an error${paused}.`;
+        if (n.reason === 'quota') return "I'm out of usage quota, so the queued prompts are paused.";
+        if (n.reason === 'budget') return `I'm letting you know that ${n.agentName} has gone over today's budget.`;
+        const paused = n.queuePaused ? ', and the queued prompts are paused' : '';
+        return n.reason === 'lost' ? `I'm offline. I lost my connection${paused}.` : `I'm sorry, I ran into an error${paused}.`;
       }
     }
   }
@@ -49,13 +52,22 @@ const HAN = /[\p{Script=Han}]/u;
 export const hasHan = (s: string): boolean => HAN.test(s);
 
 /**
- * 翻譯容易翻反意思的極性詞(否定、禁止、未完成、失敗、取消……)。寧可多擋:擋下只是改念固定句,翻反會念出相反的指示。
+ * 翻譯時容易被「漏掉」而翻反意思的否定與禁止詞。只擋這一類:譯文本身就帶負面意思的字(錯誤、失敗、取消、停止、跳過……)
+ * 不必在原文擋,翻出來會有 error、fail、cancel、stop、skip 這類字,由 translationLooksOk 的 EN_NEGATIVE 擋下。
+ * 「不」只擋會改變指示的組合(不要、不能、不可……與不通過、不成功這類結果),聊天語氣的「不對」「不錯」可以翻;「非常」不算否定。
+ * 2026-11-28 依使用者要求從「單字一律擋」放寬到現在這樣。
  */
-const RISKY = /[不沒没未無无別别勿禁否非錯错失敗败缺漏停擋挡拒免莫毋甭卻却但]|取消|跳過|跳过|略過|略过|忽略|撤銷|撤销|回滾|回滚|還原|还原|退回|除非|異常|异常|警告|阻止|尚未|還沒|还没/;
+const RISKY = /不(?:要|能|可|准|得|許|许|應|应|該|该|用|必|行|會|会|通過|通过|成功|支援|完整|一致|存在|見|见|到|夠|够)|[沒没未無无別别勿禁否莫毋甭]|非(?!常)|除非|尚未|還沒|还没/;
 export const riskyForTranslation = (zh: string): boolean => RISKY.test(zh);
 
-/** 原文沒有極性詞時,譯文也不該出現否定或失敗的意思;出現就是模型自己加的,不能念。 */
-const EN_NEGATIVE = /\b(?:not|no|never|none|nothing|nobody|neither|nor|cannot|can't|won't|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|haven't|hasn't|shouldn't|fail(?:s|ed|ure)?|errors?|cancel(?:l?ed)?|unable|without|stop(?:ped)?|skip(?:ped)?|block(?:ed)?|reject(?:ed)?|denied|deny|missing|lost|undo(?:ne)?|revert(?:ed)?)\b|n't\b/i;
+/**
+ * 譯文的極性檢查分兩類:
+ * - EN_NEGATIVE_CONTENT:失敗、錯誤、取消、停止這類負面結果,出現就不念(原文是「修好錯誤」也一樣,寧可改念固定句)。
+ * - EN_NEGATION:not、no、n't、wrong 這類否定。原文有「不」(已放行的「不對」「不錯」之類)時譯文要有否定,
+ *   原文沒有時譯文不能有:兩邊不一致就是模型漏翻或自己加了否定。
+ */
+const EN_NEGATIVE_CONTENT = /\b(?:fail(?:s|ed|ure)?|errors?|cancel(?:l?ed)?|unable|stop(?:ped)?|skip(?:ped)?|block(?:ed)?|reject(?:ed)?|denied|deny|missing|lost|undo(?:ne)?|revert(?:ed)?|ignor(?:e|ed|ing)|lack(?:s|ed|ing)?|warn(?:s|ed|ing)?|abnormal|exceptions?|unless|broken|crash(?:ed|es)?|refus(?:e|ed))\b/i;
+const EN_NEGATION = /\b(?:not|no|never|none|nothing|nobody|neither|nor|cannot|without|wrong)\b|n't\b/i;
 /** 全形數字換成半形,數字比對才不會漏掉。 */
 const halfDigits = (s: string) => s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xfee0));
 
@@ -66,7 +78,8 @@ export function translationLooksOk(zh: string, en: string): boolean {
   if (!out || out.length > 400 || hasHan(out)) return false;
   if (/<unk>|<\/?s>|▁|�/.test(out)) return false;
   if (!/[A-Za-z]{2,}/.test(out)) return false;
-  if (EN_NEGATIVE.test(out)) return false;
+  if (EN_NEGATIVE_CONTENT.test(out)) return false;
+  if (/不/.test(zh) !== EN_NEGATION.test(out)) return false;
   // 原文用中文數字寫的數量(三個、十次)無法逐一比對,直接不翻
   if (/[零〇一二兩两三四五六七八九十百千萬万億亿]+\s*[個个次項项筆笔份條条件台位]/.test(zh)) return false;
   const nums = (s: string): string[] => s.match(/\d+(?:[.,:]\d+)*/g) ?? [];
