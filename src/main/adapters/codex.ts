@@ -55,6 +55,7 @@ export class CodexAdapter implements Adapter {
       note: this.bin ? `Codex ${version}(${found!.source})` : '找不到 codex。請安裝 Codex CLI 或 Codex 桌面版並完成登入。',
       models,
       attachments: ['image'],
+      interject: true,
     };
   }
 

@@ -82,6 +82,7 @@ const SUITES = [
   { name: 'collab', group: 'e2e', core: true, min: 1.5, ...bash('tests/collab.sh') },
   { name: 'memory-archive', group: 'e2e', core: true, min: 2, ...bash('tests/memory-archive.sh') },
   { name: 'workspace-move', group: 'e2e', core: true, min: 1, ...bash('tests/workspace-move.sh') },
+  { name: 'interject', group: 'e2e', core: true, min: 1, ...bash('tests/interject-fake.sh') },
   { name: 'access', group: 'e2e', min: 2, ...bash('tests/access.sh') },
   { name: 'access-ui', group: 'e2e', min: 2, ...bash('tests/access-ui.sh') },
   { name: 'attachments', group: 'e2e', min: 2, ...bash('tests/attachments.sh') },
@@ -108,6 +109,7 @@ const SUITES = [
   { name: 'agy-attach', group: 'real', min: 5, ...bash('tests/agy-attach.sh') },
   { name: 'savepoint-real', group: 'real', min: 4, timeout: 30, cmd: 'bash', args: ['tests/savepoint-real.sh', 'claude', 'haiku'] },
   { name: 'workspace-move-real', group: 'real', min: 4, timeout: 30, cmd: 'bash', args: ['tests/workspace-move-real.sh', 'move', 'claude', 'haiku'] },
+  { name: 'interject-real', group: 'real', min: 2, timeout: 15, cmd: 'bash', args: ['tests/interject-real.sh', 'claude', 'haiku'] },
   { name: 'stage7', group: 'real', min: 5, ...bash('tests/stage7.sh') },
   { name: 'kill-test', group: 'real', min: 3, ...bash('tests/kill-test.sh') },
 ];

@@ -274,6 +274,11 @@ export interface Capability {
   models: string[];
   /** 可以直接內嵌給模型看的附件類型;其他類型只會把路徑寫進指令。 */
   attachments: AttachmentKind[];
+  /**
+   * 回合執行中可以插話:送出的文字併進正在跑的回合。不支援的後台,執行中送出的指令改成排隊。
+   * 2026-11-27 實測(tests/interject-real.sh):Claude Code、Codex 可以;Antigravity 有時忽略、有時等回合結束才處理,不開放。
+   */
+  interject: boolean;
 }
 
 export type AttachmentKind = 'image' | 'pdf' | 'audio' | 'video' | 'text' | 'other';

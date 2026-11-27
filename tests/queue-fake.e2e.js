@@ -124,8 +124,10 @@
       log('額度說明', JSON.stringify((await notes(B.id)).pop()));
       await window.nexus.setQuotaStop(0);
       await window.nexus.resumeQueue(B.id);
+      // 佇列取出到建立任務之間(查專案、拍快照)節點看起來是待命且佇列已空,只等「沒有進行中的任務」可能太早下結論:等到那筆任務完成
+      const done4 = await until('排隊的那筆完成', async () => (await titles(B.id)).pop() === '程式碼 額度上限時排隊=done', 60000).catch(() => false);
       await settled(B.id, '解除額度上限後跑完');
-      check('解除後送出', (await titles(B.id)).pop() === '程式碼 額度上限時排隊=done');
+      check('解除後送出', !!done4, (await titles(B.id)).slice(-2).join(' | '));
 
       // 5. 休眠中的節點可以排隊,但不會送出;重開後還在
       await window.nexus.sleep(C.id);

@@ -63,6 +63,8 @@ export class FakeAdapter implements Adapter {
       note: '假資料模式,尚未接上真正的 CLI',
       models: [],
       attachments: ['image', 'pdf'],
+      // 和真正的後台一致:Antigravity 不支援回合中插話
+      interject: this.backend !== 'antigravity',
     };
   }
 

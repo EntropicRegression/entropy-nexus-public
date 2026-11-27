@@ -142,7 +142,7 @@ export class AcpAdapter implements Adapter {
 
   async probe(): Promise<Capability> {
     const info = await probeAcp(this.cfg);
-    const base = { backend: this.cfg.backend, simulated: false, fork: false, models: [] as string[], attachments: [] as AttachmentKind[] };
+    const base = { backend: this.cfg.backend, simulated: false, fork: false, models: [] as string[], attachments: [] as AttachmentKind[], interject: false };
     if (!info) return { ...base, available: false, version: null, approvals: false, interrupt: false, resume: false, note: `無法以 ACP 啟動 ${this.cfg.label}。` };
     return { ...base, available: true, version: info.version, approvals: true, interrupt: true, resume: info.resume, note: `${info.name} ${info.version ?? ''}(ACP)`.trim() };
   }
