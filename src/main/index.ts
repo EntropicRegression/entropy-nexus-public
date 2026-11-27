@@ -24,7 +24,7 @@ import { flushHeat } from './vault-sidecar';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
 import { atomicWriteJson, buildVaultStats, StatsWriter, STATS_FILE } from './vault-stats';
 import { findWakeUrl, parseWakeUrl, WAKE_PROTOCOL } from './wake';
-import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
+import { initSpeechEngines, prepareNotice, speechClip, speechRender, speechSet, speechSettings } from './speech';
 import { FlowService } from './flow/service';
 import { builtinTemplates } from './flow/builtin';
 import { projectOf } from './project';
@@ -545,7 +545,13 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     registerIpc(apiMethods(core, 'desktop'));
     initRemote(core, store, dir, apiMethods(core, 'remote'));
     // 語音播報(Phase 2a)只推給桌面畫面,不經 nexus:update(那條也會送到遠端與節點互相呼叫的服務)
-    core.setSpeech(n => win?.webContents.send('nexus:speech', n));
+    // 送出前依播報語言處理(英文時翻譯完成摘要,最多約 1.5 秒);處理失敗就照原樣送出。
+    // 翻譯可以同時進行,但交給畫面的順序照通知產生的先後,較晚完成的回合不會被較早的蓋掉
+    let speechChain: Promise<void> = Promise.resolve();
+    core.setSpeech(n => {
+      const ready = prepareNotice(n).catch(() => n);
+      speechChain = speechChain.then(() => ready).then(m => { win?.webContents.send('nexus:speech', m); }, () => {});
+    });
     // 外部觀察只推給桌面畫面;設定檔要等使用者在面板上按「安裝」才會修改
     initObserver(core, store, {
       push: u => { win?.webContents.send('nexus:update', u); remotePushFull(u); },
@@ -561,10 +567,11 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       return names.length ? `節點名稱:${names.join('、')}。` : '';
     }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
     // 播報用哪個角色的聲音:節點自己的角色;沒有角色的節點(以及不屬於節點的通知,例如每日預算)改用總管的角色
+    // 英文播報時兩個都會試(節點的英文聲音 → 總管的英文聲音),見 speech.ts 的 speechCharacters
     initSpeechEngines(store, id => {
       const s = core?.snapshot();
-      if (!s) return null;
-      return s.agents.find(a => a.id === id)?.character || s.agents.find(a => a.id === s.chiefId)?.character || null;
+      if (!s) return { own: null, chief: null };
+      return { own: s.agents.find(a => a.id === id)?.character || null, chief: s.agents.find(a => a.id === s.chiefId)?.character || null };
     });
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具

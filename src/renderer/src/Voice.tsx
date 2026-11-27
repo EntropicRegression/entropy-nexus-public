@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { SPEECH_ENGINES, type SpeechClipKind, type SpeechEngineId, type VoiceProfile, type VoiceStatus } from '../../shared/types';
+import { SPEECH_ENGINES, type SpeechClipKind, type SpeechEngineId, type SpeechLang, type VoiceProfile, type VoiceStatus } from '../../shared/types';
 import { pauseSpeech, resumeSpeech, setSpeakOn, useSpeakOn } from './sound';
 
 /**
@@ -256,6 +256,7 @@ function SpeechEngines() {
   const on = s.settings.engines;
   const order = [...on, ...SPEECH_ENGINES.filter(id => !on.includes(id))];
   const save = (engines: SpeechEngineId[]) => { setErr(''); void window.nexus.speechSet({ engines }).then(setS, e => setErr(clean(e))); };
+  const setLang = (lang: SpeechLang) => { setErr(''); void window.nexus.speechSet({ lang }).then(setS, e => setErr(clean(e))); };
   const toggle = (id: SpeechEngineId) => save(on.includes(id) ? on.filter(x => x !== id) : order.filter(x => x === id || on.includes(x)));
   const up = (id: SpeechEngineId) => { const list = [...on]; const i = list.indexOf(id); if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; save(list); } };
   const listen = async (character: string, kind: SpeechClipKind) => {
@@ -270,6 +271,14 @@ function SpeechEngines() {
   };
   return (
     <>
+      <div className="remote-sub">播報語言</div>
+      <label className="speech-lang">
+        <select value={s.settings.lang} onChange={e => setLang(e.target.value as SpeechLang)}>
+          <option value="zh">中文</option>
+          <option value="en">英文(English)</option>
+        </select>
+      </label>
+      <p className="remote-note">只換播報的語言,介面與節點的回覆不變。英文時:固定語音讀角色資料夾的 clips/en/,語音合成用 voice.en.wav(逐字稿 voice.en.txt、語氣 style.en.txt),節點沒有英文聲音就借總管的,都沒有時用系統的英文語音。完成摘要是中文時經本機翻譯;有否定、禁止這類容易翻反的字,或沒有翻譯模型、翻譯太慢時,改念「Task complete. Review the details on screen.」</p>
       <div className="remote-sub">播報的聲音來源</div>
       <p className="remote-note">依序嘗試勾選的來源,第一個有聲音的就用它;都沒有時用系統語音。沒有角色的節點用總管的角色聲音(沒有總管、或總管也沒有角色時用系統語音)。</p>
       {order.map(id => {

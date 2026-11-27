@@ -61,4 +61,21 @@ test('MIME:mp3 是 audio/mpeg,其他是 audio/wav', () => {
   assert.equal(clipMime('x/done.WAV'), 'audio/wav');
 });
 
+test('英文固定語音放在 clips/en/:中文與英文各自分開,不會混在一起挑', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nexus-clips-en-'));
+  const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(60)]);
+  writeFileSync(join(dir, 'done.wav'), wav);
+  mkdirSync(join(dir, 'en'));
+  writeFileSync(join(dir, 'en', 'done.wav'), wav);
+  writeFileSync(join(dir, 'en', 'approval-1.wav'), wav);
+  const zh = listClips(dir);
+  assert.deepEqual(Object.keys(zh), ['done'], '中文那一層不會把 en 資料夾當成錄音');
+  assert.equal(basename(zh.done[0]), 'done.wav');
+  const en = listClips(join(dir, 'en'));
+  assert.deepEqual(Object.keys(en).sort(), ['approval', 'done']);
+  assert.ok(en.done[0].includes(join(dir, 'en')));
+  // 英文資料夾沒有對應的錄音時回傳 null(播報那一層不會退回中文的 clips)
+  assert.equal(pickClip(join(dir, 'en'), N.question), null);
+});
+
 console.log(`通過 ${passed} 項`);

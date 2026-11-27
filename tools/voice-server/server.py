@@ -18,10 +18,12 @@
                      "tts": {"status": "off" | "warming_up" | "ready" | "unloaded" | "error", "error", "sampleRate", "vramMB"}}
   POST /transcribe  內容是 16 kHz、16-bit、單聲道的 WAV;標頭 X-Voice-Prompt(URL 編碼)可帶提示詞,
                     例如節點名稱,幫助辨識專有名詞。回傳 {"text", "audioMs", "durationMs", "language"}
-  POST /tts         JSON {"text", "wav"(參考錄音的路徑), "promptText"(錄音的內容,可省略,省略時自動辨識), "style"(語氣指令,可省略)};
+  POST /tts         JSON {"text", "wav"(參考錄音的路徑), "promptText"(錄音的內容,可省略,省略時自動辨識), "style"(語氣指令,可省略),
+                    "language"(參考錄音的語言 zh/en,只用在自動辨識逐字稿,預設 zh)};
                     回傳 16-bit 單聲道 WAV(取樣率見 health 的 tts.sampleRate),標頭 X-Voice-Ms 是合成耗時
   POST /tts/unload  手動卸載語音合成、釋放顯示卡記憶體(語音辨識照常);回傳 {"tts": ...}
   POST /tts/load    重新載入語音合成(背景載入,查 health 的 tts.status);回傳 {"tts": ...}
+  POST /translate   JSON {"text", "from": "zh", "to": "en"} → {"text"};英文語音播報翻譯完成摘要用(選用,見 mt_opus.py),沒有模型時回 503。
 """
 from __future__ import annotations
 
@@ -63,6 +65,12 @@ tts_switch = threading.Lock()  # 載入與卸載不同時進行
 tts = None
 # 參考錄音的內容文字(沒有 voice.txt 時自動辨識一次);鍵是 (路徑, 修改時間)
 prompt_cache: dict = {}
+# 中翻英(英文語音播報,選用):沒有模型資料夾時 status 是 off,/translate 回 503。python -I 不會把腳本所在的資料夾放進 sys.path
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mt_opus import OpusMt  # noqa: E402
+
+mt = OpusMt()
 lock = threading.Lock()  # 一次只跑一段辨識,避免同時佔用顯示卡
 
 try:  # 選用:pip install opencc-python-reimplemented
@@ -204,16 +212,17 @@ def to_wav(audio, rate: int) -> bytes:
     return buf.getvalue()
 
 
-def prompt_text_of(path: str) -> str:
-    """參考錄音說了什麼;CosyVoice 的 zero-shot 需要它。用 Whisper 辨識一次並快取。"""
-    key = (path, os.path.getmtime(path))
+def prompt_text_of(path: str, language: str = "zh") -> str:
+    """參考錄音說了什麼;CosyVoice 的 zero-shot 需要它。用 Whisper 辨識一次並快取。
+    language:錄音的語言(英文播報的 voice.en.wav 要用 en 辨識,否則會被當成中文辨識成錯的內容)。"""
+    key = (path, os.path.getmtime(path), language)
     if key in prompt_cache:
         return prompt_cache[key]
     if model is None:
         raise ValueError("參考錄音沒有附上內容文字(voice.txt),語音轉文字的模型也還沒載入")
     with open(path, "rb") as f:
         data = f.read()
-    text = transcribe(data, "")["text"]
+    text = transcribe(data, "", language)["text"]
     prompt_cache[key] = text
     log(f"參考錄音的內容:{text}")
     return text
@@ -227,7 +236,8 @@ def synthesize(body: dict) -> tuple[bytes, int]:
     if not ref.lower().endswith(".wav") or not os.path.isfile(ref):
         raise ValueError("找不到參考錄音")
     style = str(body.get("style") or "").strip()[:200]
-    prompt = str(body.get("promptText") or "").strip()[:500] or ("" if style else prompt_text_of(ref))
+    language = "en" if body.get("language") == "en" else "zh"
+    prompt = str(body.get("promptText") or "").strip()[:500] or ("" if style else prompt_text_of(ref, language))
     t0 = time.time()
     engine = tts
     if engine is None:
@@ -255,20 +265,22 @@ def read_wav(data: bytes):
     return pcm
 
 
-def transcribe(data: bytes, prompt: str) -> dict:
+def transcribe(data: bytes, prompt: str, language: str = "zh") -> dict:
+    """語音轉文字。聽寫(/transcribe)一律是中文;language 只給參考錄音補逐字稿用(en 時不加中文提示、不轉繁體)。"""
     audio = read_wav(data)
     t0 = time.time()
+    en = language == "en"
     with lock:
         segments, info = model.transcribe(
             audio,
-            language="zh",
-            initial_prompt=f"{ZH_HINT}{prompt}".strip(),
+            language="en" if en else "zh",
+            initial_prompt=(prompt if en else f"{ZH_HINT}{prompt}").strip() or None,
             vad_filter=True,
             beam_size=5,
             condition_on_previous_text=False,
         )
         text = "".join(s.text for s in segments).strip()
-    if to_tw:
+    if to_tw and not en:
         text = to_tw(text)
     return {"text": text, "audioMs": round(len(audio) / 16), "durationMs": round((time.time() - t0) * 1000), "language": info.language}
 
@@ -300,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed():
             return
         if self.path == "/health":
-            self.send_json(200, {**state, "pid": os.getpid(), "tts": tts_state})
+            self.send_json(200, {**state, "pid": os.getpid(), "tts": tts_state, "mt": {"status": mt.status, "error": mt.error}})
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -309,6 +321,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/tts":
             self.do_tts()
+            return
+        if self.path == "/translate":
+            self.do_translate()
             return
         if self.path in ("/tts/unload", "/tts/load"):
             if not TTS_DIR:
@@ -374,6 +389,30 @@ def _tts_handler(self) -> None:
 
 
 Handler.do_tts = _tts_handler  # type: ignore[attr-defined]
+
+
+def _translate_handler(self) -> None:
+    size = int(self.headers.get("Content-Length") or 0)
+    if size <= 0 or size > 16 * 1024:
+        self.send_json(413, {"error": "請求太大"})
+        return
+    try:
+        raw = json.loads(self.rfile.read(size).decode("utf-8"))
+        body = raw if isinstance(raw, dict) else {}
+        text = str(body.get("text") or "").strip()[:500]
+        if not text or body.get("from", "zh") != "zh" or body.get("to", "en") != "en":
+            raise ValueError("只支援中翻英,而且要有文字")
+        self.send_json(200, {"text": mt.translate(text)})
+    except ValueError as err:
+        self.send_json(400, {"error": str(err)})
+    except RuntimeError as err:
+        self.send_json(503, {"error": str(err)})
+    except Exception as err:  # noqa: BLE001
+        log("翻譯失敗:", err)
+        self.send_json(500, {"error": f"翻譯失敗:{err}"})
+
+
+Handler.do_translate = _translate_handler  # type: ignore[attr-defined]
 
 
 def parent_alive(pid: int) -> bool:

@@ -35,6 +35,7 @@ const SUITES = [
   { name: 'memory-write', group: 'unit', min: 0.1, ...node('tests/memory-write.test.mjs') },
   { name: 'meeting-record', group: 'unit', min: 0.1, ...node('tests/meeting-record.test.mjs') },
   { name: 'speech-clips-unit', group: 'unit', min: 0.1, ...node('tests/speech-clips.test.mjs') },
+  { name: 'speech-phrases', group: 'unit', min: 0.1, ...node('tests/speech-phrases.test.mjs') },
   { name: 'window-size', group: 'unit', min: 0.1, ...node('tests/window-size.test.mjs') },
   { name: 'review-prompt', group: 'unit', min: 0.1, ...node('tests/review-prompt.test.mjs') },
   { name: 'dashboard-unit', group: 'unit', min: 0.1, ...node('tests/dashboard.test.mjs') },

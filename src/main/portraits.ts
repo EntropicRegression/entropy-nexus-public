@@ -59,7 +59,7 @@ export function portraitsDir(): string {
 export function listCharacters(): string[] {
   try {
     return readdirSync(root, { withFileTypes: true })
-      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav')) || existsSync(join(root, d.name, 'clips'))))
+      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav')) || existsSync(join(root, d.name, 'voice.en.wav')) || existsSync(join(root, d.name, 'clips'))))
       .map(d => d.name)
       .sort((a, b) => a.localeCompare(b));
   } catch {
@@ -173,14 +173,17 @@ export function handlePortraitRequests(): void {
  * 角色的聲音(語音模式 Phase 3):角色資料夾裡的 voice.wav 是給語音合成模仿的參考錄音(建議 3 到 10 秒、單人、沒有背景音),
  * voice.txt(選用)是這段錄音說的內容,沒有就由語音服務自己辨識;style.txt(選用)是語氣指令,例如「用活潑、甜美的語氣說」。
  * 沒有 voice.wav 時回傳 null,播報改用系統語音。
+ * lang 是 en 時改讀英文的一組:voice.en.wav、voice.en.txt、style.en.txt(沒有 voice.en.wav 就是 null,不改用中文的參考錄音,
+ * 由播報那一層改借總管的英文聲音或系統英文語音)。
  */
-export function voiceOf(character: string): { wav: string; promptText: string; style: string } | null {
+export function voiceOf(character: string, lang: 'zh' | 'en' = 'zh'): { wav: string; promptText: string; style: string } | null {
   let c: string;
   try { c = checkCharacter(character); } catch { return null; }
-  const wav = join(root, c, 'voice.wav');
+  const suffix = lang === 'en' ? '.en' : '';
+  const wav = join(root, c, `voice${suffix}.wav`);
   if (!existsSync(wav)) return null;
   const read = (f: string) => { const p = join(root, c, f); try { return existsSync(p) ? readFileSync(p, 'utf8').replace(/^﻿/, '').trim().slice(0, 500) : ''; } catch { return ''; } };
-  return { wav, promptText: read('voice.txt'), style: read('style.txt') };
+  return { wav, promptText: read(`voice${suffix}.txt`), style: read(`style${suffix}.txt`) };
 }
 
 const VOICE_MAX = 5 * 1024 * 1024;

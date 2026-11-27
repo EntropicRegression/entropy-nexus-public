@@ -639,10 +639,16 @@ export interface VoiceProfile { hasVoice: boolean; ms: number; promptText: strin
  * failed:桌面發起的回合出錯、失聯,或排隊的指令被額度上限擋下;approval、question:節點在等使用者(不分來源)。
  * failed 的 reason 是 budget 時不屬於任何節點:某家後台今天的用量超過每日預算(agentName 是後台名稱,agentId 是 budget:<後台>),一天最多念一次。
  */
-export type SpeechNotice =
+export type SpeechNotice = (
   | { kind: 'done'; agentId: string; agentName: string; ts: number; taskId: string; summary: string | null }
   | { kind: 'failed'; agentId: string; agentName: string; ts: number; reason: 'error' | 'lost' | 'quota' | 'budget'; queuePaused: boolean; taskId?: string }
-  | { kind: 'approval' | 'question'; agentId: string; agentName: string; ts: number; requestId: string };
+  | { kind: 'approval' | 'question'; agentId: string; agentName: string; ts: number; requestId: string }
+) & {
+  /** 播報語言(主行程送出時依設定填入;沒有就是中文)。英文時 done 的 summary 已經是英文,或是 null(念固定句)。 */
+  lang?: SpeechLang;
+};
+/** 播報語言:第一階段只有播報可以切成英文,介面與節點回覆的語言不變。 */
+export type SpeechLang = 'zh' | 'en';
 
 /**
  * 語音播報的引擎(聲音來源)。播報時依使用者排的順序逐一嘗試,第一個產生出聲音的就用它;全部都沒有聲音時改用系統語音。
@@ -657,6 +663,11 @@ export const SPEECH_CLIP_KINDS: readonly SpeechClipKind[] = ['done', 'approval',
 export interface SpeechSettings {
   /** 啟用的引擎,依嘗試順序排列;空陣列表示只用系統語音。 */
   engines: SpeechEngineId[];
+  /**
+   * 播報語言。英文時:固定句用英文、固定語音讀角色資料夾的 clips/en/、語音合成用 voice.en.wav(沒有就借總管的),
+   * 都沒有時系統語音用英文念;中文摘要經本機翻譯(有防呆)。
+   */
+  lang: SpeechLang;
 }
 export interface SpeechEngineState {
   id: SpeechEngineId;

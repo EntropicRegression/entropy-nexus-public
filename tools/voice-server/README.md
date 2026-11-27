@@ -105,3 +105,17 @@ venv/Scripts/python -m pip install opencc-python-reimplemented
 - 只用自己錄的聲音,或取得本人同意的聲音。不要用動畫、遊戲角色或配音員的錄音片段。
 
 驗收:`bash tests/voice-tts.sh`。
+
+## 英文語音播報(選用)
+
+「語音」面板的「播報語言」選英文時:
+
+- **英文的參考錄音**:角色資料夾放 `voice.en.wav`(格式和 `voice.wav` 相同),`voice.en.txt` 寫錄音**實際念出**的英文。沒有逐字稿時,主控台會帶 `language: "en"` 給 `/tts`,用英文辨識一次補稿;聽寫(`/transcribe`)照舊固定用中文。語氣指令放 `style.en.txt`(建議先留空,用 zero-shot)。
+- **中文摘要的翻譯**:`mt_opus.py` 用 Helsinki-NLP/opus-mt-zh-en 轉成的 CTranslate2 INT8 模型,在 CPU 上翻譯(不佔顯示卡記憶體)。準備一次:
+
+  ```
+  pip install ctranslate2 sentencepiece transformers
+  ct2-transformers-converter --model Helsinki-NLP/opus-mt-zh-en --quantization int8 --output_dir mt/opus-mt-zh-en --copy_files source.spm target.spm
+  ```
+
+  模型放在這個資料夾的 `mt/opus-mt-zh-en`,或用環境變數 `NEXUS_VOICE_MT_DIR` 指定。沒有模型時 `/translate` 回 503,主控台改念固定的英文句;`/health` 的 `mt.status` 會顯示 off、idle(第一次翻譯時才載入)、ready 或 error。翻譯結果主控台會再做一次防呆(否定詞、數字、怪字元、1.5 秒上限)。
