@@ -939,7 +939,8 @@ export class Core {
 
   /** origin 是佇列項目時表示由佇列自動送出:送不出去就放回佇列開頭,不會丟掉。 */
   /** source:指令是從哪裡送出的(語音播報用);佇列送出時沿用排入時記下的來源。 */
-  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop', from?: TaskFrom): Promise<void> {
+  /** 回傳 true 表示沒有直接送出、改排進佇列(呼叫端據此調整說明)。 */
+  async send(id: string, text: string, images: string[] = [], origin: 'user' | 'autopilot' | QueuedPrompt = 'user', source: SpeechSource = 'desktop', from?: TaskFrom): Promise<boolean | void> {
     const agent = this.agents.get(id);
     const session = this.sessions.get(id);
     const fromQueue = typeof origin === 'object' ? origin : null;
@@ -951,6 +952,22 @@ export class Core {
       throw new Error('這個節點正在轉移工作區,請稍候再送。');
     }
     if (!agent || !session) { if (fromQueue && agent) this.requeue(agent, fromQueue); return; }
+    // 執行中送出 = 插話。以下情況改成排隊,回合完成後自動送出:
+    // 後台不支援插話(Antigravity 回合中收到的訊息不一定會處理)、已經按了中斷(插話會清掉中斷記號,回合會被誤判成正常結束或出錯)、
+    // 上一句還在拍快照準備送出(狀態仍是待命,兩句會被當成兩個任務同時送進去)
+    const starting = this.starting.has(id);
+    if (BUSY.has(agent.state) || starting) {
+      const why = starting ? '上一句指令正在送出' : this.interrupted.has(id) ? '這個回合正在中斷' : !this.capabilities.get(agent.backend)?.interject ? `${BACKEND_LABEL[agent.backend]} 不支援回合中插話` : '';
+      if (why) {
+        if (fromQueue) { this.requeue(agent, fromQueue); return true; }
+        if (origin === 'autopilot') return;
+        this.pushQueue(agent, text, images, source, from);
+        this.onAdapterEvent(id, { type: 'note', text: agent.queuePaused
+          ? `${why},這句指令已排隊;佇列目前暫停(${agent.queuePaused}),按佇列的「繼續」後才會送出。`
+          : `${why},這句指令已排隊,這個回合完成後自動送出。` });
+        return true;
+      }
+    }
     // 額度上限:這家後台的額度用到設定的百分比就不再送出新指令
     if (!BUSY.has(agent.state) && this.quotaStop > 0) {
       const worst = usageWindowsFor(agent.model, this.usage.get(agent.backend)?.windows ?? []).reduce<UsageWindow | null>((m, w) => (!m || w.used > m.used ? w : m), null);
@@ -976,7 +993,7 @@ export class Core {
       if (origin === 'autopilot') return;
       this.pushQueue(agent, text, images, source, from);
       this.onAdapterEvent(id, { type: 'note', text: `已達同時執行上限(${this.maxActive} 個),指令已排隊,有名額時會自動送出。` });
-      return;
+      return true;
     }
     if (!BUSY.has(agent.state)) {
       // 送出前先拍下工作目錄的快照,任務結束後才算得出這個任務改了什麼
@@ -999,8 +1016,13 @@ export class Core {
       if (task && task.source !== 'desktop') task.source = 'desktop';
     }
     this.onAdapterEvent(id, { type: 'message', role: 'user', text });
+    // 插話:轉接器送出時會回報「思考中」,但回合其實沒有重來;還原成插話前的狀態(例如正在執行的工具),之後的事件照常更新
+    const before = BUSY.has(agent.state) ? { state: agent.state, detail: agent.detail } : null;
     // 改名、換角色之後的第一則指令順便告訴 agent;紀錄裡仍只留使用者原本的文字
     session.send(this.takeNotice(agent) + this.takeChiefNotes(agent) + this.takeStatsNotice(agent) + text, images);
+    if (before && this.sessions.get(id) === session && agent.state === 'planning' && (agent.state !== before.state || agent.detail !== before.detail)) {
+      this.onAdapterEvent(id, { type: 'state', state: before.state, detail: before.detail });
+    }
   }
 
   /** 讓 agent 知道自己在主控台裡的身分:節點名稱,加上所選角色的角色卡(有的話)。 */
@@ -1825,10 +1847,11 @@ ${section}
       set,
       note,
     });
-    await this.send(reviewerId, prompt, [], 'user', source);
+    const queued = await this.send(reviewerId, prompt, [], 'user', source);
     const title = task.title.length > 40 ? `${task.title.slice(0, 40)}…` : task.title;
-    this.onAdapterEvent(reviewerId, { type: 'note', text: `上面是 ${task.agentName} 的任務「${title}」的審查請求(${set.files.length} 個檔案),只需回覆審查意見。` });
-    if (author) this.onAdapterEvent(task.agentId, { type: 'note', text: `已把任務「${title}」的變更送交 ${reviewer.name} 審查。` });
+    // 審查節點正在忙而改成排隊時,請求還沒出現在對話裡:不寫「上面是…」
+    if (!queued) this.onAdapterEvent(reviewerId, { type: 'note', text: `上面是 ${task.agentName} 的任務「${title}」的審查請求(${set.files.length} 個檔案),只需回覆審查意見。` });
+    if (author) this.onAdapterEvent(task.agentId, { type: 'note', text: queued ? `已把任務「${title}」的審查請求排進 ${reviewer.name} 的佇列,它目前的工作完成後會開始審查。` : `已把任務「${title}」的變更送交 ${reviewer.name} 審查。` });
   }
 
   private worktreeOf(id: string): { agent: AgentInfo; wt: WorktreeInfo } {

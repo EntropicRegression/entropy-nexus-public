@@ -404,7 +404,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
   if (req.method === 'GET' && path === '/api/meta') {
     const s = core.snapshot();
-    json(res, 200, { capabilities: s.capabilities.map(c => ({ backend: c.backend, available: c.available, simulated: c.simulated, approvals: c.approvals, models: c.models, note: c.note, attachments: c.attachments })), dirs: access.role === 'full' ? core.recentDirs() : [] });
+    json(res, 200, { capabilities: s.capabilities.map(c => ({ backend: c.backend, available: c.available, simulated: c.simulated, approvals: c.approvals, models: c.models, note: c.note, attachments: c.attachments, interject: c.interject })), dirs: access.role === 'full' ? core.recentDirs() : [] });
     return;
   }
   // 對話裡的圖片:與桌面版相同的路徑限制(節點工作目錄或主控台的媒體資料夾,只限圖片),手機以 fetch 帶通行碼讀取

@@ -60,19 +60,49 @@ function Typed({ text }: { text: string }) {
   return <>{text.slice(0, n)}{n < text.length && <span className="caret" />}</>;
 }
 
+/**
+ * 輸入框的暫存:每個節點各一份,切換到別的節點再切回來時接著寫。
+ * 文字另外存進 localStorage,重開主控台後還在;附加的檔案與展開狀態只在這次開啟期間保留。送出或排隊後清掉。
+ */
+type Draft = { text: string; files: string[]; tall: boolean };
+const drafts = new Map<string, Draft>();
+const DRAFT_KEY = (id: string) => `nexus.draft.${id}`;
+function loadDraft(id: string): Draft {
+  const hit = drafts.get(id);
+  if (hit) return hit;
+  let text = '';
+  try { text = localStorage.getItem(DRAFT_KEY(id)) ?? ''; } catch { /* 讀不到就從空白開始 */ }
+  return { text, files: [], tall: false };
+}
+/** 清掉已經不在面板上的節點留下的暫存文字(開啟主控台後第一次打開對話視窗時做一次)。 */
+let pruned = false;
+function pruneDrafts(alive: string[]): void {
+  if (pruned) return;
+  pruned = true;
+  try {
+    const keep = new Set(alive.map(DRAFT_KEY));
+    for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k?.startsWith('nexus.draft.') && !keep.has(k)) localStorage.removeItem(k); }
+  } catch { /* 讀不到就略過 */ }
+}
+function saveDraft(id: string, d: Draft): void {
+  const empty = !d.text && !d.files.length;
+  if (empty) drafts.delete(id); else drafts.set(id, d);
+  try { if (d.text) localStorage.setItem(DRAFT_KEY(id), d.text.slice(0, 20000)); else localStorage.removeItem(DRAFT_KEY(id)); } catch { /* 存不進去就只留在記憶體 */ }
+}
+
 /** 對話視窗:左側立繪,右側對話紀錄、工具活動、授權選項與輸入欄。 */
 export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onClose, onOpen, isChief = false }: { agent: AgentInfo; cap?: Capability; parentName: string; reviewTaskId: string | null; onReview: (taskId: string) => void; onClose: () => void; onOpen?: (agentId: string) => void; isChief?: boolean }) {
   const isSub = a.parentId !== null;
   const [events, setEvents] = useState<NexusEvent[]>([]);
   const [liveFrom, setLiveFrom] = useState(Number.MAX_SAFE_INTEGER);
   const [raw, setRaw] = useState(false);
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => loadDraft(a.id).text);
   // 生成中的回覆片段;整段回覆到齊後清掉
   const [live, setLive] = useState('');
   const streamed = useRef(false);
   // 對話視窗向上展開到佔滿面板(設定會記住);輸入框展開成多行編輯(送出後收回)
   const [full, setFull] = useState(() => localStorage.getItem('nexus.dlgFull') === '1');
-  const [tall, setTall] = useState(false);
+  const [tall, setTall] = useState(() => loadDraft(a.id).tall);
   const toggleFull = () => setFull(v => { localStorage.setItem('nexus.dlgFull', v ? '0' : '1'); return !v; });
   useEffect(() => {
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
@@ -148,7 +178,9 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   const busy = a.state === 'planning' || a.state === 'working' || a.state === 'awaiting';
   const offline = a.state === 'sleeping' || a.state === 'lost';
   // 附加的檔案:路徑一律寫進指令,後台能內嵌的類型(cap.attachments)另外直接交給模型看
-  const [files, setFiles] = useState<string[]>([]);
+  const [files, setFiles] = useState<string[]>(() => loadDraft(a.id).files);
+  useEffect(() => { saveDraft(a.id, { text, files, tall }); }, [a.id, text, files, tall]);
+  useEffect(() => { void window.nexus.getSnapshot().then(s => pruneDrafts(s.agents.map(x => x.id))).catch(() => { /* 下次再清 */ }); }, []);
   // 送出前的縮圖:經主行程讀取,只限這次選取、貼上或拖放的圖片
   const [previews, setPreviews] = useState<Record<string, string | null>>({});
   const addFiles = (paths: string[]) => setFiles(cur => [...cur, ...paths.filter(p => p && !cur.includes(p))]);
@@ -160,7 +192,9 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
     }
   }, [files]);
   const embeds = (f: string) => (cap?.attachments ?? []).includes(attachmentKind(f));
-  const canSend = !busy && !offline && (text.trim().length > 0 || files.length > 0);
+  // 執行中送出 = 插話(併進正在跑的回合),只有實測過可以的後台開放;等待授權或回答時不插話
+  const interject = busy && a.state !== 'awaiting' && !isSub && !!cap?.interject;
+  const canSend = (!busy || interject) && !offline && (text.trim().length > 0 || files.length > 0);
   const send = () => {
     if (!canSend) return;
     const list = files.length ? `\n\n附加的檔案:\n${files.map(f => `- ${f}`).join('\n')}` : '';
@@ -175,7 +209,9 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
   const queue = () => {
     if (!canQueue) return;
     const list = files.length ? `\n\n附加的檔案:\n${files.map(f => `- ${f}`).join('\n')}` : '';
-    window.nexus.enqueue(a.id, (text.trim() || '請看附加的檔案。') + list, files).then(() => { setText(''); setTall(false); setFiles([]); }, e => setNote(clean(e)));
+    const id = a.id;
+    // 排進去之前就切到別的節點時,元件已經卸下、setState 不會生效:直接清掉這個節點的暫存,免得切回來又看到已經排隊的文字
+    window.nexus.enqueue(id, (text.trim() || '請看附加的檔案。') + list, files).then(() => { saveDraft(id, { text: '', files: [], tall: false }); setText(''); setTall(false); setFiles([]); }, e => setNote(clean(e)));
   };
   const [qEdit, setQEdit] = useState<{ id: string; text: string } | null>(null);
   const saveQueued = () => {
@@ -474,11 +510,12 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
             onKeyDown={onKey}
             onPaste={onPaste}
             disabled={offline}
-            placeholder={offline ? '節點沒有在執行,請先喚醒' : busy ? '執行中,可輸入下一句按「排隊」(Alt+Enter),或按右側中斷' : tall ? '多行編輯:Enter 換行,Ctrl+Enter 送出' : '輸入指令,Enter 送出,Shift+Enter 換行'}
+            placeholder={offline ? '節點沒有在執行,請先喚醒' : interject ? (tall ? '執行中:Ctrl+Enter 插話(併進這個回合),Alt+Enter 排隊' : '執行中:Enter 插話(併進這個回合),Alt+Enter 排到回合完成後') : busy ? '執行中,可輸入下一句按「排隊」(Alt+Enter),或按右側中斷' : tall ? '多行編輯:Enter 換行,Ctrl+Enter 送出' : '輸入指令,Enter 送出,Shift+Enter 換行'}
             autoFocus
           />
           <button className={`ghost dlg-tall ${tall ? 'on' : ''}`} onClick={() => setTall(v => !v)} title={tall ? '收回成單行(Alt+E)' : '展開輸入框,方便寫多行的指令(Alt+E)'} aria-label={tall ? '收回輸入框' : '展開輸入框'}>{tall ? '收回' : '展開'}</button>
-          {busy && <button className="primary" disabled={!canQueue} onClick={queue} title="排進佇列,這個回合完成後自動送出(Alt+Enter)">排隊</button>}
+          {interject && <button className="primary" disabled={!canSend} onClick={send} title="併進正在執行的這個回合,節點會在目前的工作中一起處理(Enter)">插話</button>}
+          {busy && <button className={interject ? '' : 'primary'} disabled={!canQueue} onClick={queue} title="排進佇列,這個回合完成後自動送出(Alt+Enter)">排隊</button>}
           {busy
             ? <button className="danger" onClick={() => void window.nexus.interrupt(a.id)}>中斷</button>
             : <button className="primary" disabled={!canSend} onClick={send}>送出</button>}

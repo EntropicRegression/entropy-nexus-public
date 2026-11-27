@@ -143,7 +143,7 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
   let token = localStorage.getItem('nexus.token') || '';
   let dash = null; // 總覽儀表的資料(每日預算、今天的任務統計),和桌面版右上角的儀表同一份
   let agents = {}, tasks = [], usage = [], settings = { maxActive: 4, quotaStop: 0 }, device = '', access = { role: 'full', agents: null };
-  let tab = 'nodes', current = null, events = [], live = '', picked = {}, files = [], stack = [], embedKinds = {};
+  let tab = 'nodes', current = null, events = [], live = '', picked = {}, files = [], stack = [], embedKinds = {}, interjectable = {};
 
   const toast = (msg, bad) => { const t = $('toast'); t.textContent = msg; t.className = bad ? 'bad' : ''; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => { t.style.display = 'none'; }, bad ? 5000 : 2500); };
   const api = async (path, body) => {
@@ -409,7 +409,9 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
     else {
       // 已附加的檔案:圖片顯示縮圖,PDF 顯示副檔名;標示這個後台會內嵌還是只傳路徑
       const embeds = (embedKinds[a.backend] || []);
-      h += `${files.length ? `<div class="files">${files.map((f, i) => `<span>${f.thumb ? `<img src="${f.thumb}" alt="">` : `<i>${f.kind === 'pdf' ? 'PDF' : '檔案'}</i>`}<b>${esc(f.name)}</b>${embedKinds[a.backend] ? `<em class="${embeds.includes(f.kind) ? 'em' : 'po'}">${embeds.includes(f.kind) ? '內嵌' : '僅路徑'}</em>` : ''}<button class="link" data-rmfile="${i}" aria-label="移除">✕</button></span>`).join('')}</div>` : ''}<div class="send"><button class="sm" id="attach" ${files.length >= 6 ? 'disabled' : ''}>附加</button><textarea id="cmd" rows="1" placeholder="${busy ? '執行中,可排隊下一句' : '輸入指令'}"></textarea>${busy ? '<button class="pri" id="queue">排隊</button><button class="bad" id="stop">中斷</button>' : '<button class="pri" id="go">送出</button>'}</div><div class="hint">可附加圖片(PNG、JPEG、WebP、GIF,8 MB 內)或 PDF(20 MB 內),最多 6 個。</div><input type="file" id="pick" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" style="display:none">`;
+      // 執行中送出 = 插話,只有支援的後台(實測過)才顯示;等待授權時不插話
+      const ij = busy && a.state !== 'awaiting' && !a.parentId && !!interjectable[a.backend];
+      h += `${files.length ? `<div class="files">${files.map((f, i) => `<span>${f.thumb ? `<img src="${f.thumb}" alt="">` : `<i>${f.kind === 'pdf' ? 'PDF' : '檔案'}</i>`}<b>${esc(f.name)}</b>${embedKinds[a.backend] ? `<em class="${embeds.includes(f.kind) ? 'em' : 'po'}">${embeds.includes(f.kind) ? '內嵌' : '僅路徑'}</em>` : ''}<button class="link" data-rmfile="${i}" aria-label="移除">✕</button></span>`).join('')}</div>` : ''}<div class="send"><button class="sm" id="attach" ${files.length >= 6 ? 'disabled' : ''}>附加</button><textarea id="cmd" rows="1" placeholder="${ij ? '執行中,可插話或排隊下一句' : busy ? '執行中,可排隊下一句' : '輸入指令'}"></textarea>${busy ? `${ij ? '<button class="pri" id="go">插話</button><button class="sm" id="queue">排隊</button>' : '<button class="pri" id="queue">排隊</button>'}<button class="bad" id="stop">中斷</button>` : '<button class="pri" id="go">送出</button>'}</div><div class="hint">可附加圖片(PNG、JPEG、WebP、GIF,8 MB 內)或 PDF(20 MB 內),最多 6 個。</div><input type="file" id="pick" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" style="display:none">`;
     }
     $('act').innerHTML = h;
     if ($('cmd')) { $('cmd').value = draft; if (focused) $('cmd').focus(); }
@@ -445,7 +447,7 @@ details.ln summary { list-style:none; } details.ln pre { margin:4px 0 0; padding
     current = id; events = []; live = ''; picked = {}; files = [];
     $('menu').classList.remove('show'); show('detail'); renderHead(); renderLog(true);
     // 各後台能內嵌哪些附件,用來在附件上標示「內嵌」或「僅路徑」
-    if (!Object.keys(embedKinds).length) api('/api/meta').then(m => { for (const c of m.capabilities) embedKinds[c.backend] = c.attachments || []; renderHead(); }).catch(() => {});
+    if (!Object.keys(embedKinds).length) api('/api/meta').then(m => { for (const c of m.capabilities) { embedKinds[c.backend] = c.attachments || []; interjectable[c.backend] = !!c.interject; } renderHead(); }).catch(() => {});
     try { events = await api('/api/history?id=' + encodeURIComponent(id)); renderLog(true); } catch {}
   }
 

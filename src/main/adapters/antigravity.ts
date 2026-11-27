@@ -105,6 +105,8 @@ export class AntigravityAdapter implements Adapter {
       models,
       // ACP 模式下 agy 收得到 base64 圖片(實測過);stream-json 模式只能傳路徑
       attachments: useAcp() ? ['image'] : [],
+      // 回合中送出的訊息有時被忽略、有時等回合結束才處理(2026-11-27 實測),改成排隊
+      interject: false,
     };
   }
 

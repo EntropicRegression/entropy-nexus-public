@@ -121,6 +121,7 @@ export class ClaudeAdapter implements Adapter {
           // Claude Code 沒有列出模型的指令;這些別名會對應到各級別的最新模型
           models: ['fable', 'opus', 'sonnet', 'haiku'],
           attachments: ['image', 'pdf'],
+          interject: true,
         });
       });
     });
