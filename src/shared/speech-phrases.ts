@@ -13,25 +13,26 @@ export const SPEECH_LANGS: readonly SpeechLang[] = ['zh', 'en'];
 export const normalizeSpeechLang = (v: unknown): SpeechLang => (v === 'en' ? 'en' : 'zh');
 
 /** 英文模式下摘要不能用時改念的固定句。 */
-export const EN_DONE_FALLBACK = "I'm done. Please review the details on screen.";
+export const EN_DONE_FALLBACK = 'Task complete. Please review the details on screen.';
 /** 翻譯的時間上限;超過就改念固定句。 */
 export const TRANSLATE_TIMEOUT_MS = 1500;
 
 /**
- * 一則通知要念的整句。英文用節點自己的第一人稱,開頭不念節點名稱(聽聲音就知道是誰);
- * 每日預算的通知不屬於任何節點(agentName 是後台名稱,聲音借總管的),所以保留後台名稱。
+ * 一則通知要念的整句。英文用節點自己的第一人稱,開頭先自我介紹「I'm <節點名稱>.」再接摘要或狀況;
+ * 每日預算的通知不屬於任何節點(agentName 是後台名稱,聲音借總管的),所以不自我介紹。
  */
 export function speechPhrase(n: SpeechNotice, lang: SpeechLang = 'zh'): string {
   if (lang === 'en') {
+    const me = `I'm ${n.agentName}.`;
     switch (n.kind) {
-      case 'done': return n.summary ? `I'm done. ${n.summary}` : EN_DONE_FALLBACK;
-      case 'approval': return "I'm waiting for your approval. Please check the screen.";
-      case 'question': return "I'm waiting for your answer. I have a question for you on screen.";
+      case 'done': return `${me} ${n.summary || EN_DONE_FALLBACK}`;
+      case 'approval': return `${me} I'm waiting for your approval. Please check the screen.`;
+      case 'question': return `${me} I have a question for you. Please answer on screen.`;
       case 'failed': {
-        if (n.reason === 'quota') return "I'm out of usage quota, so the queued prompts are paused.";
-        if (n.reason === 'budget') return `I'm letting you know that ${n.agentName} has gone over today's budget.`;
+        if (n.reason === 'quota') return `${me} I'm out of usage quota, so the queued prompts are paused.`;
+        if (n.reason === 'budget') return `${n.agentName} has gone over today's budget.`;
         const paused = n.queuePaused ? ', and the queued prompts are paused' : '';
-        return n.reason === 'lost' ? `I'm offline. I lost my connection${paused}.` : `I'm sorry, I ran into an error${paused}.`;
+        return n.reason === 'lost' ? `${me} I lost my connection${paused}.` : `${me} I ran into an error${paused}.`;
       }
     }
   }

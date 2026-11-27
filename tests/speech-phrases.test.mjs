@@ -15,21 +15,21 @@ test('中文台詞與原本相同', () => {
   assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'lost', queuePaused: true }), '小銀龍 失去連線,排隊的指令已暫停。');
 });
 
-test('英文台詞:第一人稱、開頭不念節點名稱,摘要不能用時念固定句', () => {
-  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: null }, 'en'), EN_DONE_FALLBACK);
-  assert.equal(EN_DONE_FALLBACK, "I'm done. Please review the details on screen.");
-  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: 'Fixed the login page.' }, 'en'), "I'm done. Fixed the login page.");
-  assert.equal(speechPhrase({ ...base, kind: 'approval', requestId: 'r' }, 'en'), "I'm waiting for your approval. Please check the screen.");
-  assert.equal(speechPhrase({ ...base, kind: 'question', requestId: 'r' }, 'en'), "I'm waiting for your answer. I have a question for you on screen.");
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'error', queuePaused: true }, 'en'), "I'm sorry, I ran into an error, and the queued prompts are paused.");
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'lost', queuePaused: false }, 'en'), "I'm offline. I lost my connection.");
-  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'quota', queuePaused: true }, 'en'), "I'm out of usage quota, so the queued prompts are paused.");
-  // 每日預算不屬於任何節點:保留後台名稱
-  assert.equal(speechPhrase({ ...base, agentName: 'Codex', kind: 'failed', reason: 'budget', queuePaused: false }, 'en'), "I'm letting you know that Codex has gone over today's budget.");
-  // 節點的通知不念節點名稱,也沒有中文
+test('英文台詞:開頭「I’m <節點名稱>.」再接摘要或狀況,摘要不能用時念固定句', () => {
+  assert.equal(EN_DONE_FALLBACK, 'Task complete. Please review the details on screen.');
+  assert.equal(speechPhrase({ ...base, kind: 'done', taskId: 't', summary: null }, 'en'), `I'm 小銀龍. ${EN_DONE_FALLBACK}`);
+  assert.equal(speechPhrase({ ...base, agentName: 'claudia jr', kind: 'done', taskId: 't', summary: 'Fixed the login page.' }, 'en'), "I'm claudia jr. Fixed the login page.");
+  assert.equal(speechPhrase({ ...base, kind: 'approval', requestId: 'r' }, 'en'), "I'm 小銀龍. I'm waiting for your approval. Please check the screen.");
+  assert.equal(speechPhrase({ ...base, kind: 'question', requestId: 'r' }, 'en'), "I'm 小銀龍. I have a question for you. Please answer on screen.");
+  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'error', queuePaused: true }, 'en'), "I'm 小銀龍. I ran into an error, and the queued prompts are paused.");
+  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'lost', queuePaused: false }, 'en'), "I'm 小銀龍. I lost my connection.");
+  assert.equal(speechPhrase({ ...base, kind: 'failed', reason: 'quota', queuePaused: true }, 'en'), "I'm 小銀龍. I'm out of usage quota, so the queued prompts are paused.");
+  // 每日預算不屬於任何節點:不自我介紹,只念後台名稱
+  assert.equal(speechPhrase({ ...base, agentName: 'Codex', kind: 'failed', reason: 'budget', queuePaused: false }, 'en'), "Codex has gone over today's budget.");
+  // 除了節點名稱以外沒有中文
   for (const n of [{ kind: 'done', taskId: 't', summary: null }, { kind: 'approval', requestId: 'r' }, { kind: 'question', requestId: 'r' }, { kind: 'failed', reason: 'error', queuePaused: true }, { kind: 'failed', reason: 'lost', queuePaused: true }, { kind: 'failed', reason: 'quota', queuePaused: true }]) {
-    const said = speechPhrase({ ...base, ...n }, 'en');
-    assert.ok(!said.includes('小銀龍') && !hasHan(said) && said.startsWith("I'm"), said);
+    const said = speechPhrase({ ...base, agentName: 'Node', ...n }, 'en');
+    assert.ok(!hasHan(said) && said.startsWith("I'm Node. "), said);
   }
 });
 
