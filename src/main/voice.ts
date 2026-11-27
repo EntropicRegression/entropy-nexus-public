@@ -240,9 +240,9 @@ export async function voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript
 }
 
 /** 用角色的參考錄音合成一段話;沒有啟用語音合成、或角色沒有 voice.wav 時回傳 null(呼叫端改用系統語音)。 */
-export async function voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null> {
+export async function voiceTts(target: string | { character: string }, text: string, lang: 'zh' | 'en' = 'zh'): Promise<ArrayBuffer | null> {
   const character = typeof target === 'string' ? characterOf(target) : typeof target?.character === 'string' ? target.character : null;
-  return character ? localTts(character, text) : null;
+  return character ? localTts(character, text, lang) : null;
 }
 
 /** 本機語音合成(語音播報的 local 引擎)現在能不能用。 */

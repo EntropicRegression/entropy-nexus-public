@@ -698,17 +698,17 @@ export interface NexusApi {
    * 用節點(或角色)的聲音合成一段話,回傳 WAV;語音合成沒有啟用、或這個角色沒有參考錄音(角色資料夾的 voice.wav)時回傳 null,
    * 呼叫端改用系統語音。target 是節點 id,或 { character } 用來試聽。
    */
-  voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null>;
+  voiceTts(target: string | { character: string }, text: string, lang?: SpeechLang): Promise<ArrayBuffer | null>;
   /** 手動卸載本機語音合成(釋放顯示卡記憶體)或重新載入;語音辨識不受影響。卸載後播報改用下一個聲音來源。服務重新啟動時會再載入。 */
   voiceTtsPower(load: boolean): Promise<VoiceStatus>;
   /** 角色的聲音設定(角色資料夾的 voice.wav、voice.txt、style.txt);只有桌面畫面能用,瀏覽器版回傳 null。 */
-  voiceProfile(character: string): Promise<VoiceProfile | null>;
+  voiceProfile(character: string, lang?: SpeechLang): Promise<VoiceProfile | null>;
   /** 儲存角色的聲音:wav 是新的參考錄音(16-bit WAV,2 到 30 秒;null 表示移除),promptText、style 空字串表示刪除。 */
-  voiceProfileSave(character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }): Promise<VoiceProfile>;
+  voiceProfileSave(character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }, lang?: SpeechLang): Promise<VoiceProfile>;
   /** 從這台電腦選一個 WAV 檔當參考錄音(開檔案對話框);取消時回傳 null。 */
-  voiceProfileImport(character: string): Promise<VoiceProfile | null>;
+  voiceProfileImport(character: string, lang?: SpeechLang): Promise<VoiceProfile | null>;
   /** 參考錄音的內容(播放原音用);沒有時回傳 null。 */
-  voiceProfileAudio(character: string): Promise<ArrayBuffer | null>;
+  voiceProfileAudio(character: string, lang?: SpeechLang): Promise<ArrayBuffer | null>;
   /** 各角色有沒有參考錄音,給設定面板顯示。 */
   voiceCharacters(): Promise<Array<{ character: string; hasVoice: boolean; style: string }>>;
   /** wav 是 16 kHz、16-bit、單聲道的 WAV 檔內容。 */

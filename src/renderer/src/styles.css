@@ -134,6 +134,9 @@ button.ghost { border: none; background: none; padding: 2px 6px; color: var(--di
 @keyframes blink { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 @keyframes scan { from { transform: translateX(0); } to { transform: translateX(32px); } }
 .dlg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+/* 對話視窗的設定類面板:不參與壓縮(否則內容會疊到下面的對話紀錄),太高時在區塊內捲動 */
+.dlg-panels { flex: none; display: flex; flex-direction: column; gap: 8px; max-height: 62%; overflow-y: auto; padding-right: 4px; }
+.dlg-panels > * { flex: none; }
 .dlg-id { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line-soft); }
 .dlg-id b { font-size: 16px; letter-spacing: 0.5px; }
 .tag-auto { font: 600 11px var(--mono); color: var(--warn); border: 1px solid rgba(255, 176, 32, 0.5); padding: 0 6px; }

@@ -332,6 +332,7 @@ function TtsPower({ st, onError }: { st: VoiceStatus; onError?: (msg: string) =>
 
 /** 錄參考錄音時建議念的句子。 */
 const VOICE_SCRIPT = '今天天氣很好,我們一起出去走走吧。我會用這個聲音,幫你念工作的進度。';
+const VOICE_SCRIPT_EN = "The weather is lovely today. Let's take a short walk, and I'll read your progress with this voice.";
 const REC_MAX_MS = 15000;
 
 function playWav(buf: ArrayBuffer): Promise<void> {
@@ -348,9 +349,23 @@ function playWav(buf: ArrayBuffer): Promise<void> {
 /**
  * 角色的聲音(語音模式 Phase 3),放在角色卡編輯器底下:錄一段或選一個 WAV 當參考錄音、
  * 填寫錄音內容(可自動辨識)與語氣指令、播放原音、試聽合成效果、移除。檔案存在角色資料夾(voice.wav、voice.txt、style.txt)。
+ * 跟著「語音」面板的播報設定:播報語言是英文時編輯英文的一組(voice.en.wav、voice.en.txt、style.en.txt);
+ * 播報的聲音來源沒有勾選語音合成時會提醒這裡的設定暫時用不到。
  */
 export function VoiceEditor({ character }: { character: string }) {
   const st = useVoice();
+  const [lang, setLang] = useState<SpeechLang>('zh');
+  const [localOn, setLocalOn] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    const load = () => void window.nexus.speechSettings().then(r => { if (alive) { setLang(r.settings.lang ?? 'zh'); setLocalOn(r.settings.engines.includes('local')); } }).catch(() => {});
+    load();
+    // 播報語言或聲音來源在「語音」面板改了之後跟著切換
+    const t = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const en = lang === 'en';
+  const script = en ? VOICE_SCRIPT_EN : VOICE_SCRIPT;
   const [p, setP] = useState<VoiceProfile | null | undefined>(undefined);
   const [promptText, setPromptText] = useState('');
   const [style, setStyle] = useState('');
@@ -368,15 +383,16 @@ export function VoiceEditor({ character }: { character: string }) {
   useEffect(() => {
     let alive = true;
     setDraft(null); setNote(''); setConfirmRemove(false);
-    void window.nexus.voiceProfile(character).then(v => { if (alive) apply(v); }, e => { if (alive) { setP(null); setNote(clean(e)); } });
+    void window.nexus.voiceProfile(character, lang).then(v => { if (alive) apply(v); }, e => { if (alive) { setP(null); setNote(clean(e)); } });
     return () => { alive = false; };
-  }, [character]);
+  }, [character, lang]);
   useEffect(() => () => { if (rec.current) { rec.current.cancel(); resumeSpeech(); } if (tick.current) clearInterval(tick.current); }, []);
   // 瀏覽器版:沒有這個功能
   if (p === null && st?.state === 'unsupported') return null;
   if (p === undefined) return null;
 
-  const sttReady = st?.state === 'ready';
+  // 語音辨識固定用中文:英文錄音的逐字稿請自己填(留白時語音服務會用英文辨識補稿)
+  const sttReady = st?.state === 'ready' && !en;
   const ttsReady = st?.tts.state === 'ready';
   const dirty = !!draft || promptText.trim() !== (p?.promptText ?? '') || style.trim() !== (p?.style ?? '');
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -415,44 +431,46 @@ export function VoiceEditor({ character }: { character: string }) {
     setDraft(wav);
     // 錄音內容要和錄到的一致,模仿的效果才會好:能辨識就自動辨識,否則先填建議的句子
     if (sttReady) await run('辨識中', () => transcribe(wav));
-    else if (!promptText.trim()) setPromptText(VOICE_SCRIPT);
+    else if (!promptText.trim()) setPromptText(script);
   };
   const save = () => run('儲存中', async () => {
-    apply(await window.nexus.voiceProfileSave(character, { ...(draft ? { wav: draft } : {}), promptText, style }));
+    apply(await window.nexus.voiceProfileSave(character, { ...(draft ? { wav: draft } : {}), promptText, style }, lang));
     setDraft(null);
-    setNote('已儲存。這個角色的節點之後的語音播報會用這個聲音。');
+    setNote(en ? '已儲存。英文播報時這個角色的節點會用這個聲音。' : '已儲存。這個角色的節點之後的語音播報會用這個聲音。');
   });
 
   return (
     <div className="persona-edit voice-edit">
       <div className="persona-head">
-        <span>聲音 · {character}</span>
-        <span className="note">{draft ? '新錄音(還沒儲存)' : p?.hasVoice ? `有參考錄音${p.ms ? `(${(p.ms / 1000).toFixed(1)} 秒)` : ''}${p.style ? ` · ${p.style.slice(0, 12)}` : ''}` : '沒有,播報用系統語音'}</span>
+        <span>{en ? '聲音(英文播報)' : '聲音'} · {character}</span>
+        <span className="note">{draft ? '新錄音(還沒儲存)' : p?.hasVoice ? `有參考錄音${p.ms ? `(${(p.ms / 1000).toFixed(1)} 秒)` : ''}${p.style ? ` · ${p.style.slice(0, 12)}` : ''}` : en ? '沒有英文聲音,播報借總管的英文聲音或用系統英文語音' : '沒有,播報用系統語音'}</span>
         <span className="spacer" />
         <button className="ghost" onClick={() => setOpen(v => !v)}>{open ? '收起' : p?.hasVoice ? '檢視/編輯' : '設定'}</button>
       </div>
       {open && <>
-        <span className="note">參考錄音建議 3 到 10 秒、只有一個人說話、沒有背景音。可以念:「{VOICE_SCRIPT}」。請只用自己的聲音,或取得本人同意的聲音。</span>
+        {!localOn && <span className="note warn">「語音」面板的播報聲音來源沒有勾選「語音合成」,這裡的設定暫時不會用到。</span>}
+        {en && <span className="note">目前播報語言是英文,這裡編輯的是英文的一組(voice.en.wav、voice.en.txt、style.en.txt);中文的聲音不受影響,把播報語言切回中文就會改成編輯中文的聲音。</span>}
+        <span className="note">參考錄音建議 3 到 10 秒、只有一個人說話、沒有背景音。可以念:「{script}」。請只用自己的聲音,或取得本人同意的聲音。</span>
         <div className="persona-head voice-actions">
           {recording
             ? <button className="danger" onClick={() => void stopRec()}>停止錄音({sec} 秒)</button>
             : <button className="ghost" disabled={!!busy} onClick={() => void startRec()}>{draft || p?.hasVoice ? '重新錄音' : '錄一段'}</button>}
-          <button className="ghost" disabled={recording || !!busy} onClick={() => void run('選檔中', async () => { const v = await window.nexus.voiceProfileImport(character); if (v) { apply(v); setDraft(null); setNote('已匯入參考錄音。'); } })}>選擇 WAV 檔</button>
-          <button className="ghost" disabled={recording || !!busy || (!draft && !p?.hasVoice)} onClick={() => void run('播放中', async () => { const b = draft ?? await window.nexus.voiceProfileAudio(character); if (b) await playWav(b); })}>播放原音</button>
-          <button className="ghost" disabled={recording || !!busy || !sttReady || (!draft && !p?.hasVoice)} title={sttReady ? '用語音辨識聽出錄音說了什麼' : '要先在「語音」面板啟用語音模式'} onClick={() => void run('辨識中', async () => { const b = draft ?? await window.nexus.voiceProfileAudio(character); if (b) await transcribe(b); })}>自動辨識內容</button>
+          <button className="ghost" disabled={recording || !!busy} onClick={() => void run('選檔中', async () => { const v = await window.nexus.voiceProfileImport(character, lang); if (v) { apply(v); setDraft(null); setNote('已匯入參考錄音。'); } })}>選擇 WAV 檔</button>
+          <button className="ghost" disabled={recording || !!busy || (!draft && !p?.hasVoice)} onClick={() => void run('播放中', async () => { const b = draft ?? await window.nexus.voiceProfileAudio(character, lang); if (b) await playWav(b); })}>播放原音</button>
+          <button className="ghost" disabled={recording || !!busy || !sttReady || (!draft && !p?.hasVoice)} title={en ? '語音辨識只聽中文:英文錄音請自己填寫說了什麼' : sttReady ? '用語音辨識聽出錄音說了什麼' : '要先在「語音」面板啟用語音模式'} onClick={() => void run('辨識中', async () => { const b = draft ?? await window.nexus.voiceProfileAudio(character, lang); if (b) await transcribe(b); })}>自動辨識內容</button>
         </div>
         <label className="voice-label">錄音說的內容(要和錄音一致;留白時播報前會自動辨識)
-          <textarea rows={2} value={promptText} maxLength={500} onChange={e => setPromptText(e.target.value)} placeholder={VOICE_SCRIPT} />
+          <textarea rows={2} value={promptText} maxLength={500} onChange={e => setPromptText(e.target.value)} placeholder={script} />
         </label>
-        <label className="voice-label">語氣指令(選用,例如「用活潑、甜美的語氣說」)
+        <label className="voice-label">{en ? '語氣指令(選用,英文,例如「Speak calmly at a steady pace.」;建議先留白)' : '語氣指令(選用,例如「用活潑、甜美的語氣說」)'}
           <input value={style} maxLength={200} onChange={e => setStyle(e.target.value)} placeholder="留白表示照錄音的語氣" />
         </label>
         <div className="persona-head">
           {p?.hasVoice && !draft && (confirmRemove
-            ? <button className="danger" disabled={!!busy} onClick={() => void run('移除中', async () => { apply(await window.nexus.voiceProfileSave(character, { wav: null })); setConfirmRemove(false); setNote('已移除參考錄音,播報改用系統語音。'); })}>確定移除</button>
+            ? <button className="danger" disabled={!!busy} onClick={() => void run('移除中', async () => { apply(await window.nexus.voiceProfileSave(character, { wav: null }, lang)); setConfirmRemove(false); setNote(en ? '已移除英文參考錄音。' : '已移除參考錄音,播報改用系統語音。'); })}>確定移除</button>
             : <button className="ghost" onClick={() => setConfirmRemove(true)}>移除聲音</button>)}
           <button className="ghost" disabled={recording || !!busy || dirty || !p?.hasVoice || !ttsReady} title={!ttsReady ? '要先在「語音」面板設定語音合成' : dirty ? '先儲存再試聽' : '用這個聲音念一句'}
-            onClick={() => void run('合成中', async () => { const b = await window.nexus.voiceTts({ character }, `你好,我是${character}。這是我念播報時的聲音。`); if (b) await playWav(b); else setNote('沒有合成出聲音。'); })}>試聽</button>
+            onClick={() => void run('合成中', async () => { const b = en ? await window.nexus.voiceTts({ character }, `Hi, I'm ${character}. This is how I sound when I read announcements.`, 'en') : await window.nexus.voiceTts({ character }, `你好,我是${character}。這是我念播報時的聲音。`); if (b) await playWav(b); else setNote('沒有合成出聲音。'); })}>試聽</button>
           <span className="spacer" />
           {busy && <span className="note">{busy}…</span>}
           <button className="primary" disabled={recording || !!busy || !dirty} onClick={() => void save()}>儲存聲音</button>

@@ -84,6 +84,7 @@ const SUITES = [
   { name: 'memory-archive', group: 'e2e', core: true, min: 2, ...bash('tests/memory-archive.sh') },
   { name: 'workspace-move', group: 'e2e', core: true, min: 1, ...bash('tests/workspace-move.sh') },
   { name: 'interject', group: 'e2e', core: true, min: 1, ...bash('tests/interject-fake.sh') },
+  { name: 'voice-editor', group: 'e2e', core: true, min: 1, ...bash('tests/voice-editor.sh') },
   { name: 'access', group: 'e2e', min: 2, ...bash('tests/access.sh') },
   { name: 'access-ui', group: 'e2e', min: 2, ...bash('tests/access-ui.sh') },
   { name: 'attachments', group: 'e2e', min: 2, ...bash('tests/attachments.sh') },
