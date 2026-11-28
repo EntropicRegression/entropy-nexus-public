@@ -48,3 +48,6 @@ __pycache__/
 
 # 記憶寶庫管理 App 的互動原型:引用未公開的角色美術,只留在本機
 docs/memory-vault-app/互動原型.html
+
+# 英文語音播報的本機翻譯模型(見 tools/voice-server/mt_opus.py),不進版本庫
+tools/voice-server/mt/

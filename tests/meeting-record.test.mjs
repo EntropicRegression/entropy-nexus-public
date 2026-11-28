@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildMeetingRecord, maskLocalPaths, meetingRecordOf, writeMeetingRecord } from '../src/main/meeting-record.ts';
+import { buildMeetingRecord, maskLocalPaths, meetingRecordOf, shortTitle, TITLE_MAX, writeMeetingRecord } from '../src/main/meeting-record.ts';
 import { entryFromFile, parseFrontMatter } from '../src/main/memory-vault.ts';
 
 let yaml = null;
@@ -34,7 +34,7 @@ const base = () => ({
 
 test('檔頭欄位與順序', () => {
   const r = buildMeetingRecord(base());
-  assert.deepEqual(Object.keys(r.meta), ['種類', '主題', '輪數', '開始', '結束', '更新時間', '節點ID', '主持人', '參與節點ID', '參與者', '範圍', '專案ID', '專案', '摘要', '結束原因', '狀態']);
+  assert.deepEqual(Object.keys(r.meta), ['種類', '標題', '主題', '輪數', '開始', '結束', '更新時間', '節點ID', '主持人', '參與節點ID', '參與者', '範圍', '專案ID', '專案', '摘要', '結束原因', '狀態']);
   assert.equal(r.meta['種類'], '會議紀錄');
   assert.equal(r.meta['輪數'], 2);
   assert.equal(r.meta['開始'], '2026-11-22T03:00:00.000Z');
@@ -457,6 +457,31 @@ test('參與者名稱含全形「，」「、」:每個名稱都在雙引號內,
 test('專案資料夾名稱也遮金鑰', () => {
   const r = buildMeetingRecord({ ...base(), projectName: 'proj-sk-abcdefghijklmnopqrstuvwxyz123456' });
   assert.ok(!r.dir.includes('sk-abcdef'), r.dir);
+});
+
+test('短標題:取第一句、拿掉括號補充、太長截斷;檔頭「標題」與檔名用它,「主題」保留全文', () => {
+  const long = '討論使用 CosyVoice 直接生成 Entropy Nexus 英文版語音（只討論、不修改檔案）。背景給兩位參考：1. 我們剛在大廳用本機 Qwen3-TTS 產出了四位角色的原創英文參考音檔。2. 使用者想討論改用 CosyVoice。';
+  assert.equal(shortTitle(long), '討論使用 CosyVoice 直接生成 Entropy Nexus 英文版語音');
+  assert.equal(shortTitle('登入流程怎麼改'), '登入流程怎麼改');
+  assert.equal(shortTitle('議題 #3: 登入'), '議題 #3: 登入');
+  assert.equal(shortTitle('## **重點** 是 `API`'), '重點 是 API');
+  const t = shortTitle('這是一個沒有任何標點而且非常非常非常非常非常非常長的會議主題需要被截斷');
+  assert.ok(t.endsWith('…') && Array.from(t).length <= TITLE_MAX, t);
+  assert.equal(shortTitle(''), '未命名會議');
+  // 開頭的【…】直接當標題;【主題】這類標籤拿掉;太長時用冒號前面那一段
+  assert.equal(shortTitle('【最新進度與下一步】主控台(entropy nexus public)與寶庫(entropy nexus mind vault)現況盤點,以及協作流程的規劃。'), '最新進度與下一步');
+  assert.equal(shortTitle('【主題】mochii diary pilot：在「學生自評之後」套用輔導框架,請依你們已收集的文獻提出想法(只討論,不實作)。'), 'mochii diary pilot');
+  assert.equal(shortTitle('整合文獻討論：針對校園第一級 SEL「自我覺察」與「自我管理」如何設計可行且有實證依據的介入方案？ 【我方已整理之統合分析】'), '整合文獻討論');
+  // 寫進記憶庫:檔頭有短標題、主題是全文,檔名用短標題,同一天同一個標題加序號
+  const dir = mkdtempSync(join(tmpdir(), 'meeting-title-'));
+  const a = writeMeetingRecord(dir, { ...base(), topic: long });
+  const b = writeMeetingRecord(dir, { ...base(), topic: long + '另一場' });
+  const text = readFileSync(join(dir, ...a.path.split('/')), 'utf8');
+  assert.ok(text.includes('標題: "討論使用 CosyVoice 直接生成 Entropy Nexus 英文版語音"'), text.split('\n').slice(0, 5).join('|'));
+  assert.ok(text.includes('背景給兩位參考'), '主題保留全文');
+  assert.ok(a.path.endsWith('-討論使用 CosyVoice 直接生成 Entropy Nexus 英文版語音.md'), a.path);
+  assert.ok(b.path.endsWith('-討論使用 CosyVoice 直接生成 Entropy Nexus 英文版語音-2.md'), b.path);
+  assert.equal(entryFromFile(a.path, text, 0, 0).title, '討論使用 CosyVoice 直接生成 Entropy Nexus 英文版語音');
 });
 
 console.log(`\n${passed} 項通過`);

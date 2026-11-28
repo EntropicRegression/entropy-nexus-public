@@ -358,6 +358,8 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
           </div>
         )}
 
+        {/* 設定、分支、轉移工作區、角色卡與聲音:放在一個可以捲動的區塊,展開再多也不會壓到下面的對話紀錄 */}
+        {(editing || (forking && !forkWhy)) && <div className="dlg-panels">
         {editing && (
           <div className="dlg-settings">
             <label>名稱<input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></label>
@@ -394,6 +396,7 @@ export function Dialog({ agent: a, cap, parentName, reviewTaskId, onReview, onCl
         {editing && <MovePanel agent={a} busy={busy} onDone={n => { setEditing(false); setNote(''); void n; }} />}
         {editing && a.backend === 'antigravity' && <AgyAllowEditor />}
         {editing && form.character && <PersonaEditor character={form.character} />}
+        </div>}
         {note && <div className="line err">{note}</div>}
 
         {a.worktree && (

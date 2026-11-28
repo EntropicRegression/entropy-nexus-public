@@ -93,17 +93,17 @@ const api: NexusApi = {
   voiceStatus: () => ipcRenderer.invoke('nexus:voiceStatus'),
   voiceSet: patch => ipcRenderer.invoke('nexus:voiceSet', patch),
   voiceTranscribe: wav => ipcRenderer.invoke('nexus:voiceTranscribe', wav),
-  voiceTts: (target, text) => ipcRenderer.invoke('nexus:voiceTts', target, text),
+  voiceTts: (target, text, lang) => ipcRenderer.invoke('nexus:voiceTts', target, text, lang),
   voiceCharacters: () => ipcRenderer.invoke('nexus:voiceCharacters'),
   voiceTtsPower: load => ipcRenderer.invoke('nexus:voiceTtsPower', load),
   speechRender: (notice, text) => ipcRenderer.invoke('nexus:speechRender', notice, text),
   speechSettings: () => ipcRenderer.invoke('nexus:speechSettings'),
   speechSet: patch => ipcRenderer.invoke('nexus:speechSet', patch),
   speechClip: (character, kind) => ipcRenderer.invoke('nexus:speechClip', character, kind),
-  voiceProfile: character => ipcRenderer.invoke('nexus:voiceProfile', character),
-  voiceProfileSave: (character, patch) => ipcRenderer.invoke('nexus:voiceProfileSave', character, patch),
-  voiceProfileImport: character => ipcRenderer.invoke('nexus:voiceProfileImport', character),
-  voiceProfileAudio: character => ipcRenderer.invoke('nexus:voiceProfileAudio', character),
+  voiceProfile: (character, lang) => ipcRenderer.invoke('nexus:voiceProfile', character, lang),
+  voiceProfileSave: (character, patch, lang) => ipcRenderer.invoke('nexus:voiceProfileSave', character, patch, lang),
+  voiceProfileImport: (character, lang) => ipcRenderer.invoke('nexus:voiceProfileImport', character, lang),
+  voiceProfileAudio: (character, lang) => ipcRenderer.invoke('nexus:voiceProfileAudio', character, lang),
   onVoice: cb => {
     const listener = (_e: unknown, s: VoiceStatus) => cb(s);
     ipcRenderer.on('nexus:voice', listener);

@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SPEECH_CLIP_KINDS, SPEECH_ENGINES, type SpeechClipKind, type SpeechClipSet, type SpeechEngineId, type SpeechEngineState, type SpeechNotice, type SpeechSettings } from '../shared/types';
+import { SPEECH_CLIP_KINDS, SPEECH_ENGINES, type SpeechClipKind, type SpeechClipSet, type SpeechEngineId, type SpeechEngineState, type SpeechLang, type SpeechNotice, type SpeechSettings } from '../shared/types';
+import { applyPronounce, englishSummary, normalizePronounce, normalizeSpeechLang, speechCharacters } from '../shared/speech-phrases';
 import type { Store } from './store';
 import { listCharacters, portraitsDir } from './portraits';
 import { clipMime, listClips, pickClip } from './speech-clips';
-import { localTts, localTtsState } from './voice';
+import { localTranslate, localTts, localTtsState } from './voice';
 
 /**
  * 語音播報的引擎層:畫面決定「什麼時候念、念哪一則」(sound.ts 的佇列),這裡決定「用什麼聲音念」。
@@ -14,20 +15,22 @@ import { localTts, localTtsState } from './voice';
  * 這組函式只註冊給桌面畫面的 IPC,瀏覽器版的遠端介面呼叫不到。
  */
 
-interface SpeechRequest { character: string; notice: SpeechNotice; text: string }
+interface SpeechRequest { character: string; notice: SpeechNotice; text: string; lang: SpeechLang }
 interface Rendered { audio: ArrayBuffer; mime: string }
 interface Engine {
   state(): { ready: boolean; detail: string };
   render(req: SpeechRequest): Promise<Rendered | null>;
 }
 
-const DEFAULTS: SpeechSettings = { engines: ['clips', 'local'] };
+const DEFAULTS: SpeechSettings = { engines: ['clips', 'local'], lang: 'zh', pronounce: [] };
 
 let store: Store | null = null;
-let settings: SpeechSettings = { engines: [...DEFAULTS.engines] };
-let characterOf: (agentId: string) => string | null = () => null;
+let settings: SpeechSettings = { ...DEFAULTS, engines: [...DEFAULTS.engines], pronounce: [] };
+/** 節點 id → 節點自己的角色與總管的角色(沒有就是 null)。 */
+let rolesOf: (agentId: string) => { own: string | null; chief: string | null } = () => ({ own: null, chief: null });
 
-const clipDir = (character: string) => join(portraitsDir(), character, 'clips');
+/** 固定語音的資料夾:中文在 clips/,英文在 clips/en/(不能用 done-en.wav 這種檔名,會被當成中文 done 的另一條)。 */
+const clipDir = (character: string, lang: SpeechLang = 'zh') => join(portraitsDir(), character, 'clips', ...(lang === 'en' ? ['en'] : []));
 const toArrayBuffer = (b: Buffer): ArrayBuffer => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
 
 function clipSets(): SpeechClipSet[] {
@@ -47,16 +50,16 @@ const ENGINES: Record<SpeechEngineId, Engine> = {
       const n = clipSets().length;
       return n ? { ready: true, detail: `${n} 個角色有固定語音` } : { ready: false, detail: '還沒有角色錄固定語音(角色資料夾的 clips/)' };
     },
-    render: async ({ character, notice }) => {
-      const file = pickClip(clipDir(character), notice);
+    render: async ({ character, notice, lang }) => {
+      const file = pickClip(clipDir(character, lang), notice);
       if (!file) return null;
       return { audio: toArrayBuffer(readFileSync(file)), mime: clipMime(file) };
     },
   },
   local: {
     state: localTtsState,
-    render: async ({ character, text }) => {
-      const audio = await localTts(character, text);
+    render: async ({ character, text, lang }) => {
+      const audio = await localTts(character, text, lang);
       return audio ? { audio, mime: 'audio/wav' } : null;
     },
   },
@@ -70,39 +73,60 @@ export function normalizeEngines(list: unknown): SpeechEngineId[] {
   return out;
 }
 
-export function initSpeechEngines(s: Store, character: (agentId: string) => string | null): void {
+export function initSpeechEngines(s: Store, roles: (agentId: string) => { own: string | null; chief: string | null }): void {
   store = s;
-  characterOf = character;
+  rolesOf = roles;
   try {
     const saved = JSON.parse(s.getSetting('speech') ?? 'null');
-    if (saved && typeof saved === 'object') settings = { engines: normalizeEngines(saved.engines) };
+    if (saved && typeof saved === 'object') settings = { engines: normalizeEngines(saved.engines), lang: normalizeSpeechLang(saved.lang), pronounce: normalizePronounce(saved.pronounce) };
   } catch { /* 設定壞了就用預設值 */ }
+}
+
+export const speechLang = (): SpeechLang => settings.lang;
+
+/**
+ * 主行程送出播報通知前的處理:填上播報語言;英文時把完成通知的中文摘要翻成英文(本機翻譯 + 防呆,
+ * 不能用就把摘要清成 null,畫面改念固定的英文句)。
+ */
+export async function prepareNotice(n: SpeechNotice): Promise<SpeechNotice> {
+  const lang = settings.lang;
+  // 念法表:節點名稱與摘要裡的名稱換成念法(英文時在翻譯之前換,翻譯模型會保留英文的念法)
+  const say = (t: string) => applyPronounce(t, settings.pronounce, lang);
+  const named = { ...n, lang, agentName: say(n.agentName) } as SpeechNotice;
+  if (named.kind !== 'done') return named;
+  const summary = named.summary ? say(named.summary) : named.summary;
+  if (lang !== 'en') return { ...named, summary };
+  return { ...named, summary: await englishSummary(summary, t => localTranslate(t)) };
 }
 
 export function speechSettings(): { settings: SpeechSettings; engines: SpeechEngineState[]; clips: SpeechClipSet[] } {
   return {
-    settings: { engines: [...settings.engines] },
+    settings: { engines: [...settings.engines], lang: settings.lang, pronounce: settings.pronounce.map(p => ({ ...p })) },
     engines: SPEECH_ENGINES.map(id => ({ id, ...ENGINES[id].state() })),
     clips: clipSets(),
   };
 }
 
 export function speechSet(patch: Partial<SpeechSettings>): ReturnType<typeof speechSettings> {
-  if (patch && 'engines' in patch) settings = { engines: normalizeEngines(patch.engines) };
+  if (patch && 'engines' in patch) settings = { ...settings, engines: normalizeEngines(patch.engines) };
+  if (patch && 'lang' in patch) settings = { ...settings, lang: normalizeSpeechLang(patch.lang) };
+  if (patch && 'pronounce' in patch) settings = { ...settings, pronounce: normalizePronounce(patch.pronounce) };
   store?.setSetting('speech', JSON.stringify(settings));
   return speechSettings();
 }
 
 /** 依引擎順序產生一則播報的聲音;引擎失敗就換下一個。都沒有聲音(或節點沒有角色)時回傳 null。 */
 export async function speechRender(notice: SpeechNotice, text: string): Promise<(Rendered & { engine: SpeechEngineId }) | null> {
-  const character = notice && typeof notice.agentId === 'string' ? characterOf(notice.agentId) : null;
-  if (!character) return null;
-  const req: SpeechRequest = { character, notice, text: String(text ?? '').slice(0, 500) };
-  for (const id of settings.engines) {
-    try {
-      const r = await ENGINES[id].render(req);
-      if (r && r.audio.byteLength > 44) return { ...r, engine: id };
-    } catch { /* 這個引擎失敗,試下一個 */ }
+  if (!notice || typeof notice.agentId !== 'string') return null;
+  const lang = normalizeSpeechLang(notice.lang);
+  for (const character of speechCharacters(rolesOf(notice.agentId), lang)) {
+    const req: SpeechRequest = { character, notice, text: String(text ?? '').slice(0, 500), lang };
+    for (const id of settings.engines) {
+      try {
+        const r = await ENGINES[id].render(req);
+        if (r && r.audio.byteLength > 44) return { ...r, engine: id };
+      } catch { /* 這個引擎失敗,試下一個 */ }
+    }
   }
   return null;
 }

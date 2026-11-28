@@ -59,7 +59,7 @@ export function portraitsDir(): string {
 export function listCharacters(): string[] {
   try {
     return readdirSync(root, { withFileTypes: true })
-      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav')) || existsSync(join(root, d.name, 'clips'))))
+      .filter(d => d.isDirectory() && (find(d.name, 'neutral') || personaFile(d.name) || existsSync(join(root, d.name, 'voice.wav')) || existsSync(join(root, d.name, 'voice.en.wav')) || existsSync(join(root, d.name, 'clips'))))
       .map(d => d.name)
       .sort((a, b) => a.localeCompare(b));
   } catch {
@@ -173,14 +173,17 @@ export function handlePortraitRequests(): void {
  * 角色的聲音(語音模式 Phase 3):角色資料夾裡的 voice.wav 是給語音合成模仿的參考錄音(建議 3 到 10 秒、單人、沒有背景音),
  * voice.txt(選用)是這段錄音說的內容,沒有就由語音服務自己辨識;style.txt(選用)是語氣指令,例如「用活潑、甜美的語氣說」。
  * 沒有 voice.wav 時回傳 null,播報改用系統語音。
+ * lang 是 en 時改讀英文的一組:voice.en.wav、voice.en.txt、style.en.txt(沒有 voice.en.wav 就是 null,不改用中文的參考錄音,
+ * 由播報那一層改借總管的英文聲音或系統英文語音)。
  */
-export function voiceOf(character: string): { wav: string; promptText: string; style: string } | null {
+export function voiceOf(character: string, lang: 'zh' | 'en' = 'zh'): { wav: string; promptText: string; style: string } | null {
   let c: string;
   try { c = checkCharacter(character); } catch { return null; }
-  const wav = join(root, c, 'voice.wav');
+  const suffix = lang === 'en' ? '.en' : '';
+  const wav = join(root, c, `voice${suffix}.wav`);
   if (!existsSync(wav)) return null;
   const read = (f: string) => { const p = join(root, c, f); try { return existsSync(p) ? readFileSync(p, 'utf8').replace(/^﻿/, '').trim().slice(0, 500) : ''; } catch { return ''; } };
-  return { wav, promptText: read('voice.txt'), style: read('style.txt') };
+  return { wav, promptText: read(`voice${suffix}.txt`), style: read(`style${suffix}.txt`) };
 }
 
 const VOICE_MAX = 5 * 1024 * 1024;
@@ -207,17 +210,17 @@ export function wavInfo(buf: Buffer): { ms: number; rate: number; channels: numb
 }
 
 /** 角色的聲音設定,給角色卡編輯器顯示。 */
-export function voiceProfile(character: string): { hasVoice: boolean; ms: number; promptText: string; style: string } {
+export function voiceProfile(character: string, lang: 'zh' | 'en' = 'zh'): { hasVoice: boolean; ms: number; promptText: string; style: string } {
   const c = checkCharacter(character);
-  const v = voiceOf(c);
+  const v = voiceOf(c, lang);
   let ms = 0;
   if (v) { try { ms = wavInfo(readFileSync(v.wav)).ms; } catch { /* 檔案壞了就當作長度不明 */ } }
   return { hasVoice: !!v, ms, promptText: v?.promptText ?? '', style: v?.style ?? '' };
 }
 
 /** 參考錄音的內容,給畫面播放原音;沒有時回傳 null。 */
-export function voiceWav(character: string): Buffer | null {
-  const v = voiceOf(checkCharacter(character));
+export function voiceWav(character: string, lang: 'zh' | 'en' = 'zh'): Buffer | null {
+  const v = voiceOf(checkCharacter(character), lang);
   return v ? readFileSync(v.wav) : null;
 }
 
@@ -225,8 +228,10 @@ export function voiceWav(character: string): Buffer | null {
  * 儲存角色的聲音設定。wav:新的參考錄音(null 表示移除錄音與錄音內容);promptText、style:空字串表示刪掉那個檔案。
  * 沒提供的欄位不動。角色資料夾不存在時建立。
  */
-export function saveVoice(character: string, patch: { wav?: Buffer | null; promptText?: string; style?: string }): void {
+export function saveVoice(character: string, patch: { wav?: Buffer | null; promptText?: string; style?: string }, lang: 'zh' | 'en' = 'zh'): void {
   const c = checkCharacter(character);
+  // 英文的一組:voice.en.wav、voice.en.txt、style.en.txt
+  const sfx = lang === 'en' ? '.en' : '';
   const dir = join(root, c);
   mkdirSync(dir, { recursive: true });
   const put = (f: string, text: string) => {
@@ -235,16 +240,16 @@ export function saveVoice(character: string, patch: { wav?: Buffer | null; promp
     if (t) writeFileSync(p, t, 'utf8'); else if (existsSync(p)) unlinkSync(p);
   };
   if (patch.wav === null) {
-    for (const f of ['voice.wav', 'voice.txt']) { const p = join(dir, f); if (existsSync(p)) unlinkSync(p); }
+    for (const f of [`voice${sfx}.wav`, `voice${sfx}.txt`]) { const p = join(dir, f); if (existsSync(p)) unlinkSync(p); }
   } else if (patch.wav) {
     if (patch.wav.length > VOICE_MAX) throw new Error('錄音檔太大(上限 5 MB)');
     const info = wavInfo(patch.wav);
     if (info.ms < 2000) throw new Error('錄音太短,至少要 2 秒(建議 3 到 10 秒)');
     if (info.ms > VOICE_MAX_MS) throw new Error('錄音太長,最多 30 秒(建議 3 到 10 秒)');
-    const tmp = join(dir, 'voice.wav.tmp');
+    const tmp = join(dir, `voice${sfx}.wav.tmp`);
     writeFileSync(tmp, patch.wav);
-    renameSync(tmp, join(dir, 'voice.wav'));
+    renameSync(tmp, join(dir, `voice${sfx}.wav`));
   }
-  if (typeof patch.promptText === 'string') put('voice.txt', patch.promptText);
-  if (typeof patch.style === 'string') put('style.txt', patch.style);
+  if (typeof patch.promptText === 'string') put(`voice${sfx}.txt`, patch.promptText);
+  if (typeof patch.style === 'string') put(`style${sfx}.txt`, patch.style);
 }

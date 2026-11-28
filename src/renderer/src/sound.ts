@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type { SpeechNotice } from '../../shared/types';
 import { speechUnits } from '../../shared/speech-summary';
+import { speechPhrase } from '../../shared/speech-phrases';
 
 // 提示音:只在節點進入待授權或異常時響一聲,其他狀態保持安靜。
 let ctx: AudioContext | null = null;
@@ -92,19 +93,8 @@ export function initSpeech(opts: { isPending: (n: SpeechNotice) => boolean; onCh
   onSpeaking = opts.onChange;
 }
 
-function phrase(n: SpeechNotice): string {
-  switch (n.kind) {
-    case 'done': return n.summary ? `${n.agentName}:${n.summary}` : `${n.agentName} 完成了,詳情請看畫面。`;
-    case 'approval': return `${n.agentName} 在等你授權,請到畫面確認。`;
-    case 'question': return `${n.agentName} 有問題要問你,請到畫面回答。`;
-    case 'failed': {
-      const paused = n.queuePaused ? ',排隊的指令已暫停' : '';
-      if (n.reason === 'quota') return `${n.agentName} 的額度到達上限,排隊的指令已暫停。`;
-      if (n.reason === 'budget') return `${n.agentName} 今天的用量超過每日預算了。`;
-      return n.reason === 'lost' ? `${n.agentName} 失去連線${paused}。` : `${n.agentName} 出錯了${paused}。`;
-    }
-  }
-}
+/** 一則通知要念的整句;台詞表在 shared/speech-phrases.ts,語言由主行程填在通知上。 */
+const phrase = (n: SpeechNotice): string => speechPhrase(n, n.lang ?? 'zh');
 
 const urgent = (n: SpeechNotice) => n.kind === 'approval' || n.kind === 'question';
 
@@ -131,7 +121,7 @@ export function enqueueSpeech(n: SpeechNotice): void {
     const fails = queue.filter(x => x.n.kind === 'failed');
     if (fails.length >= MAX_FAILS) {
       const last = fails[fails.length - 1];
-      if (!last.extra) { last.extra = true; last.text = `${last.text.replace(/。$/, '')},另有其他節點異常。`; }
+      if (!last.extra) { last.extra = true; last.text = last.n.lang === 'en' ? `${last.text.replace(/\.$/, '')}, and other agents also have problems.` : `${last.text.replace(/。$/, '')},另有其他節點異常。`; }
       return;
     }
     queue.push(item);
@@ -215,7 +205,7 @@ function playSystem(item: Item, mine: number): void {
   const synth = window.speechSynthesis;
   const finish = finisher(mine);
   if (!synth) { finish(); return; }
-  const u = utterance(item.text);
+  const u = utterance(item.text, item.n.lang === 'en');
   u.onend = finish;
   u.onerror = finish;
   (window as unknown as { __nexusSpokenVia?: string[] }).__nexusSpokenVia ??= [];
@@ -256,12 +246,15 @@ export function stopSpeaking(): void {
   onSpeaking(false);
 }
 
-/** 建立一段朗讀;有中文就挑台灣中文的語音,否則用英文。 */
-function utterance(text: string): SpeechSynthesisUtterance {
+/**
+ * 建立一段朗讀;有中文就挑台灣中文的語音,否則用英文。
+ * forceEn:英文播報時一律用英文語音,不因為句子裡有中文的節點名稱就改成中文。
+ */
+function utterance(text: string, forceEn = false): SpeechSynthesisUtterance {
   const synth = window.speechSynthesis;
   const t = speakable(text);
   const u = new SpeechSynthesisUtterance(t);
-  const zh = /[一-鿿]/.test(t);
+  const zh = !forceEn && /[一-鿿]/.test(t);
   const voices = synth.getVoices();
   u.voice = voices.find(v => (zh ? /^zh-TW/i : /^en/i).test(v.lang)) ?? voices.find(v => zh && /^zh/i.test(v.lang)) ?? null;
   u.lang = u.voice?.lang ?? (zh ? 'zh-TW' : 'en-US');

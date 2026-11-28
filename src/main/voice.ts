@@ -240,9 +240,9 @@ export async function voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript
 }
 
 /** 用角色的參考錄音合成一段話;沒有啟用語音合成、或角色沒有 voice.wav 時回傳 null(呼叫端改用系統語音)。 */
-export async function voiceTts(target: string | { character: string }, text: string): Promise<ArrayBuffer | null> {
+export async function voiceTts(target: string | { character: string }, text: string, lang: 'zh' | 'en' = 'zh'): Promise<ArrayBuffer | null> {
   const character = typeof target === 'string' ? characterOf(target) : typeof target?.character === 'string' ? target.character : null;
-  return character ? localTts(character, text) : null;
+  return character ? localTts(character, text, lang) : null;
 }
 
 /** 本機語音合成(語音播報的 local 引擎)現在能不能用。 */
@@ -255,15 +255,16 @@ export function localTtsState(): { ready: boolean; detail: string } {
 }
 
 /** 用角色的參考錄音合成一段話(本機語音服務);不能用、或角色沒有 voice.wav 時回傳 null。 */
-export async function localTts(character: string, text: string): Promise<ArrayBuffer | null> {
+export async function localTts(character: string, text: string, lang: 'zh' | 'en' = 'zh'): Promise<ArrayBuffer | null> {
   if (!localTtsState().ready) return null;
-  const voice = voiceOf(character);
+  const voice = voiceOf(character, lang);
   const say = String(text ?? '').trim().slice(0, 500);
   if (!voice || !say) return null;
   const r = await fetch(`http://127.0.0.1:${port}/tts`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: say, wav: voice.wav, promptText: voice.promptText, style: voice.style }),
+    // language:參考錄音沒有逐字稿時,語音服務用這個語言辨識一次補稿(英文錄音當中文辨識會讓模仿的聲音走樣)
+    body: JSON.stringify({ text: say, wav: voice.wav, promptText: voice.promptText, style: voice.style, language: lang }),
     signal: AbortSignal.timeout(30000),
   });
   if (!r.ok) {
@@ -274,7 +275,33 @@ export async function localTts(character: string, text: string): Promise<ArrayBu
   return buf.byteLength > 44 ? buf : null;
 }
 
+/**
+ * 把一句中文翻成英文(英文播報用,本機語音服務的選用翻譯模型)。服務沒在執行、沒有設定翻譯模型、失敗或超過 timeoutMs 都回傳 null;
+ * 結果還要經過 shared/speech-phrases.ts 的防呆才會念。
+ */
+export async function localTranslate(text: string, timeoutMs = 1500): Promise<string | null> {
+  if (state !== 'ready' || !child) return null;
+  const say = String(text ?? '').trim().slice(0, 500);
+  if (!say) return null;
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/translate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: say, from: 'zh', to: 'en' }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) return null;
+    const body = await r.json().catch(() => ({})) as { text?: unknown };
+    return typeof body.text === 'string' && body.text.trim() ? body.text.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 各角色有沒有參考錄音。 */
-export function voiceCharacters(): Array<{ character: string; hasVoice: boolean; style: string }> {
-  return listCharacters().map(c => { const v = voiceOf(c); return { character: c, hasVoice: !!v, style: v?.style ?? '' }; });
+export function voiceCharacters(): Array<{ character: string; hasVoice: boolean; style: string; hasVoiceEn: boolean; styleEn: string }> {
+  return listCharacters().map(c => {
+    const v = voiceOf(c), e = voiceOf(c, 'en');
+    return { character: c, hasVoice: !!v, style: v?.style ?? '', hasVoiceEn: !!e, styleEn: e?.style ?? '' };
+  });
 }

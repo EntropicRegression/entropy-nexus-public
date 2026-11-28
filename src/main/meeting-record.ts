@@ -223,9 +223,52 @@ function summaryOf(conclusion: string): string {
 /** 這則發言算在第幾輪:正式發言用自己的 round;round 0 的說明有 inRound 就用它,沒有回傳 0。 */
 const roundOf = (e: MeetingTranscriptEntry): number => (e.round > 0 ? e.round : e.inRound && e.inRound > 0 ? e.inRound : 0);
 
+/** 短標題的寬度上限:中日文一個字算 1,其他字元算 0.5(英文字母比較窄)。 */
+export const TITLE_MAX = 30;
+const widthOf = (c: string) => (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}　-ヿ＀-￯]/u.test(c) ? 1 : 0.5);
+
+/**
+ * 會議的短標題(檔頭的「標題」與檔名用):主持人常把背景說明整段寫進主題,寶庫列表上會很長。依序:
+ * 1. 開頭是「【…】」就用括號裡的字(【主題】【議題】這類標籤拿掉,改看後面的文字);
+ * 2. 取第一句(到句號、問號、分號或換行為止);
+ * 3. 還太長就拿掉括號裡的補充說明,再太長就用冒號前面那一段(例如「整合文獻討論:針對……」);
+ * 4. 最後還是太長就在上限處截斷加「…」。
+ * 完整的主題仍保留在檔頭的「主題」。
+ */
+export function shortTitle(topic: string): string {
+  // 只拿掉 Markdown 的粗體、行內程式碼記號與開頭的標題、引用符號;「議題 #3」這種內文的 # 保留
+  let t = String(topic ?? '').replace(/\*\*|__|`/g, '').replace(/^\s*(?:#{1,6}|>)\s+/, '').replace(/\s+/g, ' ').trim();
+  const width = (s: string) => Array.from(s).reduce((n, c) => n + widthOf(c), 0);
+  const tag = /^【([^】]{1,60})】\s*/.exec(t);
+  if (tag) {
+    const label = tag[1].trim();
+    if (/^(?:主題|議題|會議|题目|題目|討論|讨论)$/.test(label) || !label) t = t.slice(tag[0].length).trim();
+    else t = label;
+  }
+  const first = t.split(/[。！？!?；;\n]|\.(?=\s|$)/)[0]?.trim();
+  if (first) t = first;
+  if (width(t) > TITLE_MAX) {
+    const bare = t.replace(/\s*[（(][^（）()]*[）)]\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    if (bare) t = bare;
+  }
+  if (width(t) > TITLE_MAX) {
+    const head = /^(.+?)\s*[:：]/.exec(t)?.[1]?.trim();
+    if (head && width(head) >= 2) t = head;
+  }
+  t = t.replace(/[,，、:：\s]+$/, '');
+  if (width(t) <= TITLE_MAX) return t || '未命名會議';
+  let out = '', n = 0;
+  for (const c of Array.from(t)) {
+    if (n + widthOf(c) > TITLE_MAX - 1) break;
+    out += c; n += widthOf(c);
+  }
+  return `${out.replace(/[,，、:：\s]+$/, '')}…`;
+}
+
 /** 純函式:把一場會議組成檔頭、正文與路徑。 */
 export function buildMeetingRecord(input: MeetingRecordInput): MeetingRecord {
   const topic = oneLine(visible(input.topic)) || '未命名會議';
+  const title = shortTitle(maskSecrets(topic).text);
   const entries = input.transcript.filter(e => e && typeof e.text === 'string');
   const rounds = entries.map(roundOf).filter(r => r > 0);
   const roundCount = rounds.length ? Math.max(...rounds) : 0;
@@ -236,6 +279,8 @@ export function buildMeetingRecord(input: MeetingRecordInput): MeetingRecord {
 
   const meta: Record<string, MetaValue> = {
     種類: '會議紀錄',
+    // 寶庫列表與卷宗顯示的短標題;完整的主題(含背景說明)在「主題」
+    標題: title,
     主題: topic,
     輪數: roundCount,
     開始: iso(input.startedAt),
@@ -271,7 +316,8 @@ export function buildMeetingRecord(input: MeetingRecordInput): MeetingRecord {
     meta,
     body: out.join('\n').trim() + '\n',
     dir: `meetings/${folderName(input.projectId ? maskSecrets(visible(projectLabel)).text : NO_PROJECT)}`,
-    baseName: `${localDate(input.endedAt)}-${fileName(maskSecrets(topic).text)}`,
+    // 檔名用短標題(同一天同一個標題時 writeMeetingRecord 會加序號,不會覆蓋)
+    baseName: `${localDate(input.endedAt)}-${fileName(title)}`,
   };
 }
 

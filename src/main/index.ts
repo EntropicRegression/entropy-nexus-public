@@ -24,7 +24,7 @@ import { flushHeat } from './vault-sidecar';
 import { initVoice, stopVoice, voiceCharacters, voiceSet, voiceStatus, voiceTranscribe, voiceTts, voiceTtsPower } from './voice';
 import { atomicWriteJson, buildVaultStats, StatsWriter, STATS_FILE } from './vault-stats';
 import { findWakeUrl, parseWakeUrl, WAKE_PROTOCOL } from './wake';
-import { initSpeechEngines, speechClip, speechRender, speechSet, speechSettings } from './speech';
+import { initSpeechEngines, prepareNotice, speechClip, speechRender, speechSet, speechSettings } from './speech';
 import { FlowService } from './flow/service';
 import { builtinTemplates } from './flow/builtin';
 import { projectOf } from './project';
@@ -270,32 +270,34 @@ function registerIpc(methods: Methods): void {
   ipcMain.handle('nexus:voiceStatus', () => voiceStatus());
   ipcMain.handle('nexus:voiceSet', (_e, patch) => voiceSet(patch && typeof patch === 'object' ? patch : {}));
   ipcMain.handle('nexus:voiceTranscribe', (_e, wav: ArrayBuffer) => voiceTranscribe(wav));
-  ipcMain.handle('nexus:voiceTts', (_e, target: string | { character: string }, text: string) => voiceTts(target, String(text ?? '')));
+  ipcMain.handle('nexus:voiceTts', (_e, target: string | { character: string }, text: string, lang?: string) => voiceTts(target, String(text ?? ''), lang === 'en' ? 'en' : 'zh'));
   ipcMain.handle('nexus:voiceCharacters', () => voiceCharacters());
   ipcMain.handle('nexus:voiceTtsPower', (_e, load: boolean) => voiceTtsPower(load === true));
   ipcMain.handle('nexus:speechRender', (_e, notice, text: string) => speechRender(notice, String(text ?? '')));
   ipcMain.handle('nexus:speechSettings', () => speechSettings());
   ipcMain.handle('nexus:speechSet', (_e, patch) => speechSet(patch && typeof patch === 'object' ? patch : {}));
   ipcMain.handle('nexus:speechClip', (_e, character: string, kind) => speechClip(String(character ?? ''), kind));
-  // 角色的聲音:檔案都在主行程讀寫,畫面只送錄好的內容;選檔用主行程的對話框,畫面不能指定任意路徑
-  ipcMain.handle('nexus:voiceProfile', (_e, character: string) => voiceProfile(String(character ?? '')));
-  ipcMain.handle('nexus:voiceProfileSave', (_e, character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }) => {
+  // 角色的聲音:檔案都在主行程讀寫,畫面只送錄好的內容;選檔用主行程的對話框,畫面不能指定任意路徑。
+  // lang 是 en 時讀寫英文的一組(voice.en.wav、voice.en.txt、style.en.txt),跟著「播報語言」切換
+  const langOf = (v: unknown): 'zh' | 'en' => (v === 'en' ? 'en' : 'zh');
+  ipcMain.handle('nexus:voiceProfile', (_e, character: string, lang?: string) => voiceProfile(String(character ?? ''), langOf(lang)));
+  ipcMain.handle('nexus:voiceProfileSave', (_e, character: string, patch: { wav?: ArrayBuffer | null; promptText?: string; style?: string }, lang?: string) => {
     const p = patch && typeof patch === 'object' ? patch : {};
     saveVoice(String(character ?? ''), {
       ...(p.wav === null ? { wav: null } : p.wav instanceof ArrayBuffer ? { wav: Buffer.from(p.wav) } : {}),
       ...(typeof p.promptText === 'string' ? { promptText: p.promptText } : {}),
       ...(typeof p.style === 'string' ? { style: p.style } : {}),
-    });
-    return voiceProfile(String(character ?? ''));
+    }, langOf(lang));
+    return voiceProfile(String(character ?? ''), langOf(lang));
   });
-  ipcMain.handle('nexus:voiceProfileImport', async (_e, character: string) => {
+  ipcMain.handle('nexus:voiceProfileImport', async (_e, character: string, lang?: string) => {
     if (!win) return null;
-    const r = await dialog.showOpenDialog(win, { title: '選擇參考錄音', properties: ['openFile'], filters: [{ name: 'WAV 錄音', extensions: ['wav'] }] });
+    const r = await dialog.showOpenDialog(win, { title: langOf(lang) === 'en' ? '選擇英文參考錄音' : '選擇參考錄音', properties: ['openFile'], filters: [{ name: 'WAV 錄音', extensions: ['wav'] }] });
     if (r.canceled || !r.filePaths[0]) return null;
-    saveVoice(String(character ?? ''), { wav: readFileSync(r.filePaths[0]) });
-    return voiceProfile(String(character ?? ''));
+    saveVoice(String(character ?? ''), { wav: readFileSync(r.filePaths[0]) }, langOf(lang));
+    return voiceProfile(String(character ?? ''), langOf(lang));
   });
-  ipcMain.handle('nexus:voiceProfileAudio', (_e, character: string) => { const b = voiceWav(String(character ?? '')); return b ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : null; });
+  ipcMain.handle('nexus:voiceProfileAudio', (_e, character: string, lang?: string) => { const b = voiceWav(String(character ?? ''), langOf(lang)); return b ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : null; });
   ipcMain.handle('nexus:pickDirectory', async () => {
     if (!win) return null;
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
@@ -545,7 +547,13 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
     registerIpc(apiMethods(core, 'desktop'));
     initRemote(core, store, dir, apiMethods(core, 'remote'));
     // 語音播報(Phase 2a)只推給桌面畫面,不經 nexus:update(那條也會送到遠端與節點互相呼叫的服務)
-    core.setSpeech(n => win?.webContents.send('nexus:speech', n));
+    // 送出前依播報語言處理(英文時翻譯完成摘要,最多約 1.5 秒);處理失敗就照原樣送出。
+    // 翻譯可以同時進行,但交給畫面的順序照通知產生的先後,較晚完成的回合不會被較早的蓋掉
+    let speechChain: Promise<void> = Promise.resolve();
+    core.setSpeech(n => {
+      const ready = prepareNotice(n).catch(() => n);
+      speechChain = speechChain.then(() => ready).then(m => { win?.webContents.send('nexus:speech', m); }, () => {});
+    });
     // 外部觀察只推給桌面畫面;設定檔要等使用者在面板上按「安裝」才會修改
     initObserver(core, store, {
       push: u => { win?.webContents.send('nexus:update', u); remotePushFull(u); },
@@ -561,10 +569,11 @@ if (!app.requestSingleInstanceLock() && !process.env.NEXUS_DATA_DIR) {
       return names.length ? `節點名稱:${names.join('、')}。` : '';
     }, id => core?.snapshot().agents.find(a => a.id === id)?.character || null);
     // 播報用哪個角色的聲音:節點自己的角色;沒有角色的節點(以及不屬於節點的通知,例如每日預算)改用總管的角色
+    // 英文播報時兩個都會試(節點的英文聲音 → 總管的英文聲音),見 speech.ts 的 speechCharacters
     initSpeechEngines(store, id => {
       const s = core?.snapshot();
-      if (!s) return null;
-      return s.agents.find(a => a.id === id)?.character || s.agents.find(a => a.id === s.chiefId)?.character || null;
+      if (!s) return { own: null, chief: null };
+      return { own: s.agents.find(a => a.id === id)?.character || null, chief: s.agents.find(a => a.id === s.chiefId)?.character || null };
     });
     restrictPermissions();
     // 拿掉預設選單:否則按 Alt 會跳出選單列,和快捷鍵衝突。開發模式保留,方便重新整理與開發者工具
