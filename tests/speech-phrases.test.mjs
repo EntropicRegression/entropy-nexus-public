@@ -1,7 +1,7 @@
 // 驗收:英文語音播報的台詞、翻譯防呆與聲音退回順序(src/shared/speech-phrases.ts,純函式)。
 // 用法:在 app 資料夾執行 node tests/speech-phrases.test.mjs(Node 22.18 以上可直接載入 .ts)
 import assert from 'node:assert/strict';
-import { EN_DONE_FALLBACK, englishSummary, hasHan, normalizeSpeechLang, riskyForTranslation, speechCharacters, speechPhrase, translationLooksOk } from '../src/shared/speech-phrases.ts';
+import { applyPronounce, EN_DONE_FALLBACK, englishSummary, normalizePronounce, hasHan, normalizeSpeechLang, riskyForTranslation, speechCharacters, speechPhrase, translationLooksOk } from '../src/shared/speech-phrases.ts';
 
 let passed = 0;
 const tests = [];
@@ -72,6 +72,29 @@ test('翻譯結果的防呆:中文、特殊記號、數字對不上、重複、�
   assert.ok(!translationLooksOk('新增 ３ 個測試', 'Added tests.'), '全形數字也要比對');
   assert.ok(translationLooksOk('新增 ３ 個測試', 'Added 3 tests.'));
   assert.ok(!translationLooksOk('新增三個測試', 'Added three tests.'), '中文數字寫的數量不翻');
+});
+
+test('念法表:整理、替換節點名稱與摘要裡的名稱', () => {
+  const list = normalizePronounce([
+    { name: ' claudia jr ', zh: '克勞迪婭', en: 'Claudia Junior' },
+    { name: '小銀龍', zh: '', en: 'Little Silver Dragon' },
+    { name: '空的', zh: '', en: '' },
+    { name: '', zh: 'x', en: 'y' },
+    { name: 'CLAUDIA JR', zh: '克勞迪婭', en: 'Claudia Junior' },
+    'bad',
+  ]);
+  assert.deepEqual(list.map(p => p.name), ['小銀龍', 'CLAUDIA JR'], '去掉空的與重複(不分大小寫,以後面的為準)');
+  assert.equal(applyPronounce("I'm claudia jr. Done.", list, 'en'), "I'm Claudia Junior. Done.");
+  assert.equal(applyPronounce('claudia jr 完成了', list, 'zh'), '克勞迪婭 完成了');
+  assert.equal(applyPronounce('小銀龍:已修好排版', list, 'en'), 'Little Silver Dragon:已修好排版', '英文時中文名稱在翻譯之前換掉');
+  assert.equal(applyPronounce('小銀龍 完成了', list, 'zh'), '小銀龍 完成了', '中文念法留白就照原名');
+  assert.equal(applyPronounce('claudia jrx is here', list, 'en'), 'claudia jrx is here', '英文名稱只在單字邊界替換');
+  // 長的名稱先換:「claude」與「claude code」同時存在時不會只換掉前半
+  const two = normalizePronounce([{ name: 'claude', zh: '', en: 'Clawed' }, { name: 'claude code', zh: '', en: 'Clawed Code' }]);
+  assert.equal(applyPronounce('claude code and claude', two, 'en'), 'Clawed Code and Clawed');
+  // 名稱裡的特殊字元照字面比對
+  assert.equal(applyPronounce('a.b(c) ok', normalizePronounce([{ name: 'a.b(c)', zh: '', en: 'ABC' }]), 'en'), 'ABC ok');
+  assert.equal(normalizePronounce(Array.from({ length: 150 }, (_, i) => ({ name: `n${i}`, zh: 'x', en: '' }))).length, 100, '最多 100 筆');
 });
 
 test('聲音的退回順序:中文維持原本的行為,英文是節點 → 總管', () => {

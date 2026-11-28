@@ -6,7 +6,7 @@
  * 但翻譯可能把否定詞翻反(例如「請勿部署」翻成 deploy),所以先過 englishSummary 的防呆:
  * 有高風險的極性詞、翻譯結果不像正常英文、數字對不上、沒有翻譯模型或逾時,一律改念固定的英文句。
  */
-import type { SpeechLang, SpeechNotice } from './types';
+import type { SpeechLang, SpeechNotice, SpeechPronounce } from './types';
 
 export type { SpeechLang };
 export const SPEECH_LANGS: readonly SpeechLang[] = ['zh', 'en'];
@@ -122,4 +122,34 @@ export async function englishSummary(summary: string | null, translate: (zh: str
 export function speechCharacters(roles: { own: string | null; chief: string | null }, lang: SpeechLang): string[] {
   if (lang !== 'en') { const c = roles.own || roles.chief; return c ? [c] : []; }
   return [...new Set([roles.own, roles.chief].filter((c): c is string => !!c))];
+}
+
+export const PRONOUNCE_MAX = 100;
+/** 整理念法表:去掉空白與重複的名稱(以後面的為準)、長度上限、最多 PRONOUNCE_MAX 筆;名稱和兩種念法都沒有內容的丟掉。 */
+export function normalizePronounce(list: unknown): SpeechPronounce[] {
+  if (!Array.isArray(list)) return [];
+  const str = (v: unknown, n: number) => (typeof v === 'string' ? v.replace(/[\r\n]+/g, ' ').trim().slice(0, n) : '');
+  const out = new Map<string, SpeechPronounce>();
+  for (const x of list) {
+    const name = str((x as SpeechPronounce)?.name, 60);
+    const zh = str((x as SpeechPronounce)?.zh, 80), en = str((x as SpeechPronounce)?.en, 80);
+    if (!name || (!zh && !en)) continue;
+    out.delete(name.toLowerCase());
+    out.set(name.toLowerCase(), { name, zh, en });
+  }
+  return [...out.values()].slice(0, PRONOUNCE_MAX);
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** 把文字裡的名稱換成這個語言的念法(長的名稱先換,英文名稱不分大小寫;英文名稱只在單字邊界替換,不會換到別的字裡面)。 */
+export function applyPronounce(text: string, list: readonly SpeechPronounce[], lang: SpeechLang): string {
+  let out = text;
+  const items = list.filter(p => p.name && (lang === 'en' ? p.en : p.zh)).sort((a, b) => b.name.length - a.name.length);
+  for (const p of items) {
+    const say = lang === 'en' ? p.en : p.zh;
+    const word = /^[\w .'-]+$/.test(p.name);
+    const re = new RegExp(word ? `(?<![A-Za-z0-9])${escapeRe(p.name)}(?![A-Za-z0-9])` : escapeRe(p.name), 'gi');
+    out = out.replace(re, () => say);
+  }
+  return out;
 }

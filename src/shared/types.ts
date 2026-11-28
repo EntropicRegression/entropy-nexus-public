@@ -668,7 +668,13 @@ export interface SpeechSettings {
    * 都沒有時系統語音用英文念;中文摘要經本機翻譯(有防呆)。
    */
   lang: SpeechLang;
+  /**
+   * 念法表:名稱(節點名稱,或摘要裡會出現的名字)→ 中文、英文各自的念法。播報時把節點名稱與摘要裡的同一個名稱換成念法;
+   * 某個語言留白就照原名念。英文時在翻譯之前替換,翻譯模型會保留英文的念法。
+   */
+  pronounce: SpeechPronounce[];
 }
+export interface SpeechPronounce { name: string; zh: string; en: string }
 export interface SpeechEngineState {
   id: SpeechEngineId;
   /** 目前能不能用:clips 看有沒有角色錄了固定語音,local 看語音合成的狀態。 */

@@ -58,8 +58,17 @@
     await wait(300);
     document.title = 'SHOT:voice-editor-en';
     await wait(900);
+    // 念法表:存讀,並在「語音」面板顯示
+    const pz = await window.nexus.speechSet({ pronounce: [{ name: '聲音測試', zh: '聲音測驗', en: 'Voice Test' }, { name: '', zh: 'x', en: 'y' }] });
+    ok(pz.settings.pronounce.length === 1 && pz.settings.pronounce[0].en === 'Voice Test', '念法表存讀(空名稱丟掉)', JSON.stringify(pz.settings.pronounce));
     // 「語音」面板的角色清單:中文、英文兩組都列出來,目前的播報語言(英文)排前面並標示
     [...document.querySelectorAll('button')].find(b => b.textContent.trim() === '語音')?.click();
+    const pronRow = await until('念法表', async () => document.querySelector('.pron-row'), 8000).catch(() => null);
+    ok(!!pronRow && [...pronRow.querySelectorAll('input')].map(i => i.value).join('|') === '聲音測試|聲音測驗|Voice Test', '語音面板顯示念法表', pronRow && [...pronRow.querySelectorAll('input')].map(i => i.value).join('|'));
+    pronRow?.scrollIntoView();
+    await wait(300);
+    document.title = 'SHOT:voice-pronounce';
+    await wait(900);
     const row = await until('語音面板的角色清單', async () => [...document.querySelectorAll('.voice-char')].find(r => r.textContent.includes(C) && r.querySelector('.voice-set')), 8000).catch(() => null);
     const sets = row ? [...row.querySelectorAll('.voice-set em')].map(e => e.textContent) : [];
     ok(sets.length === 2 && sets[0].startsWith('英文(播報中):有聲音') && sets[1].startsWith('中文:有聲音'), '語音面板列出中英兩組,播報中的語言在前', JSON.stringify(sets));

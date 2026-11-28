@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SPEECH_CLIP_KINDS, SPEECH_ENGINES, type SpeechClipKind, type SpeechClipSet, type SpeechEngineId, type SpeechEngineState, type SpeechLang, type SpeechNotice, type SpeechSettings } from '../shared/types';
-import { englishSummary, normalizeSpeechLang, speechCharacters } from '../shared/speech-phrases';
+import { applyPronounce, englishSummary, normalizePronounce, normalizeSpeechLang, speechCharacters } from '../shared/speech-phrases';
 import type { Store } from './store';
 import { listCharacters, portraitsDir } from './portraits';
 import { clipMime, listClips, pickClip } from './speech-clips';
@@ -22,10 +22,10 @@ interface Engine {
   render(req: SpeechRequest): Promise<Rendered | null>;
 }
 
-const DEFAULTS: SpeechSettings = { engines: ['clips', 'local'], lang: 'zh' };
+const DEFAULTS: SpeechSettings = { engines: ['clips', 'local'], lang: 'zh', pronounce: [] };
 
 let store: Store | null = null;
-let settings: SpeechSettings = { ...DEFAULTS, engines: [...DEFAULTS.engines] };
+let settings: SpeechSettings = { ...DEFAULTS, engines: [...DEFAULTS.engines], pronounce: [] };
 /** 節點 id → 節點自己的角色與總管的角色(沒有就是 null)。 */
 let rolesOf: (agentId: string) => { own: string | null; chief: string | null } = () => ({ own: null, chief: null });
 
@@ -78,7 +78,7 @@ export function initSpeechEngines(s: Store, roles: (agentId: string) => { own: s
   rolesOf = roles;
   try {
     const saved = JSON.parse(s.getSetting('speech') ?? 'null');
-    if (saved && typeof saved === 'object') settings = { engines: normalizeEngines(saved.engines), lang: normalizeSpeechLang(saved.lang) };
+    if (saved && typeof saved === 'object') settings = { engines: normalizeEngines(saved.engines), lang: normalizeSpeechLang(saved.lang), pronounce: normalizePronounce(saved.pronounce) };
   } catch { /* 設定壞了就用預設值 */ }
 }
 
@@ -90,14 +90,18 @@ export const speechLang = (): SpeechLang => settings.lang;
  */
 export async function prepareNotice(n: SpeechNotice): Promise<SpeechNotice> {
   const lang = settings.lang;
-  if (lang !== 'en') return { ...n, lang };
-  if (n.kind !== 'done') return { ...n, lang };
-  return { ...n, lang, summary: await englishSummary(n.summary, t => localTranslate(t)) };
+  // 念法表:節點名稱與摘要裡的名稱換成念法(英文時在翻譯之前換,翻譯模型會保留英文的念法)
+  const say = (t: string) => applyPronounce(t, settings.pronounce, lang);
+  const named = { ...n, lang, agentName: say(n.agentName) } as SpeechNotice;
+  if (named.kind !== 'done') return named;
+  const summary = named.summary ? say(named.summary) : named.summary;
+  if (lang !== 'en') return { ...named, summary };
+  return { ...named, summary: await englishSummary(summary, t => localTranslate(t)) };
 }
 
 export function speechSettings(): { settings: SpeechSettings; engines: SpeechEngineState[]; clips: SpeechClipSet[] } {
   return {
-    settings: { engines: [...settings.engines], lang: settings.lang },
+    settings: { engines: [...settings.engines], lang: settings.lang, pronounce: settings.pronounce.map(p => ({ ...p })) },
     engines: SPEECH_ENGINES.map(id => ({ id, ...ENGINES[id].state() })),
     clips: clipSets(),
   };
@@ -106,6 +110,7 @@ export function speechSettings(): { settings: SpeechSettings; engines: SpeechEng
 export function speechSet(patch: Partial<SpeechSettings>): ReturnType<typeof speechSettings> {
   if (patch && 'engines' in patch) settings = { ...settings, engines: normalizeEngines(patch.engines) };
   if (patch && 'lang' in patch) settings = { ...settings, lang: normalizeSpeechLang(patch.lang) };
+  if (patch && 'pronounce' in patch) settings = { ...settings, pronounce: normalizePronounce(patch.pronounce) };
   store?.setSetting('speech', JSON.stringify(settings));
   return speechSettings();
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { SPEECH_ENGINES, type SpeechClipKind, type SpeechEngineId, type SpeechLang, type VoiceProfile, type VoiceStatus } from '../../shared/types';
+import { SPEECH_ENGINES, type SpeechClipKind, type SpeechEngineId, type SpeechLang, type SpeechPronounce, type VoiceProfile, type VoiceStatus } from '../../shared/types';
 import { pauseSpeech, resumeSpeech, setSpeakOn, useSpeakOn } from './sound';
 
 /**
@@ -271,11 +271,25 @@ function SpeechEngines() {
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, []);
+  // 念法表的草稿:改完按「儲存念法」才寫回;定時重新讀取設定時不覆蓋正在編輯的內容(hook 要在提前 return 之前)
+  const [pron, setPron] = useState<SpeechPronounce[] | null>(null);
+  const [names, setNames] = useState<string[]>([]);
+  useEffect(() => { void window.nexus.getSnapshot().then(snap => setNames([...new Set(snap.agents.filter(a => !a.parentId).map(a => a.name))])).catch(() => {}); }, []);
   if (!s) return null;
   const on = s.settings.engines;
   const order = [...on, ...SPEECH_ENGINES.filter(id => !on.includes(id))];
   const save = (engines: SpeechEngineId[]) => { setErr(''); void window.nexus.speechSet({ engines }).then(setS, e => setErr(clean(e))); };
   const setLang = (lang: SpeechLang) => { setErr(''); void window.nexus.speechSet({ lang }).then(setS, e => setErr(clean(e))); };
+  const savePron = () => { if (!pron) return; setErr(''); void window.nexus.speechSet({ pronounce: pron }).then(r => { setS(r); setPron(null); }, e => setErr(clean(e))); };
+  const testSay = (text: string, lang: SpeechLang) => {
+    const synth = window.speechSynthesis;
+    if (!synth || !text.trim()) return;
+    const u = new SpeechSynthesisUtterance(text);
+    const v = synth.getVoices().find(x => (lang === 'en' ? /^en/i : /^zh-TW/i).test(x.lang));
+    if (v) u.voice = v;
+    u.lang = v?.lang ?? (lang === 'en' ? 'en-US' : 'zh-TW');
+    synth.cancel(); synth.speak(u);
+  };
   const toggle = (id: SpeechEngineId) => save(on.includes(id) ? on.filter(x => x !== id) : order.filter(x => x === id || on.includes(x)));
   const up = (id: SpeechEngineId) => { const list = [...on]; const i = list.indexOf(id); if (i > 0) { [list[i - 1], list[i]] = [list[i], list[i - 1]]; save(list); } };
   const listen = async (character: string, kind: SpeechClipKind) => {
@@ -298,6 +312,36 @@ function SpeechEngines() {
         </select>
       </label>
       <p className="remote-note">只換播報的語言,介面與節點的回覆不變。英文時:固定語音讀角色資料夾的 clips/en/,語音合成用 voice.en.wav(逐字稿 voice.en.txt、語氣 style.en.txt),節點沒有英文聲音就借總管的,都沒有時用系統的英文語音。英文用節點自己的第一人稱念,開頭先說「I'm 節點名稱.」再接摘要。完成摘要是中文時經本機翻譯;有「不要、不能、未、沒、勿、禁」這類容易被漏翻的否定,譯文帶失敗、錯誤或否定和原文對不上,或沒有翻譯模型、翻譯太慢時,改念「Task complete. Please review the details on screen.」</p>
+      <div className="remote-sub">名稱的念法</div>
+      <p className="remote-note">播報時把節點名稱(以及摘要裡出現的同一個名稱)換成這裡的念法,例如「claudia jr」英文念成「Claudia Junior」、中文念成「克勞迪婭」。某個語言留白就照原名念。英文播報時會在翻譯之前替換。「念」用系統語音試念一次。</p>
+      {(() => {
+        const list = pron ?? s.settings.pronounce ?? [];
+        const edit = (i: number, patch: Partial<SpeechPronounce>) => setPron(list.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+        const missing = names.filter(n => !list.some(p => p.name.toLowerCase() === n.toLowerCase()));
+        return (
+          <div className="pron-list">
+            {list.map((p, i) => (
+              <div key={i} className="pron-row">
+                <input value={p.name} placeholder="名稱" maxLength={60} onChange={e => edit(i, { name: e.target.value })} />
+                <input value={p.zh} placeholder="中文念法(留白照原名)" maxLength={80} onChange={e => edit(i, { zh: e.target.value })} />
+                <button className="ghost" disabled={!p.zh.trim()} onClick={() => testSay(p.zh, 'zh')}>念</button>
+                <input value={p.en} placeholder="英文念法(留白照原名)" maxLength={80} onChange={e => edit(i, { en: e.target.value })} />
+                <button className="ghost" disabled={!p.en.trim()} onClick={() => testSay(`I'm ${p.en}.`, 'en')}>念</button>
+                <button className="ghost" onClick={() => setPron(list.filter((_, j) => j !== i))} aria-label={`刪除 ${p.name} 的念法`}>✕</button>
+              </div>
+            ))}
+            <div className="observe-actions">
+              <select value="" onChange={e => { if (e.target.value !== '') setPron([...list, { name: e.target.value === '\u0000' ? '' : e.target.value, zh: '', en: '' }]); }}>
+                <option value="">新增念法…</option>
+                {missing.map(n => <option key={n} value={n}>{n}</option>)}
+                <option value={'\u0000'}>(自己輸入名稱)</option>
+              </select>
+              <button className="primary" disabled={!pron} onClick={savePron}>儲存念法</button>
+              {pron && <button className="ghost" onClick={() => setPron(null)}>取消</button>}
+            </div>
+          </div>
+        );
+      })()}
       <div className="remote-sub">播報的聲音來源</div>
       <p className="remote-note">依序嘗試勾選的來源,第一個有聲音的就用它;都沒有時用系統語音。沒有角色的節點用總管的角色聲音(沒有總管、或總管也沒有角色時用系統語音)。</p>
       {order.map(id => {
