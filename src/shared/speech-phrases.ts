@@ -59,7 +59,12 @@ export const hasHan = (s: string): boolean => HAN.test(s);
  * 2026-11-28 依使用者要求從「單字一律擋」放寬到現在這樣。
  */
 const RISKY = /不(?:要|能|可|准|得|許|许|應|应|該|该|用|必|行|會|会|通過|通过|成功|支援|完整|一致|存在|見|见|到|夠|够)|[沒没未無无別别勿禁否莫毋甭]|非(?!常)|除非|尚未|還沒|还没/;
-export const riskyForTranslation = (zh: string): boolean => RISKY.test(zh);
+/**
+ * 「A 不 A」是問句(自不自然、好不好、是不是、要不要),意思不是否定:判斷極性前先拿掉,
+ * 否則「要不要」會被當成「不要」擋下,「自不自然」會要求譯文一定要有否定。
+ */
+const dropAnotA = (zh: string): string => zh.replace(/(\p{Script=Han})不\1/gu, '$1');
+export const riskyForTranslation = (zh: string): boolean => RISKY.test(dropAnotA(zh));
 
 /**
  * 譯文的極性檢查分兩類:
@@ -80,7 +85,7 @@ export function translationLooksOk(zh: string, en: string): boolean {
   if (/<unk>|<\/?s>|▁|�/.test(out)) return false;
   if (!/[A-Za-z]{2,}/.test(out)) return false;
   if (EN_NEGATIVE_CONTENT.test(out)) return false;
-  if (/不/.test(zh) !== EN_NEGATION.test(out)) return false;
+  if (/不/.test(dropAnotA(zh)) !== EN_NEGATION.test(out)) return false;
   // 原文用中文數字寫的數量(三個、十次)無法逐一比對,直接不翻
   if (/[零〇一二兩两三四五六七八九十百千萬万億亿]+\s*[個个次項项筆笔份條条件台位]/.test(zh)) return false;
   const nums = (s: string): string[] => s.match(/\d+(?:[.,:]\d+)*/g) ?? [];

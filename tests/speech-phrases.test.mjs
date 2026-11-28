@@ -63,6 +63,12 @@ test('翻譯結果的防呆:中文、特殊記號、數字對不上、重複、�
   // 原文有放行的「不」:譯文要有否定,漏掉就是翻反
   assert.ok(translationLooksOk('聽完覺得哪裡不對再告訴我', "Tell me if anything is wrong after you listen."));
   assert.ok(!translationLooksOk('聽完覺得哪裡不對再告訴我', 'Tell me after you listen.'), '漏翻否定');
+  // 「A 不 A」是問句,不是否定:譯文不必有否定,也不會被當成「不要」擋下
+  const q = '如果你現在聽得到我的聲音,可以留意一下語速、斷句和停頓自不自然。';
+  assert.ok(!riskyForTranslation(q));
+  assert.ok(translationLooksOk(q, 'If you can hear my voice now, you can keep an eye on speed, break and pause.'));
+  assert.ok(!riskyForTranslation('要不要先合併'), '要不要不是不要');
+  assert.ok(riskyForTranslation('不要合併'), '真正的不要仍然擋');
   assert.ok(!translationLooksOk('新增 ３ 個測試', 'Added tests.'), '全形數字也要比對');
   assert.ok(translationLooksOk('新增 ３ 個測試', 'Added 3 tests.'));
   assert.ok(!translationLooksOk('新增三個測試', 'Added three tests.'), '中文數字寫的數量不翻');
