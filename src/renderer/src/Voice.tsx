@@ -152,9 +152,15 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
   const [ttsModel, setTtsModel] = useState<string | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [chars, setChars] = useState<Array<{ character: string; hasVoice: boolean; style: string }>>([]);
+  const [chars, setChars] = useState<Array<{ character: string; hasVoice: boolean; style: string; hasVoiceEn: boolean; styleEn: string }>>([]);
+  // 目前的播報語言:清單把那一組標在前面
+  const [speechLang, setSpeechLang] = useState<SpeechLang>('zh');
+  useEffect(() => { void window.nexus.speechSettings().then(r => setSpeechLang(r.settings.lang ?? 'zh')).catch(() => {}); }, []);
   const [preview, setPreview] = useState('');
-  const loadChars = () => { void window.nexus.voiceCharacters().then(setChars, () => {}); };
+  const loadChars = () => {
+    void window.nexus.voiceCharacters().then(setChars, () => {});
+    void window.nexus.speechSettings().then(r => setSpeechLang(r.settings.lang ?? 'zh')).catch(() => {});
+  };
   useEffect(loadChars, []);
   const act = (patch: Parameters<typeof window.nexus.voiceSet>[0]) => {
     setErr(''); setBusy(true);
@@ -164,11 +170,13 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
   const dirty = !!st && (val(command, st.command) || val(model, st.model) || val(ttsDir, st.ttsDir) || val(ttsModel, st.ttsModel));
   const TTS_TEXT = { off: '沒有設定', warming: '載入中', ready: '可以使用', unloaded: '已卸載', error: '異常' } as const;
   // 試聽:用這個角色的聲音念一句
-  const listen = async (character: string) => {
-    setPreview(character); setErr('');
+  const listen = async (character: string, lang: SpeechLang = 'zh') => {
+    setPreview(`${character}|${lang}`); setErr('');
     try {
-      const buf = await window.nexus.voiceTts({ character }, `你好,我是${character}。這是我念播報時的聲音。`);
-      if (!buf) { setErr('沒有合成出聲音(語音合成還沒準備好,或這個角色沒有 voice.wav)。'); return; }
+      const buf = lang === 'en'
+        ? await window.nexus.voiceTts({ character }, `Hi, I'm ${character}. This is how I sound when I read announcements.`, 'en')
+        : await window.nexus.voiceTts({ character }, `你好,我是${character}。這是我念播報時的聲音。`);
+      if (!buf) { setErr(`沒有合成出聲音(語音合成還沒準備好,或這個角色沒有 ${lang === 'en' ? 'voice.en.wav' : 'voice.wav'})。`); return; }
       const url = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
       const a = new Audio(url);
       a.onended = () => URL.revokeObjectURL(url);
@@ -218,13 +226,24 @@ export function VoicePanel({ onClose }: { onClose: () => void }) {
           <button className="ghost" onClick={loadChars}>重新整理</button>
         </div>
         {chars.length > 0 && <div className="voice-chars">
-          {chars.map(c => (
-            <div key={c.character} className="voice-char">
-              <span>{c.character}</span>
-              <em className={c.hasVoice ? 'embed' : 'pathonly'}>{c.hasVoice ? `有聲音${c.style ? ` · ${c.style.slice(0, 16)}` : ''}` : '沒有 voice.wav'}</em>
-              <button className="ghost" disabled={!c.hasVoice || st.tts.state !== 'ready' || preview !== ''} onClick={() => void listen(c.character)}>{preview === c.character ? '合成中' : '試聽'}</button>
-            </div>
-          ))}
+          {chars.map(c => {
+            // 兩組都列出來,目前的播報語言排前面
+            const sets = [
+              { lang: 'zh' as const, label: '中文', has: c.hasVoice, style: c.style, file: 'voice.wav' },
+              { lang: 'en' as const, label: '英文', has: c.hasVoiceEn, style: c.styleEn, file: 'voice.en.wav' },
+            ].sort((x, y) => (x.lang === speechLang ? -1 : 0) - (y.lang === speechLang ? -1 : 0));
+            return (
+              <div key={c.character} className="voice-char">
+                <span>{c.character}</span>
+                {sets.map(v => (
+                  <span key={v.lang} className="voice-set">
+                    <em className={v.has ? 'embed' : 'pathonly'} title={v.lang === speechLang ? '目前的播報語言' : ''}>{v.label}{v.lang === speechLang ? '(播報中)' : ''}:{v.has ? `有聲音${v.style ? ` · ${v.style.slice(0, 16)}` : ''}` : `沒有 ${v.file}`}</em>
+                    <button className="ghost" disabled={!v.has || st.tts.state !== 'ready' || preview !== ''} onClick={() => void listen(c.character, v.lang)}>{preview === `${c.character}|${v.lang}` ? '合成中' : '試聽'}</button>
+                  </span>
+                ))}
+              </div>
+            );
+          })}
         </div>}
         {err && <div className="remote-warn">{err}</div>}
         {st.log.length > 0 && <pre className="observe-preview voice-log">{st.log.join('\n')}</pre>}

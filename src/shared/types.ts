@@ -710,7 +710,8 @@ export interface NexusApi {
   /** 參考錄音的內容(播放原音用);沒有時回傳 null。 */
   voiceProfileAudio(character: string, lang?: SpeechLang): Promise<ArrayBuffer | null>;
   /** 各角色有沒有參考錄音,給設定面板顯示。 */
-  voiceCharacters(): Promise<Array<{ character: string; hasVoice: boolean; style: string }>>;
+  /** 各角色有沒有參考錄音:中文一組(voice.wav)與英文一組(voice.en.wav)。 */
+  voiceCharacters(): Promise<Array<{ character: string; hasVoice: boolean; style: string; hasVoiceEn: boolean; styleEn: string }>>;
   /** wav 是 16 kHz、16-bit、單聲道的 WAV 檔內容。 */
   voiceTranscribe(wav: ArrayBuffer): Promise<VoiceTranscript>;
   onVoice(cb: (s: VoiceStatus) => void): () => void;

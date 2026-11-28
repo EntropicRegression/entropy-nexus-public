@@ -516,8 +516,10 @@ a.md-link.md-web:hover, a.md-link.md-web:focus-visible { background: rgba(63, 21
 .voice-field { width: 100%; box-sizing: border-box; margin: 4px 0 8px; font: 12px var(--mono); }
 .voice-log { max-height: 160px; white-space: pre-wrap; }
 .voice-chars { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
-.voice-char { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.voice-char > span { flex: 1; }
+.voice-char { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
+.voice-char > span:first-child { flex: 1; min-width: 80px; }
+/* 中文、英文各一組:狀態加試聽 */
+.voice-set { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 .voice-char em { font-style: normal; font-size: 11px; }
 .observe-actions { display: flex; gap: 8px; margin: 10px 0 6px; }
 .observed { margin-top: 10px; padding-top: 6px; border-top: 1px dashed var(--line-soft); }

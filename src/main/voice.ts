@@ -299,6 +299,9 @@ export async function localTranslate(text: string, timeoutMs = 1500): Promise<st
 }
 
 /** 各角色有沒有參考錄音。 */
-export function voiceCharacters(): Array<{ character: string; hasVoice: boolean; style: string }> {
-  return listCharacters().map(c => { const v = voiceOf(c); return { character: c, hasVoice: !!v, style: v?.style ?? '' }; });
+export function voiceCharacters(): Array<{ character: string; hasVoice: boolean; style: string; hasVoiceEn: boolean; styleEn: string }> {
+  return listCharacters().map(c => {
+    const v = voiceOf(c), e = voiceOf(c, 'en');
+    return { character: c, hasVoice: !!v, style: v?.style ?? '', hasVoiceEn: !!e, styleEn: e?.style ?? '' };
+  });
 }
