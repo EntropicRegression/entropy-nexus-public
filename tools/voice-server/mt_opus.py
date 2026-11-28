@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 
 MT_DIR = os.environ.get("NEXUS_VOICE_MT_DIR", "").strip() or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mt", "opus-mt-zh-en")
@@ -56,7 +57,20 @@ class OpusMt:
                 except Exception as err:  # noqa: BLE001
                     self.status, self.error = "error", str(err)[:200]
                     raise RuntimeError(f"翻譯模型載入失敗:{self.error}") from err
-            tokens = self.src.encode(text, out_type=str) + ["</s>"]
-            result = self.translator.translate_batch([tokens], beam_size=4, max_decoding_length=200)
-            out = [t for t in result[0].hypotheses[0] if t not in ("</s>", "<pad>")]
-            return self.tgt.decode(out).strip()
+            # 整段多句一起翻時,模型常常漏掉一半內容或把名字翻掉(2026-11-28 實測);表情符號也會干擾。
+            # 所以先拿掉表情符號、依句尾標點切成一句一句,同一批翻完再接起來(一批翻,速度和整段差不多)
+            parts = split_sentences(EMOJI.sub("", text)) or [text]
+            batch = [self.src.encode(p, out_type=str) + ["</s>"] for p in parts]
+            results = self.translator.translate_batch(batch, beam_size=4, max_decoding_length=200)
+            outs = [self.tgt.decode([t for t in r.hypotheses[0] if t not in ("</s>", "<pad>")]).strip() for r in results]
+            return " ".join(o for o in outs if o)
+
+
+# 表情符號與裝飾符號(✨、💕、😊、🌟 等)
+EMOJI = re.compile("[\U0001F000-\U0001FFFF☀-➿️‍]")
+# 一句:到句尾標點(含全形)為止;最後沒有標點的也算一句
+SENTENCE = re.compile(r"[^。！？～!?~;；\n]+[。！？～!?~;；]*")
+
+
+def split_sentences(text: str) -> list[str]:
+    return [p.strip() for p in SENTENCE.findall(text) if p.strip()]

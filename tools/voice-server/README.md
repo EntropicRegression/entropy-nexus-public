@@ -118,4 +118,4 @@ venv/Scripts/python -m pip install opencc-python-reimplemented
   ct2-transformers-converter --model Helsinki-NLP/opus-mt-zh-en --quantization int8 --output_dir mt/opus-mt-zh-en --copy_files source.spm target.spm
   ```
 
-  模型放在這個資料夾的 `mt/opus-mt-zh-en`,或用環境變數 `NEXUS_VOICE_MT_DIR` 指定。沒有模型時 `/translate` 回 503,主控台改念固定的英文句;`/health` 的 `mt.status` 會顯示 off、idle(語音服務啟動時在背景載入,約 2 秒)、ready 或 error。暖機後一句約 50 毫秒(RTX 4060 Ti 那台的 CPU 實測)。翻譯結果主控台會再做一次防呆(否定詞、數字、怪字元、1.5 秒上限)。
+  模型放在這個資料夾的 `mt/opus-mt-zh-en`,或用環境變數 `NEXUS_VOICE_MT_DIR` 指定。沒有模型時 `/translate` 回 503,主控台改念固定的英文句;`/health` 的 `mt.status` 會顯示 off、idle(語音服務啟動時在背景載入,約 2 秒)、ready 或 error。暖機後一句約 50 毫秒(RTX 4060 Ti 那台的 CPU 實測)。翻譯前先拿掉表情符號、依句尾標點切成一句一句再一起翻(整段多句一起翻時模型常漏掉內容或把名字翻掉),三句約 0.16 秒。翻譯結果主控台會再做一次防呆(否定詞、數字、怪字元、1.5 秒上限)。

@@ -63,6 +63,12 @@ test('翻譯結果的防呆:中文、特殊記號、數字對不上、重複、�
   // 原文有放行的「不」:譯文要有否定,漏掉就是翻反
   assert.ok(translationLooksOk('聽完覺得哪裡不對再告訴我', "Tell me if anything is wrong after you listen."));
   assert.ok(!translationLooksOk('聽完覺得哪裡不對再告訴我', 'Tell me after you listen.'), '漏翻否定');
+  // 原文的英文字要留在譯文裡(不分大小寫):整段翻譯漏掉名字的情況擋下
+  const hz = '連主控台的角色卡也正式正名成 hagemi 了,聽起來超讚的對吧~';
+  assert.ok(translationLooksOk(hz, 'Even the role card of the Console is officially called Hagemi. That sounds awesome, right?'));
+  assert.ok(!translationLooksOk(hz, 'Even the role card of the Constabulary is officially well-known.'), '名字不見了');
+  assert.ok(translationLooksOk('整理了 README 的安裝步驟', 'Set up installation steps for README'));
+  assert.ok(!translationLooksOk('整理了 README 的安裝步驟', 'Organized the installation steps'), 'README 不見了');
   // 「A 不 A」是問句,不是否定:譯文不必有否定,也不會被當成「不要」擋下
   const q = '如果你現在聽得到我的聲音,可以留意一下語速、斷句和停頓自不自然。';
   assert.ok(!riskyForTranslation(q));

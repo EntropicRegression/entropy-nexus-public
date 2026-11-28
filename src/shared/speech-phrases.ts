@@ -88,6 +88,9 @@ export function translationLooksOk(zh: string, en: string): boolean {
   if (/不/.test(dropAnotA(zh)) !== EN_NEGATION.test(out)) return false;
   // 原文用中文數字寫的數量(三個、十次)無法逐一比對,直接不翻
   if (/[零〇一二兩两三四五六七八九十百千萬万億亿]+\s*[個个次項项筆笔份條条件台位]/.test(zh)) return false;
+  // 原文裡的英文字(名字、README、CUDA 這類)譯文要保留:不見了表示翻譯漏掉內容或把名字翻掉
+  const lower = out.toLowerCase();
+  for (const w of zh.match(/[A-Za-z][A-Za-z0-9.+#-]*[A-Za-z0-9+#]|[A-Za-z]{2,}/g) ?? []) if (!lower.includes(w.toLowerCase())) return false;
   const nums = (s: string): string[] => s.match(/\d+(?:[.,:]\d+)*/g) ?? [];
   const have = nums(out);
   for (const n of nums(zh)) if (!have.includes(n)) return false;
