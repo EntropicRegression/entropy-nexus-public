@@ -106,16 +106,41 @@ export function translationLooksOk(zh: string, en: string): boolean {
 export async function englishSummary(summary: string | null, translate: (zh: string) => Promise<string | null>, timeoutMs = TRANSLATE_TIMEOUT_MS): Promise<string | null> {
   const s = (summary ?? '').trim();
   if (!s) return null;
-  if (!hasHan(s)) return s;
+  if (!hasHan(s)) return trimEnglish(s);
   if (riskyForTranslation(s)) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>(r => { timer = setTimeout(() => r(null), timeoutMs); });
   try {
     const en = await Promise.race([translate(s).catch(() => null), late]);
-    return en && translationLooksOk(s, en) ? en.trim() : null;
+    return en && translationLooksOk(s, en) ? trimEnglish(en.trim()) : null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 英文摘要的長度上限(字數)。CosyVoice 2 合成英文約每字 0.3 秒(RTX 4060 Ti 實測:14 字 6 秒、42 字 14.4 秒),
+ * 播報有 15 秒的合成上限,超過就改用系統語音;開頭的「I'm <名稱>.」也要算進去,所以摘要留 22 字左右。
+ */
+export const EN_SUMMARY_MAX_WORDS = 22;
+/** 第一句本身就太長時的上限:超過就不念摘要(念固定句),不從句子中間切斷。 */
+const EN_FIRST_SENTENCE_MAX_WORDS = 30;
+
+/** 只留完整的句子,總字數不超過上限;第一句一定保留(除非它本身就太長,那就回傳 null)。 */
+export function trimEnglish(en: string, max = EN_SUMMARY_MAX_WORDS): string | null {
+  // 句尾標點後面接空白才算一句結束:1.4.0、e.g. 這類中間的句點不切
+  const sentences = en.trim().split(/(?<=[.!?]["')\]]?)\s+/).map(x => x.trim()).filter(Boolean);
+  const words = (x: string) => x.split(/\s+/).filter(Boolean).length;
+  if (!sentences.length) return null;
+  if (words(sentences[0]) > EN_FIRST_SENTENCE_MAX_WORDS) return null;
+  const out = [sentences[0]];
+  let n = words(sentences[0]);
+  for (const x of sentences.slice(1)) {
+    if (n + words(x) > max) break;
+    out.push(x);
+    n += words(x);
+  }
+  return out.join(' ');
 }
 
 /**

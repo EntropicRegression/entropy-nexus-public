@@ -1,7 +1,7 @@
 // 驗收:英文語音播報的台詞、翻譯防呆與聲音退回順序(src/shared/speech-phrases.ts,純函式)。
 // 用法:在 app 資料夾執行 node tests/speech-phrases.test.mjs(Node 22.18 以上可直接載入 .ts)
 import assert from 'node:assert/strict';
-import { applyPronounce, EN_DONE_FALLBACK, englishSummary, normalizePronounce, hasHan, normalizeSpeechLang, riskyForTranslation, speechCharacters, speechPhrase, translationLooksOk } from '../src/shared/speech-phrases.ts';
+import { applyPronounce, EN_DONE_FALLBACK, EN_SUMMARY_MAX_WORDS, englishSummary, trimEnglish, normalizePronounce, hasHan, normalizeSpeechLang, riskyForTranslation, speechCharacters, speechPhrase, translationLooksOk } from '../src/shared/speech-phrases.ts';
 
 let passed = 0;
 const tests = [];
@@ -101,6 +101,22 @@ test('念法表:整理、替換節點名稱與摘要裡的名稱', () => {
   // 名稱裡的特殊字元照字面比對
   assert.equal(applyPronounce('a.b(c) ok', normalizePronounce([{ name: 'a.b(c)', zh: '', en: 'ABC' }]), 'en'), 'ABC ok');
   assert.equal(normalizePronounce(Array.from({ length: 150 }, (_, i) => ({ name: `n${i}`, zh: 'x', en: '' }))).length, 100, '最多 100 筆');
+});
+
+test('英文摘要的長度:只留完整句子、最多約 22 字,避免合成超過 15 秒', () => {
+  const long = "It's fixed. The root cause of this is the translation itself. The audio service runs directly to the voice-server in the project folder, so the voice service needs to be restarted in order to be translated sentence by sentence.";
+  assert.equal(trimEnglish(long), "It's fixed. The root cause of this is the translation itself.");
+  assert.equal(trimEnglish('Fixed the layout of the login page.'), 'Fixed the layout of the login page.');
+  assert.equal(trimEnglish('Done. All 3 tests passed! Ready to merge?'), 'Done. All 3 tests passed! Ready to merge?');
+  assert.equal(trimEnglish('No ending punctuation here'), 'No ending punctuation here');
+  assert.equal(trimEnglish('Version 1.4.0 was packed. Ready.'), 'Version 1.4.0 was packed. Ready.', '版本號裡的句點不切');
+  // 第一句就很長但還在 30 字內:保留整句,不從中間切
+  const first = Array.from({ length: 26 }, (_, i) => `w${i}`).join(' ') + '. Second sentence.';
+  assert.equal(trimEnglish(first), Array.from({ length: 26 }, (_, i) => `w${i}`).join(' ') + '.');
+  // 第一句超過 30 字:不念摘要
+  assert.equal(trimEnglish(Array.from({ length: 31 }, (_, i) => `w${i}`).join(' ') + '.'), null);
+  assert.equal(trimEnglish(''), null);
+  assert.equal(EN_SUMMARY_MAX_WORDS, 22);
 });
 
 test('聲音的退回順序:中文維持原本的行為,英文是節點 → 總管', () => {
